@@ -6,7 +6,7 @@ A JavaScript library for capturing and analyzing PPG signals through camera-base
 
 ## 🌐 Live Demo
 
-Visit the demo: [https://sontakey.github.io/ppg-vitals/](https://sontakey.github.io/ppg-vitals/)
+Visit the demo: [https://sontakey.github.io/ppg-js/](https://sontakey.github.io/ppg-js/)
 
 ## ✨ Features
 
@@ -25,14 +25,14 @@ Visit the demo: [https://sontakey.github.io/ppg-vitals/](https://sontakey.github
 ### NPM
 
 ```bash
-npm install ppg-vitals
+npm install ppg-js
 ```
 
 ### CDN
 
 ```html
-<link rel="stylesheet" href="https://unpkg.com/ppg-vitals/dist/ppg-monitor.css">
-<script src="https://unpkg.com/ppg-vitals/dist/ppg-monitor.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/ppg-js/dist/ppg-monitor.css">
+<script src="https://unpkg.com/ppg-js/dist/ppg-monitor.min.js"></script>
 ```
 
 ### Direct Download
@@ -44,8 +44,8 @@ Download the latest release from [GitHub Releases](https://github.com/sontakey/p
 ### Basic Usage (Default UI)
 
 ```javascript
-import PPGMonitor from 'ppg-vitals';
-import 'ppg-vitals/dist/ppg-monitor.css';
+import PPGMonitor from 'ppg-js';
+import 'ppg-js/dist/ppg-monitor.css';
 
 // Create monitor instance
 const ppg = new PPGMonitor('#container');
@@ -84,8 +84,8 @@ ppg.start();
 ```html
 <div id="ppg-container"></div>
 
-<script src="https://unpkg.com/ppg-vitals/dist/ppg-monitor.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/ppg-vitals/dist/ppg-monitor.css">
+<script src="https://unpkg.com/ppg-js/dist/ppg-monitor.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/ppg-js/dist/ppg-monitor.css">
 
 <script>
   const ppg = new PPGMonitor('#ppg-container');
@@ -283,7 +283,7 @@ npm run serve
 ### Project Structure
 
 ```
-ppg-vitals/
+ppg-js/
 ├── src/
 │   ├── PPGMonitor.js           # Main monitor class
 │   ├── SignalProcessor.js      # Signal processing logic

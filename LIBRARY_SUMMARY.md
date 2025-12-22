@@ -61,13 +61,13 @@ Created three comprehensive examples:
 
 ### Install
 ```bash
-npm install ppg-vitals
+npm install ppg-js
 ```
 
 ### Basic Usage
 ```javascript
-import PPGMonitor from 'ppg-vitals';
-import 'ppg-vitals/dist/ppg-monitor.css';
+import PPGMonitor from 'ppg-js';
+import 'ppg-js/dist/ppg-monitor.css';
 
 const ppg = new PPGMonitor('#container');
 ppg.start();
@@ -88,7 +88,7 @@ ppg.start();
 ## File Structure
 
 ```
-ppg-vitals/
+ppg-js/
 ├── src/
 │   ├── PPGMonitor.js           # Main class
 │   ├── SignalProcessor.js      # Signal processing
@@ -137,13 +137,13 @@ npm publish
 
 ### To Use in Your Project
 ```bash
-npm install ppg-vitals
+npm install ppg-js
 ```
 
 Or via CDN:
 ```html
-<link rel="stylesheet" href="https://unpkg.com/ppg-vitals/dist/ppg-monitor.css">
-<script src="https://unpkg.com/ppg-vitals/dist/ppg-monitor.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/ppg-js/dist/ppg-monitor.css">
+<script src="https://unpkg.com/ppg-js/dist/ppg-monitor.min.js"></script>
 ```
 
 ## Key Features

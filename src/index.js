@@ -1,6 +1,6 @@
 /**
- * PPG Vitals - Real-time PPG signal monitoring library
- * @module ppg-vitals
+ * PPG JS - Real-time PPG signal monitoring library
+ * @module ppg-js
  */
 
 import PPGMonitor from './PPGMonitor.js';

@@ -1,5 +1,5 @@
 {
-  "name": "ppg-vitals",
+  "name": "ppg-js",
   "version": "1.0.0",
   "description": "Real-time PPG signal monitoring with camera-based photoplethysmography",
   "main": "dist/ppg-monitor.js",
