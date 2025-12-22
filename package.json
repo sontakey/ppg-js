@@ -1,0 +1,45 @@
+{
+  "name": "ppg-vitals",
+  "version": "1.0.0",
+  "description": "Real-time PPG signal monitoring with camera-based photoplethysmography",
+  "main": "dist/ppg-monitor.js",
+  "module": "dist/ppg-monitor.esm.js",
+  "browser": "dist/ppg-monitor.min.js",
+  "style": "dist/ppg-monitor.css",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "rollup -c",
+    "dev": "rollup -c -w",
+    "serve": "python3 -m http.server 8080",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "ppg",
+    "photoplethysmography",
+    "vitals",
+    "heart-rate",
+    "camera",
+    "signal-processing",
+    "health",
+    "biometrics"
+  ],
+  "author": "Sameer Shariff",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/sontakey/ppg-js.git"
+  },
+  "dependencies": {
+    "d3": "^7.8.5",
+    "fft.js": "^4.0.4"
+  },
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^25.0.7",
+    "@rollup/plugin-node-resolve": "^15.2.3",
+    "@rollup/plugin-terser": "^0.4.4",
+    "rollup": "^4.9.4",
+    "rollup-plugin-postcss": "^4.0.2"
+  }
+}

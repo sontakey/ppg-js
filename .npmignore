@@ -1,0 +1,10 @@
+src/
+examples/
+rollup.config.js
+.git/
+.github/
+figures/
+*.md
+!README.md
+!CHANGELOG.md
+.gitignore

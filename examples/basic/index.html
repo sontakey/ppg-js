@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PPG Vitals - Basic Example</title>
+    <link rel="stylesheet" href="../../dist/ppg-monitor.css">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+        }
+        .info {
+            background-color: #f0f0f0;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <h1>PPG Vitals - Basic Usage Example</h1>
+
+    <div class="info">
+        <h3>Instructions:</h3>
+        <ul>
+            <li>Click the "Measure" button below</li>
+            <li>Allow camera access when prompted</li>
+            <li>Cover both the camera and flashlight with your finger</li>
+            <li>Wait for the signal quality to improve (green circle = good signal)</li>
+            <li>Follow the on-screen guidance for best results</li>
+        </ul>
+    </div>
+
+    <div id="ppg-container"></div>
+
+    <script src="../../dist/ppg-monitor.min.js"></script>
+    <script>
+        // Basic usage with default UI
+        const ppg = new PPGMonitor('#ppg-container', {
+            ui: {
+                enabled: true,
+                showVideo: true,
+                showMetrics: true,
+                showChart: true
+            },
+            onReady: () => {
+                console.log('PPG Monitor ready!');
+            },
+            onQualityUpdate: (metrics) => {
+                console.log('Quality update:', metrics);
+            },
+            onError: (error) => {
+                console.error('PPG Error:', error);
+                alert('Error: ' + error.message);
+            }
+        });
+
+        // Start monitoring when page loads
+        ppg.start().catch(err => {
+            console.error('Failed to start:', err);
+        });
+    </script>
+</body>
+</html>
