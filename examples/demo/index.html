@@ -2,153 +2,505 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PPG Vitals Monitor - Demo</title>
-    <link rel="stylesheet" href="./dist/ppg-monitor.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>PPG Vitals Monitor</title>
     <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
+            background: linear-gradient(180deg, #1a2942 0%, #0f1829 100%);
+            color: #ffffff;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 100%;
+            min-height: 100vh;
             padding: 20px;
-            background-color: #f5f5f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
         }
-        header {
-            text-align: center;
-            padding: 20px 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border-radius: 12px;
-            margin-bottom: 30px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-        header h1 {
-            margin: 0;
-            font-size: 2em;
-        }
-        .info-section {
-            background: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
-        }
-        .info-section h3 {
-            margin-top: 0;
-            color: #667eea;
-        }
-        .info-section ul {
-            line-height: 1.8;
-            color: #555;
-        }
-        .info-section ul li {
-            margin-bottom: 8px;
-        }
-        .disclaimer {
-            background: #fff3cd;
-            border: 2px solid #ffc107;
-            padding: 15px;
-            border-radius: 8px;
+
+        /* Camera Preview Section */
+        .camera-section {
+            width: 100%;
+            max-width: 500px;
+            background: rgba(40, 60, 90, 0.5);
+            border-radius: 24px;
+            padding: 40px 20px;
             margin-top: 20px;
             text-align: center;
-            font-weight: 600;
-            color: #856404;
+            backdrop-filter: blur(10px);
         }
-        footer {
+
+        .finger-guide-container {
+            position: relative;
+            width: 180px;
+            height: 180px;
+            margin: 0 auto 30px;
+        }
+
+        .finger-circle {
+            width: 180px;
+            height: 180px;
+            border-radius: 50%;
+            border: 6px solid #5fc3c9;
+            background: #8b3a3a;
+            box-shadow: 0 0 30px rgba(95, 195, 201, 0.4);
+            transition: all 0.3s ease;
+        }
+
+        .finger-circle.excellent {
+            background: #4CAF50;
+            border-color: #81C784;
+            box-shadow: 0 0 40px rgba(76, 175, 80, 0.6);
+        }
+
+        .finger-circle.good {
+            background: #8BC34A;
+            border-color: #AED581;
+        }
+
+        .finger-circle.fair {
+            background: #FFC107;
+            border-color: #FFD54F;
+        }
+
+        .finger-circle.poor {
+            background: #8b3a3a;
+            border-color: #5fc3c9;
+        }
+
+        .instruction-text {
+            font-size: 16px;
+            line-height: 1.5;
+            color: #b8c5d6;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        /* Metrics Card */
+        .metrics-card {
+            width: 100%;
+            max-width: 500px;
+            background: rgba(25, 40, 65, 0.7);
+            border-radius: 24px;
+            padding: 30px 20px;
+            margin-top: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .metric-section {
             text-align: center;
+        }
+
+        .metric-label {
+            font-size: 14px;
+            color: #7a8ca3;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+        }
+
+        .ppg-chart-container {
+            height: 100px;
+            position: relative;
+        }
+
+        #ppg-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        .heart-rate-display {
+            font-size: 72px;
+            font-weight: 300;
+            color: #ffffff;
+            line-height: 1;
+        }
+
+        /* Timer Section */
+        .timer-section {
             margin-top: 40px;
-            padding: 20px;
-            color: #666;
-            font-size: 0.9em;
+            text-align: center;
         }
-        footer a {
-            color: #667eea;
-            text-decoration: none;
+
+        .timer-label {
+            font-size: 14px;
+            color: #7a8ca3;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 20px;
         }
-        footer a:hover {
-            text-decoration: underline;
+
+        .circular-timer {
+            position: relative;
+            width: 220px;
+            height: 220px;
+            margin: 0 auto;
+        }
+
+        .timer-ring {
+            width: 100%;
+            height: 100%;
+            transform: rotate(-90deg);
+        }
+
+        .timer-ring-bg {
+            fill: none;
+            stroke: rgba(60, 80, 110, 0.5);
+            stroke-width: 12;
+        }
+
+        .timer-ring-progress {
+            fill: none;
+            stroke: #5fc3c9;
+            stroke-width: 12;
+            stroke-linecap: round;
+            transition: stroke-dashoffset 1s linear;
+        }
+
+        .timer-time {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 56px;
+            font-weight: 300;
+            color: #ffffff;
+        }
+
+        .bottom-text {
+            font-size: 15px;
+            color: #b8c5d6;
+            margin-top: 30px;
+            text-align: center;
+        }
+
+        /* Buttons */
+        .button-container {
+            width: 100%;
+            max-width: 500px;
+            margin-top: 40px;
+            padding: 0 20px;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 18px;
+            border: none;
+            border-radius: 16px;
+            font-size: 18px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .btn-start {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-start:active {
+            transform: scale(0.98);
+        }
+
+        .btn-cancel {
+            background: rgba(255, 255, 255, 0.95);
+            color: #1a2942;
+            margin-top: 10px;
+        }
+
+        .btn-cancel:active {
+            background: rgba(255, 255, 255, 0.85);
+        }
+
+        /* Hidden state */
+        .hidden {
+            display: none;
+        }
+
+        /* Video element - hidden but functional */
+        #video {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* Additional metrics */
+        .additional-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(122, 140, 163, 0.2);
+        }
+
+        .metric-small {
+            text-align: center;
+        }
+
+        .metric-small-label {
+            font-size: 11px;
+            color: #7a8ca3;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 5px;
+        }
+
+        .metric-small-value {
+            font-size: 18px;
+            font-weight: 600;
+            color: #ffffff;
         }
     </style>
 </head>
 <body>
-    <header>
-        <h1>PPG Vitals Monitor</h1>
-        <p style="margin: 10px 0 0 0; opacity: 0.9;">Real-time photoplethysmography using your smartphone camera</p>
-    </header>
+    <div class="container">
+        <!-- Start Button (shown initially) -->
+        <div id="start-screen" class="button-container" style="margin-top: 40vh;">
+            <button class="btn btn-start" onclick="startMeasurement()">Start Measurement</button>
+            <div style="margin-top: 20px; text-align: center; color: #7a8ca3; font-size: 14px;">
+                Place your finger over the camera to measure your vitals
+            </div>
+        </div>
 
-    <div class="info-section">
-        <h3>📋 Instructions</h3>
-        <ul>
-            <li><strong>Step 1:</strong> Click the "Measure" button below</li>
-            <li><strong>Step 2:</strong> Allow camera access when prompted</li>
-            <li><strong>Step 3:</strong> Cover <strong>both</strong> the camera and flashlight with your finger</li>
-            <li><strong>Step 4:</strong> Wait for the finger guide circle to turn <span style="color: #4CAF50;">green</span></li>
-            <li><strong>Step 5:</strong> Follow the on-screen guidance messages for optimal signal quality</li>
-            <li><strong>Tip:</strong> Press firmly but comfortably, and hold your finger still</li>
-        </ul>
+        <!-- Measurement Screen (hidden initially) -->
+        <div id="measurement-screen" class="hidden">
+            <!-- Camera Preview Section -->
+            <div class="camera-section">
+                <div class="finger-guide-container">
+                    <div id="finger-circle" class="finger-circle poor"></div>
+                </div>
+                <div id="instruction-text" class="instruction-text">
+                    Please hold your finger over the camera and try to limit movement
+                </div>
+            </div>
+
+            <!-- Metrics Card -->
+            <div class="metrics-card">
+                <div class="metrics-grid">
+                    <div class="metric-section">
+                        <div class="metric-label">PPG</div>
+                        <div class="ppg-chart-container">
+                            <canvas id="ppg-canvas"></canvas>
+                        </div>
+                    </div>
+                    <div class="metric-section">
+                        <div class="metric-label">Heart Rate</div>
+                        <div id="heart-rate" class="heart-rate-display">--</div>
+                    </div>
+                </div>
+
+                <!-- Additional Metrics -->
+                <div class="additional-metrics">
+                    <div class="metric-small">
+                        <div class="metric-small-label">SNR</div>
+                        <div id="snr-value" class="metric-small-value">--</div>
+                    </div>
+                    <div class="metric-small">
+                        <div class="metric-small-label">PI</div>
+                        <div id="pi-value" class="metric-small-value">--</div>
+                    </div>
+                    <div class="metric-small">
+                        <div class="metric-small-label">IBI</div>
+                        <div id="ibi-value" class="metric-small-value">--</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Timer Section -->
+            <div class="timer-section">
+                <div class="timer-label">Timer</div>
+                <div class="circular-timer">
+                    <svg class="timer-ring" viewBox="0 0 200 200">
+                        <circle class="timer-ring-bg" cx="100" cy="100" r="90"/>
+                        <circle id="timer-ring-progress" class="timer-ring-progress" cx="100" cy="100" r="90"
+                                stroke-dasharray="565.48" stroke-dashoffset="0"/>
+                    </svg>
+                    <div id="timer-time" class="timer-time">0:00</div>
+                </div>
+            </div>
+
+            <div class="bottom-text">Try to relax and breathe naturally</div>
+
+            <!-- Cancel Button -->
+            <div class="button-container">
+                <button class="btn btn-cancel" onclick="cancelMeasurement()">Cancel</button>
+            </div>
+        </div>
     </div>
 
-    <div id="ppg-container"></div>
-
-    <div class="disclaimer">
-        ⚠️ <strong>For demonstration and research purposes only</strong> - Not a medical device
-    </div>
-
-    <footer>
-        <p>
-            Built with <a href="https://github.com/sontakey/ppg-js" target="_blank">ppg-js</a> library
-            | <a href="https://github.com/sontakey/ppg-js" target="_blank">View on GitHub</a>
-        </p>
-        <p style="font-size: 0.85em; margin-top: 10px;">
-            Learn more about photoplethysmography and how this works in the
-            <a href="https://github.com/sontakey/ppg-js#readme" target="_blank">documentation</a>
-        </p>
-    </footer>
+    <!-- Hidden video element for camera -->
+    <video id="video" autoplay playsinline></video>
 
     <script src="./dist/ppg-monitor.min.js"></script>
     <script>
-        // Initialize PPG Monitor with full UI
-        const ppg = new PPGMonitor('#ppg-container', {
-            ui: {
-                enabled: true,
-                showVideo: true,
-                showMetrics: true,
-                showChart: true
-            },
-            signal: {
-                windowLength: 300,      // 5 seconds at 60 FPS
-                sampleRate: 60,
-                cardiacBandLow: 0.75,   // 45 BPM
-                cardiacBandHigh: 4.0    // 240 BPM
-            },
-            camera: {
-                facingMode: 'environment'  // Back camera for finger placement
-            },
-            onReady: () => {
-                console.log('✅ PPG Monitor ready!');
-            },
-            onQualityUpdate: (metrics) => {
-                console.log('📊 Quality Update:', {
-                    SNR: `${metrics.snr_dB.toFixed(2)} dB`,
-                    HeartRate: `${metrics.heartRate.toFixed(0)} BPM`,
-                    PerfusionIndex: `${metrics.perfusionIndex.toFixed(2)}%`,
-                    Status: metrics.qualityStatus,
-                    Guidance: metrics.guidanceMessage
-                });
-            },
-            onSignalUpdate: (signal) => {
-                // Real-time signal data available here
-                // Useful for custom processing or analysis
-            },
-            onError: (error) => {
-                console.error('❌ PPG Error:', error);
-                alert('Error: ' + error.message + '\n\nPlease make sure you:\n1. Granted camera permissions\n2. Are using HTTPS or localhost\n3. Have a working camera and flashlight');
-            }
-        });
+        let ppg = null;
+        let startTime = null;
+        let timerInterval = null;
+        let ppgSignalBuffer = [];
+        const MAX_SIGNAL_POINTS = 100;
 
-        // Log when monitoring starts
-        console.log('🚀 PPG Vitals Monitor Demo loaded');
-        console.log('💡 Click "Measure" to start monitoring');
+        // Canvas setup for PPG waveform
+        const canvas = document.getElementById('ppg-canvas');
+        const ctx = canvas.getContext('2d');
+
+        function resizeCanvas() {
+            const container = canvas.parentElement;
+            canvas.width = container.offsetWidth * window.devicePixelRatio;
+            canvas.height = container.offsetHeight * window.devicePixelRatio;
+            canvas.style.width = container.offsetWidth + 'px';
+            canvas.style.height = container.offsetHeight + 'px';
+            ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+        }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+
+        function drawPPGWaveform() {
+            const width = canvas.offsetWidth;
+            const height = canvas.offsetHeight;
+
+            ctx.clearRect(0, 0, width, height);
+
+            if (ppgSignalBuffer.length < 2) return;
+
+            ctx.beginPath();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            ctx.lineJoin = 'round';
+
+            const xStep = width / (MAX_SIGNAL_POINTS - 1);
+
+            ppgSignalBuffer.forEach((value, index) => {
+                const x = index * xStep;
+                const y = height - (value * height);
+
+                if (index === 0) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            });
+
+            ctx.stroke();
+        }
+
+        function updateTimer() {
+            const elapsed = Math.floor((Date.now() - startTime) / 1000);
+            const minutes = Math.floor(elapsed / 60);
+            const seconds = elapsed % 60;
+
+            document.getElementById('timer-time').textContent =
+                `${minutes}:${seconds.toString().padStart(2, '0')}`;
+
+            // Update circular progress (max 60 seconds)
+            const maxSeconds = 60;
+            const progress = Math.min(elapsed / maxSeconds, 1);
+            const circumference = 2 * Math.PI * 90;
+            const offset = circumference * (1 - progress);
+            document.getElementById('timer-ring-progress').style.strokeDashoffset = offset;
+        }
+
+        function startMeasurement() {
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('measurement-screen').classList.remove('hidden');
+
+            startTime = Date.now();
+            timerInterval = setInterval(updateTimer, 1000);
+
+            // Initialize PPG Monitor in headless mode
+            ppg = new PPGMonitor(null, {
+                ui: { enabled: false },
+
+                onReady: () => {
+                    console.log('PPG Monitor ready');
+                },
+
+                onQualityUpdate: (metrics) => {
+                    // Update heart rate
+                    document.getElementById('heart-rate').textContent =
+                        metrics.heartRate > 0 ? Math.round(metrics.heartRate) : '--';
+
+                    // Update additional metrics
+                    document.getElementById('snr-value').textContent =
+                        metrics.snr_dB.toFixed(1) + ' dB';
+                    document.getElementById('pi-value').textContent =
+                        metrics.perfusionIndex.toFixed(1) + '%';
+                    document.getElementById('ibi-value').textContent =
+                        Math.round(metrics.ibi) + ' ms';
+
+                    // Update instruction text
+                    document.getElementById('instruction-text').textContent =
+                        metrics.guidanceMessage;
+
+                    // Update finger circle color based on quality
+                    const circle = document.getElementById('finger-circle');
+                    circle.className = 'finger-circle ' + metrics.qualityStatus.toLowerCase();
+                },
+
+                onSignalUpdate: (signal) => {
+                    // Add signal value to buffer
+                    ppgSignalBuffer.push(signal.value);
+                    if (ppgSignalBuffer.length > MAX_SIGNAL_POINTS) {
+                        ppgSignalBuffer.shift();
+                    }
+
+                    // Draw waveform
+                    drawPPGWaveform();
+                },
+
+                onError: (error) => {
+                    alert('Error: ' + error.message + '\n\nPlease ensure:\n1. Camera permissions are granted\n2. You are using HTTPS or localhost\n3. Your device has a working camera');
+                    cancelMeasurement();
+                }
+            });
+
+            ppg.start().catch(err => {
+                console.error('Failed to start:', err);
+                cancelMeasurement();
+            });
+        }
+
+        function cancelMeasurement() {
+            if (ppg) {
+                ppg.stop();
+                ppg.destroy();
+                ppg = null;
+            }
+
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+
+            ppgSignalBuffer = [];
+
+            document.getElementById('measurement-screen').classList.add('hidden');
+            document.getElementById('start-screen').classList.remove('hidden');
+
+            // Reset timer display
+            document.getElementById('timer-time').textContent = '0:00';
+            document.getElementById('timer-ring-progress').style.strokeDashoffset = '565.48';
+        }
     </script>
 </body>
 </html>
