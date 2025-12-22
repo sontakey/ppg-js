@@ -6,7 +6,9 @@ A JavaScript library for capturing and analyzing PPG signals through camera-base
 
 ## 🌐 Live Demo
 
-Visit the demo: [https://sontakey.github.io/ppg-js/](https://sontakey.github.io/ppg-js/)
+Try the interactive demo: **[https://sontakey.github.io/ppg-js/](https://sontakey.github.io/ppg-js/)**
+
+The demo showcases real-time PPG signal monitoring with visual feedback, quality metrics, and user guidance.
 
 ## ✨ Features
 
