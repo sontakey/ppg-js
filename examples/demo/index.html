@@ -1,81 +1,154 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
-    <script src="https://d3js.org/d3.v4.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/fft.js@4.0.3/lib/fft.min.js"></script>
-    <title>Vital Signs Monitor</title>
-    <meta name="viewport" content="width=device-width">
-    <link rel="stylesheet" href="/src/main.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PPG Vitals Monitor - Demo</title>
+    <link rel="stylesheet" href="./dist/ppg-monitor.css">
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        header {
+            text-align: center;
+            padding: 20px 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-radius: 12px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        header h1 {
+            margin: 0;
+            font-size: 2em;
+        }
+        .info-section {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+        }
+        .info-section h3 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        .info-section ul {
+            line-height: 1.8;
+            color: #555;
+        }
+        .info-section ul li {
+            margin-bottom: 8px;
+        }
+        .disclaimer {
+            background: #fff3cd;
+            border: 2px solid #ffc107;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+            text-align: center;
+            font-weight: 600;
+            color: #856404;
+        }
+        footer {
+            text-align: center;
+            margin-top: 40px;
+            padding: 20px;
+            color: #666;
+            font-size: 0.9em;
+        }
+        footer a {
+            color: #667eea;
+            text-decoration: none;
+        }
+        footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
 </head>
-
 <body>
     <header>
-        <h2>Vital Signs Monitor</h2>
+        <h1>PPG Vitals Monitor</h1>
+        <p style="margin: 10px 0 0 0; opacity: 0.9;">Real-time photoplethysmography using your smartphone camera</p>
     </header>
-    <main>
-        <button id="record" , style="margin: 10px; width:100px; height:30px; font-size:15px;">Measure</button>
 
-        <!-- Camera Preview and Signal Quality Section -->
-        <div class="preview-quality-container">
-            <div class="preview-section">
-                <div class="video-container">
-                    <video id='video'></video>
-                    <div class="finger-guide">
-                        <div class="guide-circle"></div>
-                        <p class="guide-text">Cover camera with finger</p>
-                    </div>
-                </div>
-            </div>
+    <div class="info-section">
+        <h3>📋 Instructions</h3>
+        <ul>
+            <li><strong>Step 1:</strong> Click the "Measure" button below</li>
+            <li><strong>Step 2:</strong> Allow camera access when prompted</li>
+            <li><strong>Step 3:</strong> Cover <strong>both</strong> the camera and flashlight with your finger</li>
+            <li><strong>Step 4:</strong> Wait for the finger guide circle to turn <span style="color: #4CAF50;">green</span></li>
+            <li><strong>Step 5:</strong> Follow the on-screen guidance messages for optimal signal quality</li>
+            <li><strong>Tip:</strong> Press firmly but comfortably, and hold your finger still</li>
+        </ul>
+    </div>
 
-            <div class="quality-section">
-                <h3>Signal Quality</h3>
-                <div class="quality-metric">
-                    <div class="metric-label">SNR:</div>
-                    <div id="snr-value" class="metric-value">-- dB</div>
-                </div>
-                <div class="quality-metric">
-                    <div class="metric-label">Perfusion Index:</div>
-                    <div id="pi-value" class="metric-value">--%</div>
-                </div>
-                <div class="quality-metric">
-                    <div class="metric-label">Heart Rate:</div>
-                    <div id="hr-value" class="metric-value">-- BPM</div>
-                </div>
-                <div class="quality-metric">
-                    <div class="metric-label">IBI:</div>
-                    <div id="ibi-value" class="metric-value">-- ms</div>
-                </div>
-                <div id="quality-status" class="quality-status">Initializing</div>
-                <div id="guidance-message" class="guidance-message">Press Measure to start</div>
-            </div>
-        </div>
+    <div id="ppg-container"></div>
 
-        <div>
-            <canvas id="output-canvas"></canvas>
-        </div>
+    <div class="disclaimer">
+        ⚠️ <strong>For demonstration and research purposes only</strong> - Not a medical device
+    </div>
 
-        <!-- PPG Signal Chart -->
-        <div id="chart"></div>
+    <footer>
+        <p>
+            Built with <a href="https://github.com/sontakey/ppg-js" target="_blank">ppg-js</a> library
+            | <a href="https://github.com/sontakey/ppg-js" target="_blank">View on GitHub</a>
+        </p>
+        <p style="font-size: 0.85em; margin-top: 10px;">
+            Learn more about photoplethysmography and how this works in the
+            <a href="https://github.com/sontakey/ppg-js#readme" target="_blank">documentation</a>
+        </p>
+    </footer>
 
-        <!-- Technical Info (Less Prominent) -->
-        <details class="technical-info">
-            <summary>Technical Info</summary>
-            <p id="resolution"></p>
-            <p id="delay"></p>
-            <p id="frame-fps"></p>
-            <p id="frame-time"></p>
-            <p id="video-time"></p>
-            <p id="signal"></p>
-            <p id="signal-window"></p>
-        </details>
-    </main>
-    <script src="./src/real-time-line-chart.js"></script>
-    <script src="./src/main.js"></script>
-    <!-- disclaimer -->
-    <p>**For demonstration purposes only**</p>
+    <script src="./dist/ppg-monitor.min.js"></script>
+    <script>
+        // Initialize PPG Monitor with full UI
+        const ppg = new PPGMonitor('#ppg-container', {
+            ui: {
+                enabled: true,
+                showVideo: true,
+                showMetrics: true,
+                showChart: true
+            },
+            signal: {
+                windowLength: 300,      // 5 seconds at 60 FPS
+                sampleRate: 60,
+                cardiacBandLow: 0.75,   // 45 BPM
+                cardiacBandHigh: 4.0    // 240 BPM
+            },
+            camera: {
+                facingMode: 'environment'  // Back camera for finger placement
+            },
+            onReady: () => {
+                console.log('✅ PPG Monitor ready!');
+            },
+            onQualityUpdate: (metrics) => {
+                console.log('📊 Quality Update:', {
+                    SNR: `${metrics.snr_dB.toFixed(2)} dB`,
+                    HeartRate: `${metrics.heartRate.toFixed(0)} BPM`,
+                    PerfusionIndex: `${metrics.perfusionIndex.toFixed(2)}%`,
+                    Status: metrics.qualityStatus,
+                    Guidance: metrics.guidanceMessage
+                });
+            },
+            onSignalUpdate: (signal) => {
+                // Real-time signal data available here
+                // Useful for custom processing or analysis
+            },
+            onError: (error) => {
+                console.error('❌ PPG Error:', error);
+                alert('Error: ' + error.message + '\n\nPlease make sure you:\n1. Granted camera permissions\n2. Are using HTTPS or localhost\n3. Have a working camera and flashlight');
+            }
+        });
 
+        // Log when monitoring starts
+        console.log('🚀 PPG Vitals Monitor Demo loaded');
+        console.log('💡 Click "Measure" to start monitoring');
+    </script>
 </body>
-
 </html>
