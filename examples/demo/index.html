@@ -35,7 +35,7 @@
             width: 100vw;
             background: rgba(40, 60, 90, 0.5);
             border-radius: 0;
-            padding: 40px 20px;
+            padding: 30px 20px 20px 20px;
             margin: 0;
             text-align: center;
             backdrop-filter: blur(10px);
@@ -121,11 +121,11 @@
         }
 
         .instruction-text {
-            font-size: 16px;
-            line-height: 1.5;
+            font-size: 15px;
+            line-height: 1.4;
             color: #b8c5d6;
             max-width: 400px;
-            margin: 0 auto;
+            margin: 15px auto 0 auto;
         }
 
         /* PPG Waveform Card - Standalone */
@@ -133,26 +133,27 @@
             width: 100vw;
             background: rgba(25, 40, 65, 0.7);
             border-radius: 0;
-            padding: 30px 20px;
-            margin: 20px 0 0 0;
+            padding: 20px;
+            margin: 15px 0 0 0;
             backdrop-filter: blur(10px);
         }
 
         .ppg-label {
-            font-size: 14px;
-            color: #7a8ca3;
+            font-size: 12px;
+            color: #ffffff;
             text-transform: uppercase;
             letter-spacing: 1px;
-            margin-bottom: 15px;
+            margin-bottom: 12px;
             text-align: center;
+            opacity: 0.7;
         }
 
         .ppg-chart-container {
-            height: 150px;
+            height: 120px;
             position: relative;
             background: rgba(0, 0, 0, 0.3);
             border-radius: 12px;
-            padding: 15px;
+            padding: 12px;
         }
 
         #ppg-canvas {
@@ -165,27 +166,31 @@
             width: 100vw;
             background: rgba(25, 40, 65, 0.7);
             border-radius: 0;
-            padding: 30px 20px;
-            margin: 20px 0 0 0;
+            padding: 20px;
+            margin: 15px 0 0 0;
             backdrop-filter: blur(10px);
         }
 
         .metrics-grid {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            gap: 15px;
+            display: flex;
+            justify-content: space-around;
+            gap: 20px;
+            flex-wrap: wrap;
         }
 
         .metric-item {
             text-align: center;
+            flex: 1;
+            min-width: 80px;
         }
 
         .metric-label {
             font-size: 11px;
-            color: #7a8ca3;
+            color: #ffffff;
             text-transform: uppercase;
             letter-spacing: 0.5px;
             margin-bottom: 8px;
+            opacity: 0.7;
         }
 
         .metric-value {
@@ -195,14 +200,18 @@
         }
 
         .metric-value.large {
-            font-size: 32px;
+            font-size: 36px;
+        }
+
+        .metric-item.hidden {
+            display: none;
         }
 
 
         .bottom-text {
-            font-size: 15px;
+            font-size: 14px;
             color: #b8c5d6;
-            margin-top: 30px;
+            margin-top: 15px;
             text-align: center;
         }
 
@@ -265,7 +274,7 @@
 
         /* Add bottom padding to prevent content from being hidden behind fixed button */
         .measurement-content {
-            padding-bottom: 100px;
+            padding-bottom: 90px;
             width: 100%;
         }
 
@@ -326,7 +335,7 @@
             <!-- Metrics Card -->
             <div class="metrics-card">
                 <div class="metrics-grid">
-                    <div class="metric-item">
+                    <div id="heart-rate-item" class="metric-item">
                         <div class="metric-label">Heart Rate</div>
                         <div id="heart-rate" class="metric-value large">--</div>
                     </div>
@@ -337,10 +346,6 @@
                     <div class="metric-item">
                         <div class="metric-label">PI</div>
                         <div id="pi-value" class="metric-value">--</div>
-                    </div>
-                    <div class="metric-item">
-                        <div class="metric-label">IBI</div>
-                        <div id="ibi-value" class="metric-value">--</div>
                     </div>
                 </div>
             </div>
@@ -469,17 +474,23 @@
                 },
 
                 onQualityUpdate: (metrics) => {
-                    // Update heart rate (larger display)
-                    const hrValue = metrics.heartRate > 0 ? Math.round(metrics.heartRate) : '--';
-                    document.getElementById('heart-rate').textContent = hrValue;
+                    // Only show heart rate when signal quality is good or excellent
+                    const hrItem = document.getElementById('heart-rate-item');
+                    const qualityStatus = metrics.qualityStatus.toLowerCase();
 
-                    // Update metrics
+                    if (qualityStatus === 'good' || qualityStatus === 'excellent') {
+                        const hrValue = metrics.heartRate > 0 ? Math.round(metrics.heartRate) : '--';
+                        document.getElementById('heart-rate').textContent = hrValue;
+                        hrItem.classList.remove('hidden');
+                    } else {
+                        hrItem.classList.add('hidden');
+                    }
+
+                    // Update metrics (always show SNR and PI)
                     document.getElementById('snr-value').textContent =
                         metrics.snr_dB.toFixed(1);
                     document.getElementById('pi-value').textContent =
                         metrics.perfusionIndex.toFixed(1) + '%';
-                    document.getElementById('ibi-value').textContent =
-                        Math.round(metrics.ibi);
 
                     // Update instruction text
                     document.getElementById('instruction-text').textContent =
