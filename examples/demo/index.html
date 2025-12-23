@@ -428,7 +428,7 @@
             timerInterval = setInterval(updateTimer, 1000);
 
             // Initialize PPG Monitor in headless mode
-            ppg = new PPGMonitor(null, {
+            ppg = new PPGMonitor.default(null, {
                 ui: { enabled: false },
 
                 onReady: () => {
