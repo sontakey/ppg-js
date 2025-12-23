@@ -30,14 +30,43 @@
 
         /* Camera Preview Section */
         .camera-section {
+            position: relative;
             width: 100%;
-            max-width: 500px;
             background: rgba(40, 60, 90, 0.5);
             border-radius: 24px;
             padding: 40px 20px;
             margin-top: 20px;
             text-align: center;
             backdrop-filter: blur(10px);
+        }
+
+        /* Timer - compact top right */
+        .timer-compact {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 8px 12px;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+        }
+
+        .timer-icon {
+            width: 20px;
+            height: 20px;
+            border: 2px solid #5fc3c9;
+            border-radius: 50%;
+            position: relative;
+        }
+
+        .timer-compact-text {
+            font-size: 16px;
+            font-weight: 600;
+            color: #ffffff;
+            font-variant-numeric: tabular-nums;
         }
 
         .finger-guide-container {
@@ -101,7 +130,6 @@
         /* Metrics Card */
         .metrics-card {
             width: 100%;
-            max-width: 500px;
             background: rgba(25, 40, 65, 0.7);
             border-radius: 24px;
             padding: 30px 20px;
@@ -129,8 +157,11 @@
         }
 
         .ppg-chart-container {
-            height: 100px;
+            height: 120px;
             position: relative;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 10px;
         }
 
         #ppg-canvas {
@@ -145,56 +176,6 @@
             line-height: 1;
         }
 
-        /* Timer Section */
-        .timer-section {
-            margin-top: 40px;
-            text-align: center;
-        }
-
-        .timer-label {
-            font-size: 14px;
-            color: #7a8ca3;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 20px;
-        }
-
-        .circular-timer {
-            position: relative;
-            width: 220px;
-            height: 220px;
-            margin: 0 auto;
-        }
-
-        .timer-ring {
-            width: 100%;
-            height: 100%;
-            transform: rotate(-90deg);
-        }
-
-        .timer-ring-bg {
-            fill: none;
-            stroke: rgba(60, 80, 110, 0.5);
-            stroke-width: 12;
-        }
-
-        .timer-ring-progress {
-            fill: none;
-            stroke: #5fc3c9;
-            stroke-width: 12;
-            stroke-linecap: round;
-            transition: stroke-dashoffset 1s linear;
-        }
-
-        .timer-time {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            font-size: 56px;
-            font-weight: 300;
-            color: #ffffff;
-        }
 
         .bottom-text {
             font-size: 15px;
@@ -211,8 +192,23 @@
             padding: 0 20px;
         }
 
+        .button-container.fixed-bottom {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(180deg, transparent 0%, rgba(15, 24, 41, 0.95) 20%);
+            backdrop-filter: blur(10px);
+            z-index: 1000;
+        }
+
         .btn {
             width: 100%;
+            max-width: 500px;
+            margin: 0 auto;
+            display: block;
             padding: 18px;
             border: none;
             border-radius: 16px;
@@ -235,11 +231,15 @@
         .btn-cancel {
             background: rgba(255, 255, 255, 0.95);
             color: #1a2942;
-            margin-top: 10px;
         }
 
         .btn-cancel:active {
             background: rgba(255, 255, 255, 0.85);
+        }
+
+        /* Add bottom padding to prevent content from being hidden behind fixed button */
+        .measurement-content {
+            padding-bottom: 100px;
         }
 
         /* Hidden state */
@@ -297,8 +297,15 @@
 
         <!-- Measurement Screen (hidden initially) -->
         <div id="measurement-screen" class="hidden">
+            <div class="measurement-content">
             <!-- Camera Preview Section -->
             <div class="camera-section">
+                <!-- Compact Timer - Top Right -->
+                <div class="timer-compact">
+                    <div class="timer-icon"></div>
+                    <div id="timer-compact-text" class="timer-compact-text">0:00</div>
+                </div>
+
                 <div class="finger-guide-container">
                     <video id="camera-preview" class="camera-preview" autoplay playsinline muted></video>
                     <div id="finger-circle" class="finger-circle poor"></div>
@@ -340,23 +347,11 @@
                 </div>
             </div>
 
-            <!-- Timer Section -->
-            <div class="timer-section">
-                <div class="timer-label">Timer</div>
-                <div class="circular-timer">
-                    <svg class="timer-ring" viewBox="0 0 200 200">
-                        <circle class="timer-ring-bg" cx="100" cy="100" r="90"/>
-                        <circle id="timer-ring-progress" class="timer-ring-progress" cx="100" cy="100" r="90"
-                                stroke-dasharray="565.48" stroke-dashoffset="0"/>
-                    </svg>
-                    <div id="timer-time" class="timer-time">0:00</div>
-                </div>
+            <div class="bottom-text">Try to relax and breathe naturally</div>
             </div>
 
-            <div class="bottom-text">Try to relax and breathe naturally</div>
-
-            <!-- Cancel Button -->
-            <div class="button-container">
+            <!-- Cancel Button - Fixed at Bottom -->
+            <div class="button-container fixed-bottom">
                 <button class="btn btn-cancel" onclick="cancelMeasurement()">Cancel</button>
             </div>
         </div>
@@ -396,16 +391,35 @@
 
             if (ppgSignalBuffer.length < 2) return;
 
+            // Auto-zoom: Find min and max values in buffer for better visibility
+            let min = Math.min(...ppgSignalBuffer);
+            let max = Math.max(...ppgSignalBuffer);
+
+            // Add padding to prevent clipping
+            const range = max - min;
+            const padding = range * 0.1;
+            min -= padding;
+            max += padding;
+
+            // Prevent division by zero
+            if (range < 0.001) {
+                min = 0;
+                max = 1;
+            }
+
             ctx.beginPath();
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#5fc3c9';
+            ctx.lineWidth = 3;
             ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
 
             const xStep = width / (MAX_SIGNAL_POINTS - 1);
 
             ppgSignalBuffer.forEach((value, index) => {
                 const x = index * xStep;
-                const y = height - (value * height);
+                // Normalize value to 0-1 range based on min/max
+                const normalized = (value - min) / (max - min);
+                const y = height - (normalized * height);
 
                 if (index === 0) {
                     ctx.moveTo(x, y);
@@ -415,6 +429,16 @@
             });
 
             ctx.stroke();
+
+            // Draw center line for reference
+            ctx.beginPath();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+            ctx.lineWidth = 1;
+            ctx.setLineDash([5, 5]);
+            ctx.moveTo(0, height / 2);
+            ctx.lineTo(width, height / 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
         }
 
         function updateTimer() {
@@ -422,15 +446,8 @@
             const minutes = Math.floor(elapsed / 60);
             const seconds = elapsed % 60;
 
-            document.getElementById('timer-time').textContent =
+            document.getElementById('timer-compact-text').textContent =
                 `${minutes}:${seconds.toString().padStart(2, '0')}`;
-
-            // Update circular progress (max 60 seconds)
-            const maxSeconds = 60;
-            const progress = Math.min(elapsed / maxSeconds, 1);
-            const circumference = 2 * Math.PI * 90;
-            const offset = circumference * (1 - progress);
-            document.getElementById('timer-ring-progress').style.strokeDashoffset = offset;
         }
 
         function startMeasurement() {
@@ -522,8 +539,7 @@
             document.getElementById('start-screen').classList.remove('hidden');
 
             // Reset timer display
-            document.getElementById('timer-time').textContent = '0:00';
-            document.getElementById('timer-ring-progress').style.strokeDashoffset = '565.48';
+            document.getElementById('timer-compact-text').textContent = '0:00';
         }
     </script>
 </body>
