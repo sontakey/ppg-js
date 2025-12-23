@@ -45,37 +45,49 @@
             width: 180px;
             height: 180px;
             margin: 0 auto 30px;
+            overflow: hidden;
+            border-radius: 50%;
+        }
+
+        .camera-preview {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
         }
 
         .finger-circle {
-            width: 180px;
-            height: 180px;
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
             border-radius: 50%;
             border: 6px solid #5fc3c9;
-            background: #8b3a3a;
+            background: transparent;
             box-shadow: 0 0 30px rgba(95, 195, 201, 0.4);
             transition: all 0.3s ease;
+            pointer-events: none;
         }
 
         .finger-circle.excellent {
-            background: #4CAF50;
             border-color: #81C784;
             box-shadow: 0 0 40px rgba(76, 175, 80, 0.6);
         }
 
         .finger-circle.good {
-            background: #8BC34A;
             border-color: #AED581;
+            box-shadow: 0 0 30px rgba(139, 195, 74, 0.5);
         }
 
         .finger-circle.fair {
-            background: #FFC107;
             border-color: #FFD54F;
+            box-shadow: 0 0 30px rgba(255, 193, 7, 0.5);
         }
 
         .finger-circle.poor {
-            background: #8b3a3a;
             border-color: #5fc3c9;
+            box-shadow: 0 0 30px rgba(95, 195, 201, 0.4);
         }
 
         .instruction-text {
@@ -288,6 +300,7 @@
             <!-- Camera Preview Section -->
             <div class="camera-section">
                 <div class="finger-guide-container">
+                    <video id="camera-preview" class="camera-preview" autoplay playsinline muted></video>
                     <div id="finger-circle" class="finger-circle poor"></div>
                 </div>
                 <div id="instruction-text" class="instruction-text">
@@ -433,6 +446,11 @@
 
                 onReady: () => {
                     console.log('PPG Monitor ready');
+
+                    // Connect camera stream to visible preview
+                    if (ppg.stream) {
+                        document.getElementById('camera-preview').srcObject = ppg.stream;
+                    }
                 },
 
                 onQualityUpdate: (metrics) => {
@@ -493,6 +511,12 @@
             }
 
             ppgSignalBuffer = [];
+
+            // Clear camera preview
+            const cameraPreview = document.getElementById('camera-preview');
+            if (cameraPreview) {
+                cameraPreview.srcObject = null;
+            }
 
             document.getElementById('measurement-screen').classList.add('hidden');
             document.getElementById('start-screen').classList.remove('hidden');
