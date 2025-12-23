@@ -17,21 +17,22 @@
             color: #ffffff;
             min-height: 100vh;
             overflow-x: hidden;
+            width: 100vw;
+            margin: 0;
         }
 
         .container {
-            max-width: 100%;
+            width: 100vw;
             min-height: 100vh;
             padding: 0;
             display: flex;
             flex-direction: column;
-            align-items: center;
         }
 
         /* Camera Preview Section */
         .camera-section {
             position: relative;
-            width: 100%;
+            width: 100vw;
             background: rgba(40, 60, 90, 0.5);
             border-radius: 0;
             padding: 40px 20px;
@@ -127,9 +128,41 @@
             margin: 0 auto;
         }
 
+        /* PPG Waveform Card - Standalone */
+        .ppg-card {
+            width: 100vw;
+            background: rgba(25, 40, 65, 0.7);
+            border-radius: 0;
+            padding: 30px 20px;
+            margin: 20px 0 0 0;
+            backdrop-filter: blur(10px);
+        }
+
+        .ppg-label {
+            font-size: 14px;
+            color: #7a8ca3;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .ppg-chart-container {
+            height: 150px;
+            position: relative;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            padding: 15px;
+        }
+
+        #ppg-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
         /* Metrics Card */
         .metrics-card {
-            width: 100%;
+            width: 100vw;
             background: rgba(25, 40, 65, 0.7);
             border-radius: 0;
             padding: 30px 20px;
@@ -139,41 +172,30 @@
 
         .metrics-grid {
             display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            align-items: center;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
         }
 
-        .metric-section {
+        .metric-item {
             text-align: center;
         }
 
         .metric-label {
-            font-size: 14px;
+            font-size: 11px;
             color: #7a8ca3;
             text-transform: uppercase;
-            letter-spacing: 1px;
-            margin-bottom: 15px;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
         }
 
-        .ppg-chart-container {
-            height: 120px;
-            position: relative;
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 12px;
-            padding: 10px;
-        }
-
-        #ppg-canvas {
-            width: 100%;
-            height: 100%;
-        }
-
-        .heart-rate-display {
-            font-size: 72px;
-            font-weight: 300;
+        .metric-value {
+            font-size: 24px;
+            font-weight: 600;
             color: #ffffff;
-            line-height: 1;
+        }
+
+        .metric-value.large {
+            font-size: 32px;
         }
 
 
@@ -261,33 +283,6 @@
             pointer-events: none;
         }
 
-        /* Additional metrics */
-        .additional-metrics {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 15px;
-            margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid rgba(122, 140, 163, 0.2);
-        }
-
-        .metric-small {
-            text-align: center;
-        }
-
-        .metric-small-label {
-            font-size: 11px;
-            color: #7a8ca3;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 5px;
-        }
-
-        .metric-small-value {
-            font-size: 18px;
-            font-weight: 600;
-            color: #ffffff;
-        }
     </style>
 </head>
 <body>
@@ -320,34 +315,32 @@
                 </div>
             </div>
 
+            <!-- PPG Waveform Card -->
+            <div class="ppg-card">
+                <div class="ppg-label">PPG</div>
+                <div class="ppg-chart-container">
+                    <canvas id="ppg-canvas"></canvas>
+                </div>
+            </div>
+
             <!-- Metrics Card -->
             <div class="metrics-card">
                 <div class="metrics-grid">
-                    <div class="metric-section">
-                        <div class="metric-label">PPG</div>
-                        <div class="ppg-chart-container">
-                            <canvas id="ppg-canvas"></canvas>
-                        </div>
-                    </div>
-                    <div class="metric-section">
+                    <div class="metric-item">
                         <div class="metric-label">Heart Rate</div>
-                        <div id="heart-rate" class="heart-rate-display">--</div>
+                        <div id="heart-rate" class="metric-value large">--</div>
                     </div>
-                </div>
-
-                <!-- Additional Metrics -->
-                <div class="additional-metrics">
-                    <div class="metric-small">
-                        <div class="metric-small-label">SNR</div>
-                        <div id="snr-value" class="metric-small-value">--</div>
+                    <div class="metric-item">
+                        <div class="metric-label">SNR</div>
+                        <div id="snr-value" class="metric-value">--</div>
                     </div>
-                    <div class="metric-small">
-                        <div class="metric-small-label">PI</div>
-                        <div id="pi-value" class="metric-small-value">--</div>
+                    <div class="metric-item">
+                        <div class="metric-label">PI</div>
+                        <div id="pi-value" class="metric-value">--</div>
                     </div>
-                    <div class="metric-small">
-                        <div class="metric-small-label">IBI</div>
-                        <div id="ibi-value" class="metric-small-value">--</div>
+                    <div class="metric-item">
+                        <div class="metric-label">IBI</div>
+                        <div id="ibi-value" class="metric-value">--</div>
                     </div>
                 </div>
             </div>
@@ -476,17 +469,17 @@
                 },
 
                 onQualityUpdate: (metrics) => {
-                    // Update heart rate
-                    document.getElementById('heart-rate').textContent =
-                        metrics.heartRate > 0 ? Math.round(metrics.heartRate) : '--';
+                    // Update heart rate (larger display)
+                    const hrValue = metrics.heartRate > 0 ? Math.round(metrics.heartRate) : '--';
+                    document.getElementById('heart-rate').textContent = hrValue;
 
-                    // Update additional metrics
+                    // Update metrics
                     document.getElementById('snr-value').textContent =
-                        metrics.snr_dB.toFixed(1) + ' dB';
+                        metrics.snr_dB.toFixed(1);
                     document.getElementById('pi-value').textContent =
                         metrics.perfusionIndex.toFixed(1) + '%';
                     document.getElementById('ibi-value').textContent =
-                        Math.round(metrics.ibi) + ' ms';
+                        Math.round(metrics.ibi);
 
                     // Update instruction text
                     document.getElementById('instruction-text').textContent =
