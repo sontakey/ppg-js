@@ -315,7 +315,7 @@ MIT License - see [LICENSE](LICENSE) file
 
 ## 👤 Author
 
-Sameer Shariff
+Sameer Sontakey
 
 ## 🤝 Contributing
 
