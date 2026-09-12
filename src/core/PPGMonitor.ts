@@ -173,128 +173,15 @@ export class PPGMonitor {
         this.uiRenderer.render(this.video, this.canvas, null);
       }
 
-      // Request camera access. First pass unlocks device labels (Safari/
-      // Chrome hide them until a permission grant exists) so we can pick
-      // the physical main/wide rear lens by label below - without this,
-      // iOS may hand out a virtual multi-camera device that silently
-      // switches lenses (wide -> ultra-wide macro) once the finger gets
-      // close, causing baseline jumps and torch loss mid-session.
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: this.options.camera
-      });
-
-      let chosenDeviceId = null;
-      let chosenLabel = null;
-      let chosenBy = 'facingMode-fallback';
-      let videoInputsMeta = [];
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        videoInputsMeta = devices
-          .filter(d => d.kind === 'videoinput')
-          .map(d => ({ deviceId: d.deviceId.slice(0, 8), label: d.label, kind: d.kind }));
-        const picked = pickBackCamera(devices);
-        if (picked) {
-          chosenDeviceId = picked.deviceId;
-          chosenLabel = picked.label;
-          chosenBy = 'label-match';
-          const initialTrack = this.stream.getVideoTracks()[0];
-          if (initialTrack.getSettings && initialTrack.getSettings().deviceId !== picked.deviceId) {
-            this.stream.getTracks().forEach(t => t.stop());
-            this.stream = await navigator.mediaDevices.getUserMedia({
-              audio: false,
-              video: {
-                deviceId: { exact: picked.deviceId },
-                width: this.options.camera.width,
-                height: this.options.camera.height,
-                frameRate: this.options.camera.frameRate
-              }
-            });
-          }
-        }
-      } catch (err) {
-        // enumerateDevices/getUserMedia retry failed - keep the original
-        // facingMode stream rather than aborting the whole session.
-        console.warn('Camera lens selection skipped:', err);
-      }
-
-
-      // Lock exposure/WB/focus and enable torch where the device supports
-      // it. Auto-exposure fighting the finger is the #1 cause of drifting
-      // signal, so we lock everything the browser will let us lock, and
-      // never assume torch exists (iOS Safari has none).
-      const track = this.stream.getVideoTracks()[0];
-      this.torchSupported = false;
-      // Exposed for the app's debug overlay / getDebugLog() readers -
-      // 'on' | 'off' | 'unsupported' | 'unknown' (unknown before the first
-      // read succeeds).
-      this.torchState = 'unknown';
-      let capabilities: any = {};
-      const advanced: any = {};
-      let constraintsApplied = false;
-      let constraintsError = null;
-      let zoomApplied = false;
-      let zoomError = null;
-      let exposureModeAvailable = false;
-      try {
-        capabilities = track.getCapabilities ? track.getCapabilities() : {};
-        this._torchCapable = !!capabilities.torch;
-        if (capabilities.torch) {
-          advanced.torch = true;
-          this.torchSupported = true;
-        } else {
-          this.torchState = 'unsupported';
-        }
-        // Real devices vary: iPhone rear cameras expose no exposureMode at
-        // all (confirmed on the phone this fix targets) - log that
-        // explicitly rather than silently no-op'ing, so a future debug log
-        // makes clear this device gives us no exposure lock, not that the
-        // lock attempt was skipped/broken.
-        exposureModeAvailable = !!(capabilities.exposureMode && capabilities.exposureMode.includes('manual'));
-        if (exposureModeAvailable) {
-          advanced.exposureMode = 'manual';
-        }
-        if (capabilities.whiteBalanceMode && capabilities.whiteBalanceMode.includes('manual')) {
-          advanced.whiteBalanceMode = 'manual';
-        }
-        if (capabilities.focusMode && capabilities.focusMode.includes('manual')) {
-          advanced.focusMode = 'manual';
-        }
-        if (Object.keys(advanced).length > 0) {
-          await track.applyConstraints({ advanced: [advanced] });
-          constraintsApplied = true;
-        }
-      } catch (err) {
-        console.warn('Could not apply camera capability constraints:', err);
-        constraintsError = String(err && err.message || err);
-      }
-
-      // Zoom in on the lens: a moderate optical/digital zoom fills more of
-      // the frame with fingertip (vs. lens + surrounding bezel), improving
-      // per-pixel signal. Applied as its own constraint call so a failure
-      // here doesn't roll back the exposure/WB/focus locks above.
-      try {
-        if (capabilities.zoom && capabilities.zoom.max >= 2) {
-          const targetZoom = Math.min(2, capabilities.zoom.max);
-          await track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
-          zoomApplied = true;
-        }
-      } catch (err) {
-        console.warn('Could not apply zoom constraint:', err);
-        zoomError = String(err && err.message || err);
-      }
-
-      // Assign stream to video
-      this.video.srcObject = this.stream;
-
-      // Wait for video to be ready
-      await new Promise<void>((resolve) => {
-        this.video.onloadedmetadata = () => {
-          const p = this.video.play();
-          if (p && p.catch) p.catch((e) => this.recorder.pushEvent({ t: performance.now(), type: 'video_play_rejected', error: String(e) }));
-          resolve();
-        };
-      });
+      const opened = await this._openCamera();
+      this.stream = opened.stream;
+      this._chosenDeviceId = opened.chosenDeviceId;
+      this.torchSupported = opened.torchSupported;
+      this.torchState = opened.torchState;
+      this._torchCapable = !!opened.capabilities.torch;
+      const { track, chosenDeviceId, chosenLabel, chosenBy, videoInputsMeta,
+        capabilities, advanced, constraintsApplied, constraintsError,
+        zoomApplied, zoomError, exposureModeAvailable } = opened;
 
       // Set canvas dimensions
       this.canvas.width = this.video.videoWidth;
@@ -352,29 +239,40 @@ export class PPGMonitor {
       // Checked once per window alongside metrics rather than every frame -
       // settings don't change fast enough to need per-frame polling, and
       // this keeps the hot path untouched.
-      this._lastTrackSettings = track.getSettings ? track.getSettings() : {};
-      track.onended = () => this.recorder.pushEvent({ t: performance.now(), type: 'track_ended' });
-      track.onmute = () => {
-        this.recorder.pushEvent({ t: performance.now(), type: 'track_muted' });
-      };
-      track.onunmute = () => {
-        this.recorder.pushEvent({ t: performance.now(), type: 'track_unmuted' });
-        // A mute/unmute cycle is exactly the kind of camera-session blip
-        // (iOS backgrounding/interruption) that silently drops torch -
-        // re-assert it the moment the track is live again.
-        this._reapplyTorchIfNeeded('track_unmute');
-      };
+      this._bindTrackHandlers(track);
 
       // Torch can be silently dropped by the OS on any camera-session
       // interruption (background/foreground, another app grabbing the
       // camera, an iOS re-exposure event) with no track-level event fired
       // for it specifically - poll every 2s while running, and eagerly on
       // page visibility return, so the flash is never left off for long
-      // once the page can see the finger again.
-      this._torchWatchInterval = setInterval(() => this._reapplyTorchIfNeeded('interval'), 2000);
+      // once the page can see the finger again. If the track itself has
+      // died (readyState 'ended') by the time the watchdog fires, no
+      // constraint re-apply can help - go straight to a full camera resume.
+      this._torchWatchInterval = setInterval(() => {
+        const liveTrack = this.stream && this.stream.getVideoTracks()[0];
+        if (liveTrack && liveTrack.readyState === 'ended') { this._resumeCamera('watchdog_ended'); return; }
+        this._reapplyTorchIfNeeded('interval');
+      }, 2000);
       this._onVisibilityChange = () => {
         this.recorder.pushEvent({ t: performance.now(), type: 'visibilitychange', visibilityState: document.visibilityState });
-        if (document.visibilityState === 'visible') this._reapplyTorchIfNeeded('visibilitychange');
+        if (document.visibilityState === 'visible') {
+          // iOS can end or (more often) mute the track while the page was
+          // hidden (screenshot, app switch) without ever firing onended -
+          // a track that's ended, or has been muted for >1s, needs a full
+          // re-acquire, not just a torch nudge.
+          const liveTrack = this.stream && this.stream.getVideoTracks()[0];
+          const mutedTooLong = this._trackMutedAt != null && (performance.now() - this._trackMutedAt) > 1000;
+          if (!liveTrack || liveTrack.readyState === 'ended' || mutedTooLong) {
+            this._resumeCamera('visibilitychange');
+          } else {
+            this._forceReapplyTorch('visibilitychange');
+          }
+        } else {
+          // Snapshot the last good red DC before the page goes hidden, as
+          // the baseline for the post-return physical torch check.
+          this._preHiddenRedMean = this._lastRedMean;
+        }
       };
       document.addEventListener('visibilitychange', this._onVisibilityChange);
       this._onPageHide = () => {
@@ -419,6 +317,329 @@ export class PPGMonitor {
         this.options.onError(error);
       }
       throw error;
+    }
+  }
+
+  /**
+   * Acquire the camera stream: two-pass getUserMedia (facingMode first to
+   * unlock device labels, then a targeted re-open by chosen deviceId),
+   * lock exposure/WB/focus/torch, apply zoom, attach to this.video and
+   * wait for loadedmetadata. Pulled out of start() so _resumeCamera() can
+   * redo exactly this after an iOS backgrounding kills/mutes the track,
+   * without duplicating the two-pass device-selection dance.
+   * @param {string} [deviceId] - re-acquire this exact device (resume path)
+   *   instead of re-running facingMode + label selection from scratch.
+   * @returns {Promise<Object>} everything start()/_resumeCamera() need to
+   *   populate this.stream/this.torchSupported/the recorder meta.
+   */
+  async _openCamera(deviceId?: string) {
+    let stream;
+    let chosenDeviceId = deviceId || null;
+    let chosenLabel = null;
+    let chosenBy = deviceId ? 'resume-same-device' : 'facingMode-fallback';
+    let videoInputsMeta = [];
+
+    if (deviceId) {
+      // Resume: go straight for the device we already know, no relabeling
+      // pass needed (labels are unlocked for the life of the permission).
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          deviceId: { exact: deviceId },
+          width: this.options.camera.width,
+          height: this.options.camera.height,
+          frameRate: this.options.camera.frameRate
+        }
+      });
+    } else {
+      // Request camera access. First pass unlocks device labels (Safari/
+      // Chrome hide them until a permission grant exists) so we can pick
+      // the physical main/wide rear lens by label below - without this,
+      // iOS may hand out a virtual multi-camera device that silently
+      // switches lenses (wide -> ultra-wide macro) once the finger gets
+      // close, causing baseline jumps and torch loss mid-session.
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: this.options.camera
+      });
+
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        videoInputsMeta = devices
+          .filter(d => d.kind === 'videoinput')
+          .map(d => ({ deviceId: d.deviceId.slice(0, 8), label: d.label, kind: d.kind }));
+        const picked = pickBackCamera(devices);
+        if (picked) {
+          chosenDeviceId = picked.deviceId;
+          chosenLabel = picked.label;
+          chosenBy = 'label-match';
+          const initialTrack = stream.getVideoTracks()[0];
+          if (initialTrack.getSettings && initialTrack.getSettings().deviceId !== picked.deviceId) {
+            stream.getTracks().forEach(t => t.stop());
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: {
+                deviceId: { exact: picked.deviceId },
+                width: this.options.camera.width,
+                height: this.options.camera.height,
+                frameRate: this.options.camera.frameRate
+              }
+            });
+          }
+        }
+      } catch (err) {
+        // enumerateDevices/getUserMedia retry failed - keep the original
+        // facingMode stream rather than aborting the whole session.
+        console.warn('Camera lens selection skipped:', err);
+      }
+    }
+
+    // Lock exposure/WB/focus and enable torch where the device supports
+    // it. Auto-exposure fighting the finger is the #1 cause of drifting
+    // signal, so we lock everything the browser will let us lock, and
+    // never assume torch exists (iOS Safari has none).
+    const track = stream.getVideoTracks()[0];
+    let torchSupported = false;
+    // Exposed for the app's debug overlay / getDebugLog() readers -
+    // 'on' | 'off' | 'unsupported' | 'unknown' (unknown before the first
+    // read succeeds).
+    let torchState = 'unknown';
+    let capabilities: any = {};
+    const advanced: any = {};
+    let constraintsApplied = false;
+    let constraintsError = null;
+    let zoomApplied = false;
+    let zoomError = null;
+    let exposureModeAvailable = false;
+    try {
+      capabilities = track.getCapabilities ? track.getCapabilities() : {};
+      if (capabilities.torch) {
+        advanced.torch = true;
+        torchSupported = true;
+      } else {
+        torchState = 'unsupported';
+      }
+      // Real devices vary: iPhone rear cameras expose no exposureMode at
+      // all (confirmed on the phone this fix targets) - log that
+      // explicitly rather than silently no-op'ing, so a future debug log
+      // makes clear this device gives us no exposure lock, not that the
+      // lock attempt was skipped/broken.
+      exposureModeAvailable = !!(capabilities.exposureMode && capabilities.exposureMode.includes('manual'));
+      if (exposureModeAvailable) {
+        advanced.exposureMode = 'manual';
+      }
+      if (capabilities.whiteBalanceMode && capabilities.whiteBalanceMode.includes('manual')) {
+        advanced.whiteBalanceMode = 'manual';
+      }
+      if (capabilities.focusMode && capabilities.focusMode.includes('manual')) {
+        advanced.focusMode = 'manual';
+      }
+      if (Object.keys(advanced).length > 0) {
+        await track.applyConstraints({ advanced: [advanced] });
+        constraintsApplied = true;
+      }
+    } catch (err) {
+      console.warn('Could not apply camera capability constraints:', err);
+      constraintsError = String(err && err.message || err);
+    }
+
+    // Zoom in on the lens: a moderate optical/digital zoom fills more of
+    // the frame with fingertip (vs. lens + surrounding bezel), improving
+    // per-pixel signal. Applied as its own constraint call so a failure
+    // here doesn't roll back the exposure/WB/focus locks above.
+    try {
+      if (capabilities.zoom && capabilities.zoom.max >= 2) {
+        const targetZoom = Math.min(2, capabilities.zoom.max);
+        await track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
+        zoomApplied = true;
+      }
+    } catch (err) {
+      console.warn('Could not apply zoom constraint:', err);
+      zoomError = String(err && err.message || err);
+    }
+
+    // Assign stream to video
+    this.video.srcObject = stream;
+
+    // Wait for video to be ready
+    await new Promise<void>((resolve) => {
+      this.video.onloadedmetadata = () => {
+        const p = this.video.play();
+        if (p && p.catch) p.catch((e) => this.recorder.pushEvent({ t: performance.now(), type: 'video_play_rejected', error: String(e) }));
+        resolve();
+      };
+    });
+
+    if (torchSupported) {
+      const after = track.getSettings ? track.getSettings() : {};
+      torchState = after.torch === true ? 'on' : 'off';
+    }
+
+    return {
+      stream, track, chosenDeviceId, chosenLabel, chosenBy, videoInputsMeta,
+      capabilities, advanced, constraintsApplied, constraintsError,
+      zoomApplied, zoomError, exposureModeAvailable, torchSupported, torchState
+    };
+  }
+
+  /**
+   * Wire the per-track lifecycle handlers (onended/onmute/onunmute) used
+   * by both start() and _resumeCamera() - kept in one place so a resume
+   * rebinds exactly the same behavior onto the new track.
+   * @param {MediaStreamTrack} track
+   */
+  _bindTrackHandlers(track) {
+    this._trackMutedAt = null;
+    track.onended = () => {
+      this.recorder.pushEvent({ t: performance.now(), type: 'track_ended' });
+      this._resumeCamera('track_onended');
+    };
+    track.onmute = () => {
+      this._trackMutedAt = performance.now();
+      this.recorder.pushEvent({ t: performance.now(), type: 'track_muted' });
+    };
+    track.onunmute = () => {
+      this._trackMutedAt = null;
+      this.recorder.pushEvent({ t: performance.now(), type: 'track_unmuted' });
+      // A mute/unmute cycle is exactly the kind of camera-session blip
+      // (iOS backgrounding/interruption) that silently drops torch - and
+      // iOS 26/Chrome has been observed lying in getSettings().torch (it
+      // reports true while the flash is physically off) right after an
+      // unmute, so force the re-apply unconditionally rather than trusting
+      // the settings read - see _forceReapplyTorch.
+      this._forceReapplyTorch('track_unmute');
+    };
+  }
+
+  /**
+   * Unconditionally re-assert {advanced:[{torch:true}]} without first
+   * checking track.getSettings().torch - unlike _reapplyTorchIfNeeded,
+   * which trusts that read. Needed because iOS 26 Chrome has been observed
+   * reporting torch:true in getSettings() for seconds after an unmute/
+   * visibility-return while the flash is physically off (real-log
+   * evidence: red DC dropped ~86 -> ~22-37 and stayed there with
+   * getSettings().torch===true on every 10s snapshot). Idempotent when
+   * torch is already lit, so calling it on every unmute/visible event is
+   * safe. Falls through to _resumeCamera() if DC doesn't recover.
+   * @param {string} trigger
+   */
+  async _forceReapplyTorch(trigger) {
+    if (!this._torchCapable || !this.stream) return;
+    const track = this.stream.getVideoTracks()[0];
+    if (!track || track.readyState !== 'live') return;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: true }] });
+      const after = track.getSettings ? track.getSettings() : {};
+      this.torchState = after.torch === true ? 'on' : 'off';
+      this.recorder.pushEvent({ t: performance.now(), type: 'torch_reapplied', trigger, ok: this.torchState === 'on', forced: true });
+    } catch (err) {
+      this.recorder.pushEvent({ t: performance.now(), type: 'torch_reapplied', trigger, ok: false, forced: true, error: String(err && err.message || err) });
+    }
+    // The re-apply call succeeding tells us nothing about whether the
+    // flash is physically lit (see doc comment) - schedule a physical
+    // check against measured red DC 2s out, same window the field bug's
+    // fixture showed the lie persisting through.
+    this._schedulePhysicalTorchCheck(trigger);
+  }
+
+  /**
+   * 2s after a forced torch re-apply, compare the currently measured red
+   * DC against the pre-event baseline: if it hasn't recovered (still down
+   * >50% or below MIN_CHANNEL_DC) while the state machine expects a lit
+   * flash (SETTLING/MEASURING), no constraint call is fixing this - the
+   * camera session itself is broken and needs a full re-open.
+   * @param {string} trigger
+   */
+  _schedulePhysicalTorchCheck(trigger) {
+    const baseline = this._preHiddenRedMean;
+    if (!this._torchCapable || !baseline) return;
+    setTimeout(() => {
+      if (!this.stream || this._resuming) return;
+      const state = this.fingerState.state;
+      if (state !== STATE.MEASURING && state !== STATE.SETTLING) return;
+      const dc = this._lastRedMean;
+      const droppedHalf = typeof dc === 'number' && dc < baseline * 0.5;
+      const belowFloor = typeof dc === 'number' && dc < MIN_CHANNEL_DC;
+      if (droppedHalf || belowFloor) {
+        this.recorder.pushEvent({ t: performance.now(), type: 'torch_physically_dark', trigger, baseline, dc });
+        this._resumeCamera('torch_physically_dark');
+      }
+    }, 2000);
+  }
+
+  /**
+   * Re-acquire the camera after an iOS backgrounding event kills or mutes
+   * the track (screenshot, app switch - see field bug this was built
+   * from): stop the dead tracks, re-open the SAME chosen device, rebind
+   * track handlers, re-apply torch, and reset the finger state machine to
+   * NO_FINGER (a resume is a new placement - stale pre-resume samples must
+   * never leak into the next MEASURING window). Debounced so overlapping
+   * triggers (e.g. watchdog + visibilitychange firing close together)
+   * only run one resume at a time.
+   * @param {string} trigger - why this resume ran, for the debug log
+   */
+  async _resumeCamera(trigger) {
+    if (this._resuming || !this.stream) return;
+    this._resuming = true;
+    this.recorder.pushEvent({ t: performance.now(), type: 'camera_resuming', trigger });
+    // "Resuming camera" surfaces through the normal onQualityUpdate/
+    // guidanceMessage path the app already reads for coaching copy.
+    this.currentMetrics.guidanceMessage = 'Resuming camera';
+    if (this.options.onQualityUpdate) this.options.onQualityUpdate(this.currentMetrics);
+
+    let ok = false;
+    let error = null;
+    try {
+      this.stream.getTracks().forEach(t => t.stop());
+      const opened = await this._openCamera(this._chosenDeviceId);
+      this.stream = opened.stream;
+      this.torchSupported = opened.torchSupported;
+      this.torchState = opened.torchState;
+      this._torchCapable = !!opened.capabilities.torch;
+      this._bindTrackHandlers(opened.track);
+
+      // Canvas/ROI dims can legitimately change across a re-open (a
+      // different concrete resolution granted) - recompute rather than
+      // assume the old geometry still matches.
+      this.canvas.width = this.video.videoWidth;
+      this.canvas.height = this.video.videoHeight;
+      const roiWidthFraction = this.options.roi.widthFraction;
+      const roiHeightFraction = this.options.roi.heightFraction;
+      this.roiSourceRect = {
+        sx: this.video.videoWidth * (1 - roiWidthFraction) / 2,
+        sy: this.video.videoHeight * (1 - roiHeightFraction) / 2,
+        sw: this.video.videoWidth * roiWidthFraction,
+        sh: this.video.videoHeight * roiHeightFraction
+      };
+
+      // A resume is a new placement: reset the finger state machine to
+      // NO_FINGER and drop the signal processor's internal state so no
+      // sample from before the interruption pollutes the next window.
+      this.fingerState = new FingerStateMachine();
+      this.signalProcessor.reset();
+      this.nFrame = 0;
+
+      if (!this.recorder.meta.resumes) this.recorder.meta.resumes = [];
+      this.recorder.meta.resumes.push({ t: performance.now(), trigger, trackSettings: opened.track.getSettings ? opened.track.getSettings() : null });
+
+      // rVFC/rAF handle is per-video-element: replacing srcObject on the
+      // same <video> (done inside _openCamera) keeps a pending
+      // requestVideoFrameCallback alive, so the frame loop does NOT need
+      // restarting here. Only the rAF fallback path can go stale (a
+      // torn-down track stalls rAF frames indefinitely) - kick it back on
+      // explicitly so browsers without rVFC don't hang silently.
+      if (!this.video.requestVideoFrameCallback && !this.animationId) {
+        this.animationId = requestAnimationFrame(() => this.computeFrame(performance.now()));
+      }
+
+      ok = true;
+    } catch (err) {
+      error = String(err && err.message || err);
+      console.error('Camera resume failed:', err);
+      if (this.options.onError) this.options.onError(err);
+    } finally {
+      this._resuming = false;
+      this.recorder.pushEvent({ t: performance.now(), type: 'camera_resumed', trigger, ok, ...(error ? { error } : {}) });
     }
   }
 
@@ -493,6 +714,10 @@ export class PPGMonitor {
       const rMean = rSum / count;
       const gMean = gSum / count;
       const bMean = bSum / count;
+      // Latest raw red DC, read by _schedulePhysicalTorchCheck to detect a
+      // torch that iOS claims is on (getSettings().torch===true) but is
+      // physically dark - see field-log evidence in that method's doc.
+      this._lastRedMean = rMean;
 
       // Invert and normalize. Camera PPG: more blood under the finger means
       // more light absorption, so raw red intensity DROPS at systole -
