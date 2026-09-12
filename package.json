@@ -13,6 +13,7 @@
     "build": "rollup -c",
     "dev": "rollup -c -w",
     "serve": "python3 -m http.server 8080",
+    "test": "node test/ppg-pipeline.test.js",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
