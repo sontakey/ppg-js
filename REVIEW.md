@@ -4,6 +4,18 @@ Reviewed the whole `src/` tree, build config, and both demo HTML pages against
 what actually makes camera PPG work. Ranked by impact on "does this produce a
 usable heart rate on a real phone."
 
+## Correction (later pass)
+
+A previous pass of this review claimed a CSV export existed. It did not —
+`grep -rni csv src examples` found nothing. There was no session export of
+any kind. Replaced with an always-on raw debug recorder
+(`src/utils/recorder.js`) + one-tap JSON export (`getDebugLog()` /
+`downloadDebugLog()` / `copyDebugLogToClipboard()` on `PPGMonitor`, "Save
+debug log" / "Copy debug log" buttons in the demo) + a Node replay tool
+(`tools/replay.js`, `npm run replay`) that runs the recorded raw samples
+through the exact same filter/peaks/IBI pipeline used live. See README.md
+"Debug Recording" section.
+
 ## Findings
 
 ### 1. [CRITICAL] `PPGMonitor.computeFrame` freezes the signal for ~8 minutes at a time

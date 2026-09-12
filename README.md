@@ -187,6 +187,32 @@ Destroy the monitor and cleanup all resources.
 ppg.destroy();
 ```
 
+#### `getDebugLog()`
+Get the raw debug log recorded so far: `{ meta, samples, events }`. Always
+recording, no toggle — safe to call whether or not the session is still
+running.
+
+```javascript
+const log = ppg.getDebugLog();
+```
+
+#### `downloadDebugLog()`
+Trigger a browser download of the debug log as JSON (`Blob` + `<a download>`).
+Works on Android Chrome and iOS Safari 13+ (iOS shows its share sheet instead
+of a direct save — that's expected). Returns the filename used.
+
+```javascript
+ppg.downloadDebugLog();
+```
+
+#### `copyDebugLogToClipboard()`
+Fallback for contexts where a file download isn't convenient: copies the
+debug log JSON to the clipboard.
+
+```javascript
+await ppg.copyDebugLogToClipboard();
+```
+
 ### Metrics Object
 
 The `metrics` object passed to `onQualityUpdate` contains:
@@ -234,6 +260,34 @@ The library uses your smartphone's camera and flashlight to capture photoplethys
    - "Press finger more firmly" → Low perfusion
    - "Hold finger still" → Motion detected
    - "Good signal - hold steady" → Optimal signal
+
+## 🩺 Debug Recording (record once, replay offline)
+
+Every session **always** records a raw debug log — no toggle, so a bad
+measurement is never lost. It captures per-frame RGB channel means, session
+metadata (camera capabilities/constraints, ROI, rVFC vs rAF, sample rate),
+and every detected peak/IBI/HR update, so an offline replay reproduces the
+exact live pipeline.
+
+**To record on your phone:**
+1. Open the demo, start a measurement, hold your finger steady for the full
+   session.
+2. Tap **"Save debug log"** (downloads `ppg-debug-<ISO timestamp>.json`; on
+   iOS this opens the share sheet — save it or AirDrop/email it out) or tap
+   **"Copy debug log"** to copy the JSON to the clipboard instead.
+3. Send the file to whoever is debugging (Slack/email/etc).
+
+**To replay it offline:**
+```bash
+npm run replay -- /path/to/ppg-debug-2024-01-01T00-00-00.json
+```
+This runs the recorded raw samples through the exact same
+filter → detect-peaks → IBI → HR/RMSSD pipeline the browser uses (imported
+directly from `src/utils`, not a reimplementation), and prints measured fps
+(mean/min/max/jitter), finger-present ratio, an HR timeline, the IBI list
+with artifact flags, RMSSD, and a comparison against the peaks recorded live
+(matched/missed/extra) — enough to tell whether a bad reading was a signal
+problem or a processing bug, without a phone in hand.
 
 ## 🌐 Browser Compatibility
 
