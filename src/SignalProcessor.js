@@ -1,5 +1,7 @@
 import { computeFFT, calculateSNRFromPSD } from './utils/fft.js';
 import { getQualityStatus, generateGuidance } from './utils/helpers.js';
+import { filtfiltBandpass } from './utils/filter.js';
+import { detectPeaks, computeIBIs, heartRateFromIBIs, rmssd } from './utils/peaks.js';
 
 /**
  * Signal Processor for PPG signal quality analysis
@@ -25,6 +27,9 @@ export class SignalProcessor {
 
     this.previousVariance = 0;
     this.qualityFrameCount = 0;
+
+    // Rolling IBI history across windows, for HR/RMSSD smoothing.
+    this.ibiHistoryMs = [];
   }
 
   /**
@@ -32,11 +37,14 @@ export class SignalProcessor {
    *
    * @param {Float32Array} rawSignal - Raw PPG signal window
    * @param {Float32Array} detrendedSignal - Detrended PPG signal window
+   * @param {number} [sampleRate] - actual measured sample rate for this
+   *   window (falls back to this.sampleRate if not given, e.g. in tests
+   *   that don't track timestamps)
    * @returns {Object} Signal quality metrics
    */
-  process(rawSignal, detrendedSignal) {
-    // Compute FFT and PSD
-    const fftResult = computeFFT(detrendedSignal, this.fftSize, this.sampleRate);
+  process(rawSignal, detrendedSignal, sampleRate = this.sampleRate) {
+    // Compute FFT and PSD (kept: coarse frequency-domain SNR/quality signal)
+    const fftResult = computeFFT(detrendedSignal, this.fftSize, sampleRate);
 
     // Calculate SNR from PSD
     const snrResult = calculateSNRFromPSD(
@@ -46,14 +54,24 @@ export class SignalProcessor {
       this.cardiacBandHigh
     );
 
-    // Calculate heart rate from peak frequency (Hz to BPM)
-    const heartRate = snrResult.peakFrequency * 60;
+    // Calculate heart rate from peak frequency (Hz to BPM) — coarse FFT estimate
+    const heartRateFFT = snrResult.peakFrequency * 60;
 
-    // Calculate IBI (Inter-Beat Interval) from heart rate
-    let ibi = 0;
-    if (heartRate > 0 && heartRate < 300) {
-      ibi = Math.round(60000 / heartRate); // Convert BPM to milliseconds
+    // Time-domain peak detection: bandpass the raw (non-detrended) signal so
+    // filter zero-phase padding effects don't compound with the linear
+    // detrend, then find systolic peaks and derive real per-beat IBI/HR/RMSSD.
+    const filtered = filtfiltBandpass(rawSignal, sampleRate, this.cardiacBandLow, this.cardiacBandHigh);
+    const peakTimes = detectPeaks(filtered, sampleRate);
+    const { ibisMs, artifactCount, totalCount } = computeIBIs(peakTimes);
+    this.ibiHistoryMs.push(...ibisMs);
+    if (this.ibiHistoryMs.length > 40) {
+      this.ibiHistoryMs = this.ibiHistoryMs.slice(-40);
     }
+
+    const heartRate = heartRateFromIBIs(this.ibiHistoryMs) || heartRateFFT;
+    const ibi = this.ibiHistoryMs.length ? Math.round(this.ibiHistoryMs[this.ibiHistoryMs.length - 1]) : 0;
+    const rmssdMs = rmssd(this.ibiHistoryMs);
+    const artifactRatio = totalCount > 0 ? artifactCount / totalCount : 0;
 
     // Calculate Perfusion Index
     const piResult = this.calculatePerfusionIndex(rawSignal, detrendedSignal);
@@ -77,6 +95,9 @@ export class SignalProcessor {
       perfusionIndex: piResult.pi,
       heartRate: Math.round(heartRate),
       ibi,
+      rmssd: rmssdMs,
+      artifactRatio,
+      sampleRate,
       signalStability: stability,
       qualityStatus,
       guidanceMessage,
@@ -84,7 +105,8 @@ export class SignalProcessor {
       // Additional debug info
       signalPower: snrResult.signalPower,
       noisePower: snrResult.noisePower,
-      peakFrequency: snrResult.peakFrequency
+      peakFrequency: snrResult.peakFrequency,
+      heartRateFFT: Math.round(heartRateFFT)
     };
   }
 
@@ -146,5 +168,6 @@ export class SignalProcessor {
   reset() {
     this.previousVariance = 0;
     this.qualityFrameCount = 0;
+    this.ibiHistoryMs = [];
   }
 }
