@@ -2,7 +2,7 @@
 // assert-based. Run with: node test/quality.test.js
 
 import assert from 'node:assert/strict';
-import { evaluateQuality } from '../src/utils/quality.js';
+import { evaluateQuality } from '../src/core/quality.js';
 
 const CLEAN = { state: 'MEASURING', acdc: 0.02, artifactRatio: 0.05, ibiCount: 20, fftAgree: true };
 

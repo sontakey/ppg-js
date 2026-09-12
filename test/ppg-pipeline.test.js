@@ -5,8 +5,8 @@
 // as a CI gate too.
 
 import assert from 'node:assert/strict';
-import { filtfiltBandpass, resampleUniform } from '../src/utils/filter.js';
-import { detectPeaks, computeIBIs, heartRateFromIBIs, rmssd } from '../src/utils/peaks.js';
+import { filtfiltBandpass, resampleUniform } from '../src/core/filter.js';
+import { detectPeaks, computeIBIs, heartRateFromIBIs, rmssd } from '../src/core/peaks.js';
 
 /**
  * Generate a synthetic camera-PPG-like signal: a fundamental + 2nd/3rd

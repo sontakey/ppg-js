@@ -7,7 +7,7 @@
 // Run with: node test/missed-beat.test.js
 
 import assert from 'node:assert/strict';
-import { computeIBIs, heartRateFromIBIs, crossCheckHeartRate } from '../src/utils/peaks.js';
+import { computeIBIs, heartRateFromIBIs, crossCheckHeartRate } from '../src/core/peaks.js';
 
 // --- 1. Warm up a stable 70bpm rhythm (0.85s IBI truncated to ~70bpm-ish),
 // then feed the exact peak sequence that previously produced a 39bpm read.

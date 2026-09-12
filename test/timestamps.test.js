@@ -5,7 +5,7 @@
 //   node test/timestamps.test.js
 
 import assert from 'node:assert/strict';
-import { DebugRecorder } from '../src/utils/recorder.js';
+import { DebugRecorder } from '../src/core/recorder.js';
 import { replay } from '../tools/replay.js';
 
 // jsdom-less environments don't have performance.now(); Node does globally.

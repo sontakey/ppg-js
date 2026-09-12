@@ -10,16 +10,16 @@
 //     or: npm run replay -- <path-to-debug.json>
 
 import { readFileSync } from 'node:fs';
-import { resampleUniform, filtfiltBandpass, filtfiltBandpassWithContext } from '../src/utils/filter.js';
+import { resampleUniform, filtfiltBandpass, filtfiltBandpassWithContext } from '../src/core/filter.js';
 import {
   detectPeaks, computeIBIs, heartRateFromIBIs, rmssd,
   crossCheckHeartRate, slewLimit
-} from '../src/utils/peaks.js';
-import { detrend } from '../src/utils/detrend.js';
-import { computeFFT, calculateSNRFromPSD } from '../src/utils/fft.js';
-import { FingerStateMachine, STATE, selectChannel } from '../src/utils/fingerState.js';
-import { sdnn as computeSdnn } from '../src/utils/hrv.js';
-import { evaluateQuality } from '../src/utils/quality.js';
+} from '../src/core/peaks.js';
+import { detrend } from '../src/core/detrend.js';
+import { computeFFT, calculateSNRFromPSD } from '../src/core/fft.js';
+import { FingerStateMachine, STATE, selectChannel } from '../src/core/fingerState.js';
+import { sdnn as computeSdnn } from '../src/core/hrv.js';
+import { evaluateQuality } from '../src/core/quality.js';
 
 const TARGET_RATE_HZ = 30; // uniform resample grid, same choice as SignalProcessor tests
 const CARDIAC_LOW_HZ = 0.75;

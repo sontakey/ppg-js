@@ -5,7 +5,7 @@
 // Run with: node test/replay.test.js
 
 import assert from 'node:assert/strict';
-import { DebugRecorder } from '../src/utils/recorder.js';
+import { DebugRecorder } from '../src/core/recorder.js';
 import { replay } from '../tools/replay.js';
 
 // --- 1. Recorder cap holds -------------------------------------------------

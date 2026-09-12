@@ -15,7 +15,7 @@ const files = readdirSync(testDir)
 for (const file of files) {
   const full = path.join(testDir, file);
   console.log(`\n--- ${file} ---`);
-  const result = spawnSync(process.execPath, [full], { stdio: 'inherit' });
+  const result = spawnSync(process.execPath, ['--import', 'tsx', full], { stdio: 'inherit' });
   if (result.status !== 0) {
     console.error(`\nFAILED: ${file}`);
     process.exit(1);

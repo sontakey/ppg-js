@@ -2,7 +2,7 @@
 // Run with: node test/camera.test.js
 
 import assert from 'node:assert/strict';
-import { pickBackCamera } from '../src/utils/camera.js';
+import { pickBackCamera } from '../src/core/camera.js';
 
 function devices(labels) {
   return labels.map((label, i) => ({ deviceId: `id${i}`, label, kind: 'videoinput' }));
