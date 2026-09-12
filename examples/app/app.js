@@ -13,6 +13,9 @@ function showScreen(name) {
 }
 
 let monitor = null;
+// Exposed for headless QA only (test/manual/headless-camera-resume.mjs) -
+// harmless in production, never read by app logic itself.
+Object.defineProperty(window, 'monitor', { get: () => monitor });
 const SETTLE_SEC = 6; // must match FingerStateMachine default (library doesn't expose it)
 const SESSION_SEC = 180; // fixed 3-minute measuring protocol
 const waveBuf = new Array(180).fill(0); // ~3s at ~60Hz, matches the demo's live strip
