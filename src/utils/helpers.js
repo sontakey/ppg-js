@@ -88,8 +88,8 @@ export function createDefaultOptions(userOptions = {}) {
       fftSize: 256            // Next power of 2 >= 300
     },
     camera: {
-      maxWidth: 1280,
-      maxHeight: 720,
+      width: { ideal: 640 },
+      height: { ideal: 480 },
       frameRate: { ideal: 60 },
       facingMode: 'environment'
     },

@@ -4,6 +4,7 @@ import { detrend } from './utils/detrend.js';
 import { windowMean } from './utils/helpers.js';
 import { createDefaultOptions, getContainerElement } from './utils/helpers.js';
 import { DebugRecorder } from './utils/recorder.js';
+import { pickBackCamera } from './utils/camera.js';
 
 /**
  * PPG Monitor - Real-time photoplethysmography signal monitoring
@@ -85,11 +86,51 @@ export class PPGMonitor {
         this.uiRenderer.render(this.video, this.canvas, null);
       }
 
-      // Request camera access
+      // Request camera access. First pass unlocks device labels (Safari/
+      // Chrome hide them until a permission grant exists) so we can pick
+      // the physical main/wide rear lens by label below - without this,
+      // iOS may hand out a virtual multi-camera device that silently
+      // switches lenses (wide -> ultra-wide macro) once the finger gets
+      // close, causing baseline jumps and torch loss mid-session.
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: false,
         video: this.options.camera
       });
+
+      let chosenDeviceId = null;
+      let chosenLabel = null;
+      let chosenBy = 'facingMode-fallback';
+      let videoInputsMeta = [];
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        videoInputsMeta = devices
+          .filter(d => d.kind === 'videoinput')
+          .map(d => ({ deviceId: d.deviceId.slice(0, 8), label: d.label, kind: d.kind }));
+        const picked = pickBackCamera(devices);
+        if (picked) {
+          chosenDeviceId = picked.deviceId;
+          chosenLabel = picked.label;
+          chosenBy = 'label-match';
+          const initialTrack = this.stream.getVideoTracks()[0];
+          if (initialTrack.getSettings && initialTrack.getSettings().deviceId !== picked.deviceId) {
+            this.stream.getTracks().forEach(t => t.stop());
+            this.stream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: {
+                deviceId: { exact: picked.deviceId },
+                width: this.options.camera.width,
+                height: this.options.camera.height,
+                frameRate: this.options.camera.frameRate
+              }
+            });
+          }
+        }
+      } catch (err) {
+        // enumerateDevices/getUserMedia retry failed - keep the original
+        // facingMode stream rather than aborting the whole session.
+        console.warn('Camera lens selection skipped:', err);
+      }
+
 
       // Lock exposure/WB/focus and enable torch where the device supports
       // it. Auto-exposure fighting the finger is the #1 cause of drifting
@@ -157,8 +198,23 @@ export class PPGMonitor {
         frameCallbackMode: usesRVFC ? 'requestVideoFrameCallback' : 'requestAnimationFrame',
         roi: { width: this.video.videoWidth, height: this.video.videoHeight, x: 0, y: 0 },
         signalOptions: this.options.signal,
-        appVersion: typeof PPG_JS_VERSION !== 'undefined' ? PPG_JS_VERSION : null
+        appVersion: typeof PPG_JS_VERSION !== 'undefined' ? PPG_JS_VERSION : null,
+        videoInputs: videoInputsMeta,
+        chosenDeviceId,
+        chosenLabel,
+        chosenBy
       });
+
+      // Watch for the browser silently switching lens/track mid-session
+      // (the exact iOS multi-cam behavior this whole change works around).
+      // Checked once per window alongside metrics rather than every frame -
+      // settings don't change fast enough to need per-frame polling, and
+      // this keeps the hot path untouched.
+      this._lastTrackSettings = track.getSettings ? track.getSettings() : {};
+      track.onended = () => this.recorder.pushEvent({ t: Date.now(), type: 'track_ended' });
+      track.onmute = () => this.recorder.pushEvent({ t: Date.now(), type: 'track_muted' });
+      track.onunmute = () => this.recorder.pushEvent({ t: Date.now(), type: 'track_unmuted' });
+
 
       // Initialize chart if UI is enabled
       if (this.uiRenderer) {
@@ -308,6 +364,25 @@ export class PPGMonitor {
           qualityStatus: this.currentMetrics.qualityStatus,
           snr_dB: this.currentMetrics.snr_dB
         });
+
+        // Detect the exact failure mode this whole change targets: iOS
+        // silently swapping the active lens/resolution mid-session.
+        const liveTrack = this.stream && this.stream.getVideoTracks()[0];
+        if (liveTrack && liveTrack.getSettings) {
+          const settings = liveTrack.getSettings();
+          const prev = this._lastTrackSettings || {};
+          const keys = ['deviceId', 'width', 'height', 'frameRate'];
+          const changed = keys.some(k => settings[k] !== prev[k]);
+          if (changed) {
+            this.recorder.pushEvent({
+              t: windowEndMs,
+              type: 'track_settings_changed',
+              from: { deviceId: (prev.deviceId || '').slice(0, 8), width: prev.width, height: prev.height, frameRate: prev.frameRate },
+              to: { deviceId: (settings.deviceId || '').slice(0, 8), width: settings.width, height: settings.height, frameRate: settings.frameRate }
+            });
+          }
+          this._lastTrackSettings = settings;
+        }
 
         // Update UI
         if (this.uiRenderer) {
