@@ -642,6 +642,13 @@ function stopSession() {
   showScreen('summary');
 }
 
+// ponytail: UA sniff; swap for a camera/torch capability probe once desktop rPPG lands.
+const isPhone = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
+if (!isPhone) {
+  const b = document.getElementById('btn-start');
+  b.disabled = true; b.textContent = 'Open on your phone';
+  document.getElementById('desktop-note').hidden = false;
+}
 document.getElementById('btn-start').addEventListener('click', startSession);
 document.getElementById('btn-cancel-placement').addEventListener('click', () => {
   if (monitor) { monitor.stop(); monitor.destroy(); monitor = null; }

@@ -436,3 +436,6 @@ h2 {
 @media (min-width: 480px) {
   .screen:not(.report-screen) { max-width: 480px; margin: 0 auto; }
 }
+
+.btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
+#desktop-note { margin-top: 12px; }
