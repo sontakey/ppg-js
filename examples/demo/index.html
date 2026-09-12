@@ -135,6 +135,27 @@
             margin: 15px auto 0 auto;
         }
 
+        .settle-progress {
+            width: 200px;
+            height: 4px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 2px;
+            margin: 10px auto 0;
+            overflow: hidden;
+        }
+        .settle-progress-bar {
+            height: 100%;
+            background: #5fc3c9;
+            width: 0%;
+            transition: width 0.3s linear;
+        }
+
+        .quality-score {
+            font-size: 13px;
+            color: #b8c5d6;
+            margin-top: 6px;
+        }
+
         /* PPG Waveform Card - Standalone */
         .ppg-card {
             width: 100%;
@@ -329,6 +350,10 @@
                 <div id="instruction-text" class="instruction-text">
                     Cover the main (wide) rear lens and the flash with your fingertip, not the whole camera cluster
                 </div>
+                <div id="settle-progress" class="settle-progress" style="display:none;">
+                    <div id="settle-progress-bar" class="settle-progress-bar"></div>
+                </div>
+                <div id="quality-score-text" class="quality-score"></div>
                 <div id="camera-label-text" class="instruction-text" style="font-size: 12px; opacity: 0.6;"></div>
             </div>
 
@@ -519,11 +544,12 @@
                 },
 
                 onQualityUpdate: (metrics) => {
-                    // Only show heart rate when signal quality is good or excellent
+                    // HR is only trustworthy while MEASURING (state machine
+                    // gates it) - hide it entirely otherwise, no stale number.
                     const hrItem = document.getElementById('heart-rate-item');
-                    const qualityStatus = metrics.qualityStatus.toLowerCase();
+                    const measuring = metrics.fingerState === 'MEASURING';
 
-                    if (qualityStatus === 'good' || qualityStatus === 'excellent') {
+                    if (measuring) {
                         const hrValue = metrics.heartRate > 0 ? Math.round(metrics.heartRate) : '--';
                         document.getElementById('heart-rate').textContent = hrValue;
                         hrItem.classList.remove('hidden');
@@ -537,13 +563,29 @@
                     document.getElementById('pi-value').textContent =
                         metrics.perfusionIndex.toFixed(1) + '%';
 
-                    // Update instruction text
+                    // Live coaching banner - one short line at a time, driven
+                    // by state + channel stats (see src/utils/coaching.js).
                     document.getElementById('instruction-text').textContent =
                         metrics.guidanceMessage;
 
+                    // Settling countdown progress bar.
+                    const progressWrap = document.getElementById('settle-progress');
+                    const progressBar = document.getElementById('settle-progress-bar');
+                    if (metrics.fingerState === 'SETTLING') {
+                        progressWrap.style.display = 'block';
+                        const pct = Math.max(0, Math.min(100, 100 - (metrics.settleRemainingSec || 0) / 8 * 100));
+                        progressBar.style.width = pct + '%';
+                    } else {
+                        progressWrap.style.display = 'none';
+                    }
+
+                    // 0-100 signal quality score while MEASURING.
+                    const scoreText = document.getElementById('quality-score-text');
+                    scoreText.textContent = measuring ? `Signal quality: ${metrics.qualityScore}/100` : '';
+
                     // Update finger circle color based on quality
                     const circle = document.getElementById('finger-circle');
-                    circle.className = 'finger-circle ' + metrics.qualityStatus.toLowerCase();
+                    circle.className = 'finger-circle ' + (measuring ? metrics.qualityStatus.toLowerCase() : 'poor');
                 },
 
                 onSignalUpdate: (signal) => {
