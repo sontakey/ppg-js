@@ -93,6 +93,13 @@ export function createDefaultOptions(userOptions = {}) {
       frameRate: { ideal: 60 },
       facingMode: 'environment'
     },
+    // Center-crop fraction of frame width/height sampled for channel means -
+    // avoids averaging in the unlit frame edges outside the fingertip pad,
+    // which is most of a 640x480 frame when only the lens is covered.
+    roi: {
+      widthFraction: 0.3,
+      heightFraction: 0.3
+    },
     onFrame: null,
     onQualityUpdate: null,
     onSignalUpdate: null,
@@ -105,6 +112,7 @@ export function createDefaultOptions(userOptions = {}) {
     ui: { ...defaults.ui, ...(userOptions.ui || {}) },
     signal: { ...defaults.signal, ...(userOptions.signal || {}) },
     camera: { ...defaults.camera, ...(userOptions.camera || {}) },
+    roi: { ...defaults.roi, ...(userOptions.roi || {}) },
     onFrame: userOptions.onFrame || defaults.onFrame,
     onQualityUpdate: userOptions.onQualityUpdate || defaults.onQualityUpdate,
     onSignalUpdate: userOptions.onSignalUpdate || defaults.onSignalUpdate,

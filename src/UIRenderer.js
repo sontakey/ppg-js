@@ -188,8 +188,11 @@ export class UIRenderer {
 
     this.elements['snr-value'].textContent = metrics.snr_dB.toFixed(1) + ' dB';
     this.elements['pi-value'].textContent = metrics.perfusionIndex.toFixed(1) + '%';
-    this.elements['hr-value'].textContent = metrics.heartRate + ' BPM';
-    this.elements['ibi-value'].textContent = metrics.ibi > 0 ? metrics.ibi + ' ms' : '-- ms';
+    // HR/IBI are only trustworthy when the strict quality gate passes (see
+    // utils/quality.js) - show a placeholder instead of a stale/noisy number.
+    const good = !!(metrics.quality && metrics.quality.good);
+    this.elements['hr-value'].textContent = good ? metrics.heartRate + ' BPM' : '-- BPM';
+    this.elements['ibi-value'].textContent = (good && metrics.ibi > 0) ? metrics.ibi + ' ms' : '-- ms';
 
     // Update quality status
     const statusElement = this.elements.qualityStatus;

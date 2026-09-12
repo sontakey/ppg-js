@@ -76,6 +76,42 @@ export function filtfiltBandpass(values, sampleRate, lowHz, highHz) {
 }
 
 /**
+ * filtfiltBandpass on a window, but warmed up using raw samples that
+ * precede it (so the forward pass's biquad reset transient - a real
+ * artifact confirmed on-camera-PPG logs where every 5s window boundary
+ * spuriously rejects the first 1-2 IBIs after it - lands in the discarded
+ * context instead of the reported window). No future samples are used
+ * (causal), so this works the same live (streaming) as offline (replay).
+ * @param {Array|Float32Array} contextValues - raw samples immediately before `values` (may be empty)
+ * @param {Array|Float32Array} values - the window to actually filter
+ * @param {number} sampleRate
+ * @param {number} lowHz
+ * @param {number} highHz
+ * @returns {Float64Array} filtered `values`, same length as `values`
+ */
+export function filtfiltBandpassWithContext(contextValues, values, sampleRate, lowHz, highHz) {
+  const n = values.length;
+  // Mirror-pad the right edge with the window's own tail (~1s) so the
+  // backward pass's biquad reset transient - the same artifact the left
+  // context exists to absorb - lands in the padding instead of shifting
+  // peaks near the window end. Padding is derived only from `values`
+  // itself (no future samples), so this stays causal/live-safe.
+  const padLen = Math.min(n - 1, Math.round(sampleRate * 1));
+  const rightPad = new Float64Array(padLen);
+  for (let i = 0; i < padLen; i++) rightPad[i] = values[n - 2 - i];
+
+  const hasContext = contextValues && contextValues.length > 0;
+  const leftLen = hasContext ? contextValues.length : 0;
+  const extended = new Float64Array(leftLen + n + padLen);
+  if (hasContext) extended.set(contextValues, 0);
+  extended.set(values, leftLen);
+  extended.set(rightPad, leftLen + n);
+
+  const filtered = filtfiltBandpass(extended, sampleRate, lowHz, highHz);
+  return filtered.slice(leftLen, leftLen + n);
+}
+
+/**
  * Resample irregular (timestamp, value) samples onto a uniform time grid
  * via linear interpolation. Camera frame delivery is never perfectly
  * periodic, so filtering/peak-timing should happen on a uniform grid.

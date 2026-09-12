@@ -5,6 +5,29 @@ import { windowMean } from './utils/helpers.js';
 import { createDefaultOptions, getContainerElement } from './utils/helpers.js';
 import { DebugRecorder } from './utils/recorder.js';
 import { pickBackCamera } from './utils/camera.js';
+import { FingerStateMachine, STATE, selectChannel } from './utils/fingerState.js';
+import { coachingMessage, qualityScore } from './utils/coaching.js';
+
+// Small offscreen canvas the frame is downscaled into before getImageData -
+// 64x48 is plenty for a channel-mean ROI and is far cheaper per frame than
+// reading a full 640x480 buffer every tick.
+const ROI_CANVAS_WIDTH = 64;
+const ROI_CANVAS_HEIGHT = 48;
+// Minimum DC (mean channel value) for a channel to be eligible for AC/DC-
+// ratio channel selection - a near-dark channel (e.g. green under a well-
+// covered lens, DC ~13-19/255) inflates its AC/DC ratio via quantization
+// noise, not real pulsatile signal (see real-log evidence).
+const MIN_CHANNEL_DC = 40;
+
+/** Peak-to-peak (max - min) of a typed array - cheap proxy for AC amplitude. */
+function peakToPeak(arr) {
+  let min = Infinity, max = -Infinity;
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i] < min) min = arr[i];
+    if (arr[i] > max) max = arr[i];
+  }
+  return max - min;
+}
 
 /**
  * PPG Monitor - Real-time photoplethysmography signal monitoring
@@ -32,12 +55,19 @@ export class PPGMonitor {
     this.video = null;
     this.canvas = null;
     this.ctx = null;
+    // Small downscaled ROI canvas - reused every frame instead of the
+    // full-resolution `canvas` (still used to feed the video frame in).
+    this.roiCanvas = null;
+    this.roiCtx = null;
     this.stream = null;
     this.animationId = null;
 
     // Signal buffers
     this.acdc = new Float32Array(this.options.signal.windowLength).fill(0.5);
     this.ac = new Float32Array(this.options.signal.windowLength).fill(0.5);
+    // Per-window red/green raw means, for AC/DC-based channel selection.
+    this.redBuf = new Float32Array(this.options.signal.windowLength).fill(128);
+    this.greenBuf = new Float32Array(this.options.signal.windowLength).fill(128);
     // Wall-clock timestamp (seconds) per sample, used to compute the real
     // capture rate instead of assuming a fixed FPS.
     this.frameTimestamps = new Float64Array(this.options.signal.windowLength);
@@ -50,6 +80,18 @@ export class PPGMonitor {
     this.acFrame = 0.008;
     this.acWindow = 0.008;
 
+    // NO_FINGER/SETTLING/MEASURING gate - see utils/fingerState.js. HR/IBI/
+    // RMSSD are only trustworthy (and only computed) while MEASURING.
+    this.fingerState = new FingerStateMachine();
+    this.selectedChannel = 'red';
+    this.lastAcDcRatio = 0;
+
+    // Session-long IBI tachogram (all candidates, valid + rejected - see
+    // utils/peaks.js computeIBIs) and per-window good/HR/RMSSD/SDNN log,
+    // for the demo's live plot and the Stop-time session summary.
+    this.tachogram = [];
+    this.sessionWindows = [];
+
     // Current metrics
     this.currentMetrics = {
       snr_dB: 0,
@@ -57,7 +99,10 @@ export class PPGMonitor {
       heartRate: 0,
       ibi: 0,
       qualityStatus: "Initializing",
-      guidanceMessage: this.options.ui.enabled ? "Press Measure to start" : "Call start() to begin"
+      guidanceMessage: this.options.ui.enabled ? "Press Measure to start" : "Call start() to begin",
+      fingerState: STATE.NO_FINGER,
+      qualityScore: 0,
+      selectedChannel: 'red'
     };
 
     // Bind methods
@@ -142,13 +187,22 @@ export class PPGMonitor {
       const advanced = {};
       let constraintsApplied = false;
       let constraintsError = null;
+      let zoomApplied = false;
+      let zoomError = null;
+      let exposureModeAvailable = false;
       try {
         capabilities = track.getCapabilities ? track.getCapabilities() : {};
         if (capabilities.torch) {
           advanced.torch = true;
           this.torchSupported = true;
         }
-        if (capabilities.exposureMode && capabilities.exposureMode.includes('manual')) {
+        // Real devices vary: iPhone rear cameras expose no exposureMode at
+        // all (confirmed on the phone this fix targets) - log that
+        // explicitly rather than silently no-op'ing, so a future debug log
+        // makes clear this device gives us no exposure lock, not that the
+        // lock attempt was skipped/broken.
+        exposureModeAvailable = !!(capabilities.exposureMode && capabilities.exposureMode.includes('manual'));
+        if (exposureModeAvailable) {
           advanced.exposureMode = 'manual';
         }
         if (capabilities.whiteBalanceMode && capabilities.whiteBalanceMode.includes('manual')) {
@@ -166,6 +220,21 @@ export class PPGMonitor {
         constraintsError = String(err && err.message || err);
       }
 
+      // Zoom in on the lens: a moderate optical/digital zoom fills more of
+      // the frame with fingertip (vs. lens + surrounding bezel), improving
+      // per-pixel signal. Applied as its own constraint call so a failure
+      // here doesn't roll back the exposure/WB/focus locks above.
+      try {
+        if (capabilities.zoom && capabilities.zoom.max >= 2) {
+          const targetZoom = Math.min(2, capabilities.zoom.max);
+          await track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
+          zoomApplied = true;
+        }
+      } catch (err) {
+        console.warn('Could not apply zoom constraint:', err);
+        zoomError = String(err && err.message || err);
+      }
+
       // Assign stream to video
       this.video.srcObject = this.stream;
 
@@ -181,6 +250,24 @@ export class PPGMonitor {
       this.canvas.width = this.video.videoWidth;
       this.canvas.height = this.video.videoHeight;
 
+      // Downscaled ROI canvas: a center crop of the video is drawn scaled
+      // down into this small canvas, so getImageData reads ROI_CANVAS_WIDTH
+      // x ROI_CANVAS_HEIGHT pixels instead of the full frame - both a
+      // tighter fingertip-only region and far less per-frame work.
+      this.roiCanvas = document.createElement('canvas');
+      this.roiCanvas.width = ROI_CANVAS_WIDTH;
+      this.roiCanvas.height = ROI_CANVAS_HEIGHT;
+      this.roiCtx = this.roiCanvas.getContext('2d', { willReadFrequently: true });
+
+      const roiWidthFraction = this.options.roi.widthFraction;
+      const roiHeightFraction = this.options.roi.heightFraction;
+      this.roiSourceRect = {
+        sx: this.video.videoWidth * (1 - roiWidthFraction) / 2,
+        sy: this.video.videoHeight * (1 - roiHeightFraction) / 2,
+        sw: this.video.videoWidth * roiWidthFraction,
+        sh: this.video.videoHeight * roiHeightFraction
+      };
+
       // Initialize timing
       this.initTime = new Date();
 
@@ -194,9 +281,12 @@ export class PPGMonitor {
         constraintsRequested: advanced,
         constraintsApplied,
         constraintsError,
+        exposureModeAvailable,
+        zoomApplied,
+        zoomError,
         torchSupported: this.torchSupported,
         frameCallbackMode: usesRVFC ? 'requestVideoFrameCallback' : 'requestAnimationFrame',
-        roi: { width: this.video.videoWidth, height: this.video.videoHeight, x: 0, y: 0 },
+        roi: { widthFraction: roiWidthFraction, heightFraction: roiHeightFraction, ...this.roiSourceRect },
         signalOptions: this.options.signal,
         appVersion: typeof PPG_JS_VERSION !== 'undefined' ? PPG_JS_VERSION : null,
         videoInputs: videoInputsMeta,
@@ -204,6 +294,7 @@ export class PPGMonitor {
         chosenLabel,
         chosenBy
       });
+
 
       // Watch for the browser silently switching lens/track mid-session
       // (the exact iOS multi-cam behavior this whole change works around).
@@ -289,12 +380,13 @@ export class PPGMonitor {
     const timestampSec = now !== undefined ? now / 1000 : Date.now() / 1000;
 
     if (this.nFrame > DURATION) {
-      // Draw video frame to canvas
-      this.ctx.drawImage(this.video, 0, 0, this.video.videoWidth, this.video.videoHeight);
-      const frame = this.ctx.getImageData(0, 0, this.video.videoWidth, this.video.videoHeight);
+      // Draw a center-cropped, downscaled ROI instead of the whole frame:
+      // most of a 640x480 frame is unlit bezel once only the lens+flash are
+      // covered, and averaging it in dilutes the real fingertip signal.
+      const { sx, sy, sw, sh } = this.roiSourceRect;
+      this.roiCtx.drawImage(this.video, sx, sy, sw, sh, 0, 0, ROI_CANVAS_WIDTH, ROI_CANVAS_HEIGHT);
+      const frame = this.roiCtx.getImageData(0, 0, ROI_CANVAS_WIDTH, ROI_CANVAS_HEIGHT);
 
-      // Extract per-channel means of the ROI (the whole frame - same pixels
-      // the pipeline actually uses below).
       const count = frame.data.length / 4;
       let rSum = 0, gSum = 0, bSum = 0;
       for (let i = 0; i < count; i++) {
@@ -310,13 +402,41 @@ export class PPGMonitor {
       // more light absorption, so raw red intensity DROPS at systole -
       // inverting here makes systolic peaks maxima, matching a pulse oximeter.
       const xMean = 1 - rMean / 255;
+      // Same inversion for green, used when selectChannel picks it.
+      const gxMean = 1 - gMean / 255;
 
       // Raw debug sample - always recorded, no toggle.
       this.recorder.pushSample({ t: timestampSec * 1000, r: rMean, g: gMean, b: bMean });
 
+      // NO_FINGER/SETTLING/MEASURING gate. Runs every frame (cheap: a few
+      // comparisons + a short rolling-drift array), not just at window
+      // boundaries, so a lift is caught immediately rather than up to 5s late.
+      const sessionSec = this.initTime ? (new Date() - this.initTime) / 1000 : timestampSec;
+      const acDcForGate = this.lastAcDcRatio;
+      const { state: fingerState, changed: stateChanged, reason: stateReason } =
+        this.fingerState.update({ tSec: sessionSec, redMean: rMean, greenMean: gMean, blueMean: bMean, acDcRatio: acDcForGate });
+
+      if (stateChanged) {
+        this.recorder.pushEvent({ t: timestampSec * 1000, type: 'state_transition', state: fingerState, reason: stateReason });
+        if (fingerState === STATE.SETTLING) {
+          // A lift, a large drift, or a fresh placement all invalidate the
+          // sample buffer - reset it so stale pre-transition samples can
+          // never pollute the next MEASURING window (buffer is a ring, so
+          // without this a lift mid-window would leave old good samples
+          // mixed with new noise until the ring fully cycles).
+          this.nFrame = DURATION; // next tick starts a fresh window at slot 0 post-increment semantics below
+          this.acdc.fill(0.5);
+          this.redBuf.fill(rMean);
+          this.greenBuf.fill(gMean);
+          this.signalProcessor.reset();
+        }
+      }
+
       // Store in buffer
       const slot = this.nFrame % this.options.signal.windowLength;
-      this.acdc[slot] = xMean;
+      this.acdc[slot] = this.selectedChannel === 'green' ? gxMean : xMean;
+      this.redBuf[slot] = rMean;
+      this.greenBuf[slot] = gMean;
       this.frameTimestamps[slot] = timestampSec;
 
       // Process window every WINDOW_LENGTH frames. Always process - the
@@ -327,6 +447,24 @@ export class PPGMonitor {
         const windowNum = this.nFrame / this.options.signal.windowLength;
         this.isSignal = 1;
 
+        // Per-window AC/DC ratio for red and green, to pick the better
+        // channel for peak detection (hysteresis avoids flipping every
+        // window on a marginal difference). A channel whose DC is too low
+        // (near-dark, e.g. an uncovered/under-covered green channel) is
+        // excluded - its AC/DC ratio is quantization noise, not signal.
+        const redDc = windowMean(this.redBuf);
+        const greenDc = windowMean(this.greenBuf);
+        const redAc = peakToPeak(this.redBuf) / (redDc || 1);
+        const greenAc = peakToPeak(this.greenBuf) / (greenDc || 1);
+        const redEligible = redDc > MIN_CHANNEL_DC;
+        const greenEligible = greenDc > MIN_CHANNEL_DC;
+        const redRatio = redEligible ? redAc : 0;
+        const greenRatio = greenEligible ? greenAc : 0;
+        this.selectedChannel = (redEligible || greenEligible)
+          ? selectChannel(this.selectedChannel, redRatio, greenRatio)
+          : 'red';
+        this.lastAcDcRatio = this.selectedChannel === 'green' ? greenRatio : redRatio;
+
         // Detrend signal
         const detrendedArray = detrend(this.acdc);
         this.ac = new Float32Array(detrendedArray);
@@ -335,8 +473,67 @@ export class PPGMonitor {
         // Real measured sample rate for this window, not an assumed FPS.
         const sampleRate = this.measuredSampleRate();
 
-        // Calculate signal quality
-        this.currentMetrics = this.signalProcessor.process(this.acdc, this.ac, sampleRate);
+        // Only run HR/IBI/RMSSD/SDNN while MEASURING - the first ~15s of any
+        // session (placement + iOS re-exposure settling) produces numbers
+        // that look plausible but are noise, per the real-log evidence this
+        // whole change is built from. Strict per-window quality gating
+        // (utils/quality.js `good`) happens inside process().
+        if (fingerState === STATE.MEASURING) {
+          this.currentMetrics = this.signalProcessor.process(this.acdc, this.ac, sampleRate, {
+            fingerState,
+            acDcRatio: this.lastAcDcRatio,
+            nowSec: sessionSec
+          });
+        } else {
+          this.currentMetrics = {
+            snr_dB: 0, perfusionIndex: 0, heartRate: 0, heartRateRaw: 0,
+            ibi: 0, rmssd: 0, sdnn: 0, artifactRatio: 0, sampleRate,
+            signalStability: 0, qualityStatus: 'Initializing',
+            guidanceMessage: '', qualityFrameCount: 0,
+            quality: { state: fingerState, acdc: 0, artifactRatio: 0, ibiCount: 0, fftAgree: true, good: false, reason: fingerState === STATE.NO_FINGER ? 'No finger detected' : 'Settling' },
+            peakTimesSec: [], ibiDetails: []
+          };
+        }
+        this.currentMetrics.fingerState = fingerState;
+        this.currentMetrics.selectedChannel = this.selectedChannel;
+        this.currentMetrics.acDcRatio = this.lastAcDcRatio;
+        this.currentMetrics.settleRemainingSec = fingerState === STATE.SETTLING
+          ? Math.max(0, this.fingerState.settleSec - this.fingerState.timeInState(sessionSec))
+          : 0;
+        this.currentMetrics.qualityScore = this.currentMetrics.quality.good
+          ? qualityScore(this.lastAcDcRatio, this.currentMetrics.artifactRatio)
+          : 0;
+        this.currentMetrics.guidanceMessage = this.currentMetrics.quality.good
+          ? coachingMessage({
+              state: fingerState,
+              torchSupported: this.torchSupported,
+              redMean: rMean,
+              greenMean: gMean,
+              blueMean: bMean,
+              settleRemainingSec: this.fingerState.settleSec - this.fingerState.timeInState(sessionSec),
+              acDcRatio: this.lastAcDcRatio
+            })
+          : this.currentMetrics.quality.reason;
+
+        // Session-long tachogram + good-window accounting, for the demo's
+        // IBI plot and the Stop-time summary (getSessionSummary()). Only
+        // GOOD windows contribute HR/RMSSD/SDNN samples and accepted-beat
+        // tachogram points; rejected/missed beats are kept too (drawn as
+        // hollow/red markers by the caller) so the user can see what was
+        // thrown out even during a not-good stretch.
+        if (Array.isArray(this.currentMetrics.ibiDetails)) {
+          for (const d of this.currentMetrics.ibiDetails) {
+            this.tachogram.push({ t: sessionSec, ibiMs: d.ibiMs, valid: d.valid, reason: d.reason });
+          }
+        }
+        this.sessionWindows.push({
+          t: sessionSec,
+          good: this.currentMetrics.quality.good,
+          heartRate: this.currentMetrics.heartRate,
+          rmssd: this.currentMetrics.rmssd,
+          sdnn: this.currentMetrics.sdnn
+        });
+
 
         // Log derived events for offline/live comparison (see utils/recorder.js).
         const windowEndMs = timestampSec * 1000;
@@ -362,7 +559,11 @@ export class PPGMonitor {
           heartRate: this.currentMetrics.heartRate,
           rmssd: this.currentMetrics.rmssd,
           qualityStatus: this.currentMetrics.qualityStatus,
-          snr_dB: this.currentMetrics.snr_dB
+          snr_dB: this.currentMetrics.snr_dB,
+          fingerState,
+          selectedChannel: this.selectedChannel,
+          acDcRatio: this.lastAcDcRatio,
+          ibiFftDisagree: this.currentMetrics.ibiFftDisagree || false
         });
 
         // Detect the exact failure mode this whole change targets: iOS
@@ -400,6 +601,23 @@ export class PPGMonitor {
 
       // Get current AC value
       this.acFrame = this.ac[this.nFrame % this.options.signal.windowLength];
+
+      // Haptic tick on each accepted beat (Android Chrome; no-op elsewhere -
+      // iOS Safari has no navigator.vibrate). Approximated here as "just
+      // crossed into a new peak this frame" via the peak list from the last
+      // processed window would require frame-accurate replay of history, so
+      // instead we tick once per window when a fresh MEASURING window
+      // reports at least one accepted beat - close enough for a haptic cue
+      // and avoids re-deriving frame-level peak timing here.
+      if (
+        this.nFrame % this.options.signal.windowLength === 0 &&
+        fingerState === STATE.MEASURING &&
+        typeof navigator !== 'undefined' && navigator.vibrate &&
+        Array.isArray(this.currentMetrics.ibiDetails) &&
+        this.currentMetrics.ibiDetails.some(d => d.valid)
+      ) {
+        navigator.vibrate(10);
+      }
 
       // Update chart
       if (this.uiRenderer && this.nFrame % 10 === 0) {
@@ -549,6 +767,42 @@ export class PPGMonitor {
   async copyDebugLogToClipboard() {
     const json = JSON.stringify(this.getDebugLog());
     await navigator.clipboard.writeText(json);
+  }
+
+  /**
+   * Session-long IBI tachogram: every candidate IBI (accepted + rejected),
+   * for the demo's live tachogram plot. Rejected/missed beats included so
+   * the caller can draw hollow/red markers for what was thrown out.
+   * @returns {Array<{t:number, ibiMs:number, valid:boolean, reason:string|null}>}
+   */
+  getTachogram() {
+    return this.tachogram;
+  }
+
+  /**
+   * Session summary over GOOD windows only (see utils/quality.js) - min/
+   * median/max HR, RMSSD, SDNN, plus the fraction of session time that was
+   * good. Call any time, including after stop().
+   * @returns {Object}
+   */
+  getSessionSummary() {
+    const good = this.sessionWindows.filter(w => w.good);
+    const median = (arr) => {
+      if (!arr.length) return null;
+      const sorted = [...arr].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    };
+    const stats = (arr) => arr.length ? { min: Math.min(...arr), median: median(arr), max: Math.max(...arr) } : null;
+
+    return {
+      totalWindows: this.sessionWindows.length,
+      goodWindows: good.length,
+      goodFraction: this.sessionWindows.length ? good.length / this.sessionWindows.length : 0,
+      hr: stats(good.map(w => w.heartRate).filter(v => v > 0)),
+      rmssd: stats(good.map(w => w.rmssd).filter(v => v > 0)),
+      sdnn: stats(good.map(w => w.sdnn).filter(v => v > 0))
+    };
   }
 
   /**

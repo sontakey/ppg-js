@@ -1,7 +1,9 @@
 import { computeFFT, calculateSNRFromPSD } from './utils/fft.js';
 import { getQualityStatus, generateGuidance } from './utils/helpers.js';
 import { filtfiltBandpass } from './utils/filter.js';
-import { detectPeaks, computeIBIs, heartRateFromIBIs, rmssd } from './utils/peaks.js';
+import { detectPeaks, computeIBIs, heartRateFromIBIs, rmssd, crossCheckHeartRate, slewLimit } from './utils/peaks.js';
+import { sdnn } from './utils/hrv.js';
+import { evaluateQuality } from './utils/quality.js';
 
 /**
  * Signal Processor for PPG signal quality analysis
@@ -30,6 +32,21 @@ export class SignalProcessor {
 
     // Rolling IBI history across windows, for HR/RMSSD smoothing.
     this.ibiHistoryMs = [];
+    // Same accepted IBIs, each tagged with absolute session time, so
+    // "accepted beats in the last 60s" (quality gate ibiCount) can be
+    // computed without assuming a fixed window cadence.
+    this.ibiHistoryTimed = [];
+    // Continuous (non-overlapping-window) peak-time stream in absolute
+    // session seconds. IBIs are computed over this whole stream, not
+    // per-window, so the first/last peak of every 5s window isn't
+    // spuriously flagged for "missing" a predecessor that's actually one
+    // window back (see utils/peaks.js computeIBIs doc comment).
+    this.peakHistorySec = [];
+
+    // Slew-limited displayed heart rate (see utils/peaks.js slewLimit) -
+    // survives across windows so a single glitchy window can't jump the
+    // number the user sees by more than the cap.
+    this.displayedHeartRate = 0;
   }
 
   /**
@@ -40,9 +57,15 @@ export class SignalProcessor {
    * @param {number} [sampleRate] - actual measured sample rate for this
    *   window (falls back to this.sampleRate if not given, e.g. in tests
    *   that don't track timestamps)
+   * @param {Object} [opts]
+   * @param {string} [opts.fingerState='MEASURING'] - NO_FINGER/SETTLING/MEASURING
+   *   (see utils/fingerState.js); only 'MEASURING' can produce a `good` window.
+   * @param {number} [opts.nowSec] - absolute session time (seconds) at the
+   *   end of this window, for the "beats in the last 60s" quality check.
+   *   Defaults to the window's own duration if omitted (single-window tests).
    * @returns {Object} Signal quality metrics
    */
-  process(rawSignal, detrendedSignal, sampleRate = this.sampleRate) {
+  process(rawSignal, detrendedSignal, sampleRate = this.sampleRate, opts = {}) {
     // Compute FFT and PSD (kept: coarse frequency-domain SNR/quality signal)
     const fftResult = computeFFT(detrendedSignal, this.fftSize, sampleRate);
 
@@ -57,21 +80,79 @@ export class SignalProcessor {
     // Calculate heart rate from peak frequency (Hz to BPM) — coarse FFT estimate
     const heartRateFFT = snrResult.peakFrequency * 60;
 
+    // FFT prior informs the peak detector's refractory period: expected IBI
+    // from the dominant frequency, refractory = 0.6 * expected IBI (allows
+    // faster beats through while still rejecting double-counts), clamped to
+    // a sane 0.3-1.0s so a noisy/absent FFT peak can't produce a useless
+    // refractory.
+    const expectedIbiSec = heartRateFFT > 0 ? 60 / heartRateFFT : 0;
+    const refractorySec = expectedIbiSec > 0
+      ? Math.max(0.3, Math.min(1.0, 0.6 * expectedIbiSec))
+      : 0.3;
+
     // Time-domain peak detection: bandpass the raw (non-detrended) signal so
     // filter zero-phase padding effects don't compound with the linear
     // detrend, then find systolic peaks and derive real per-beat IBI/HR/RMSSD.
     const filtered = filtfiltBandpass(rawSignal, sampleRate, this.cardiacBandLow, this.cardiacBandHigh);
-    const peakTimes = detectPeaks(filtered, sampleRate);
-    const { ibisMs, artifactCount, totalCount, details: ibiDetails } = computeIBIs(peakTimes);
-    this.ibiHistoryMs.push(...ibisMs);
-    if (this.ibiHistoryMs.length > 40) {
-      this.ibiHistoryMs = this.ibiHistoryMs.slice(-40);
-    }
+    const windowDurationSec = rawSignal.length / sampleRate;
+    const nowSec = opts.nowSec ?? windowDurationSec;
+    const windowStartSec = nowSec - windowDurationSec;
+    const peakTimes = detectPeaks(filtered, sampleRate, refractorySec);
+    const absolutePeakTimes = peakTimes.map(t => windowStartSec + t);
 
-    const heartRate = heartRateFromIBIs(this.ibiHistoryMs) || heartRateFFT;
+    // Windows are contiguous/non-overlapping (caller advances nowSec by
+    // windowDurationSec each call), so appending is safe without dedupe
+    // beyond "later than the last one we have".
+    for (const t of absolutePeakTimes) {
+      if (!this.peakHistorySec.length || t > this.peakHistorySec[this.peakHistorySec.length - 1]) {
+        this.peakHistorySec.push(t);
+      }
+    }
+    // Keep a little more than 60s so computeIBIs' rolling-median rejection
+    // has history at the start of the retained window too.
+    this.peakHistorySec = this.peakHistorySec.filter(t => nowSec - t <= 70);
+
+    const continuous = computeIBIs(this.peakHistorySec);
+    const ibiDetails = continuous.details.filter(d => d.peakTimeSec >= windowStartSec);
+    this.ibiHistoryMs = continuous.ibisMs.slice(-40);
+    this.ibiHistoryTimed = continuous.details
+      .filter(d => d.valid && nowSec - d.peakTimeSec <= 60)
+      .map(d => ({ ms: d.ibiMs, t: d.peakTimeSec }));
+
+    const last60sDetails = continuous.details.filter(d => nowSec - d.peakTimeSec <= 60);
+    const artifactCount = last60sDetails.filter(d => !d.valid).length;
+    const totalCount = last60sDetails.length;
+
+    const heartRateIBI = heartRateFromIBIs(this.ibiHistoryMs);
+    // Cross-check the IBI-median HR against the independent FFT estimate -
+    // catches a run of missed beats that computeIBIs' own median-based
+    // rejection can't see because the median has already drifted with them
+    // (see utils/peaks.js crossCheckHeartRate doc comment).
+    const { heartRate: crossCheckedHr, source: heartRateSource, disagree: ibiFftDisagree } =
+      crossCheckHeartRate(heartRateIBI, heartRateFFT);
+    const heartRate = crossCheckedHr || heartRateFFT;
+
+    // Slew-limit what's actually displayed so one glitchy window can't jump
+    // the number by more than 8bpm; callers that want the raw value use
+    // `heartRate` above (also returned) while `heartRate` returned to the
+    // UI is the slewed one - see displayedHeartRate below.
+    this.displayedHeartRate = slewLimit(this.displayedHeartRate, heartRate);
+
     const ibi = this.ibiHistoryMs.length ? Math.round(this.ibiHistoryMs[this.ibiHistoryMs.length - 1]) : 0;
     const rmssdMs = rmssd(this.ibiHistoryMs);
+    const sdnnMs = sdnn(this.ibiHistoryTimed.map(e => e.ms));
     const artifactRatio = totalCount > 0 ? artifactCount / totalCount : 0;
+
+    // Strict per-window quality gate (see utils/quality.js) - HR/RMSSD/SDNN
+    // and tachogram points are only trustworthy when `good` is true.
+    const fingerState = opts.fingerState || 'MEASURING';
+    const quality = evaluateQuality({
+      state: fingerState,
+      acdc: opts.acDcRatio ?? 0,
+      artifactRatio,
+      ibiCount: this.ibiHistoryTimed.length,
+      fftAgree: !ibiFftDisagree
+    });
 
     // Calculate Perfusion Index
     const piResult = this.calculatePerfusionIndex(rawSignal, detrendedSignal);
@@ -93,15 +174,20 @@ export class SignalProcessor {
     return {
       snr_dB: snrResult.snr_dB,
       perfusionIndex: piResult.pi,
-      heartRate: Math.round(heartRate),
+      heartRate: quality.good ? Math.round(this.displayedHeartRate) : 0,
+      heartRateRaw: Math.round(heartRate),
+      heartRateSource,
+      ibiFftDisagree,
       ibi,
-      rmssd: rmssdMs,
+      rmssd: quality.good ? rmssdMs : 0,
+      sdnn: quality.good ? sdnnMs : 0,
       artifactRatio,
       sampleRate,
       signalStability: stability,
       qualityStatus,
       guidanceMessage,
       qualityFrameCount: this.qualityFrameCount,
+      quality,
       // Additional debug info
       signalPower: snrResult.signalPower,
       noisePower: snrResult.noisePower,
@@ -174,5 +260,8 @@ export class SignalProcessor {
     this.previousVariance = 0;
     this.qualityFrameCount = 0;
     this.ibiHistoryMs = [];
+    this.ibiHistoryTimed = [];
+    this.peakHistorySec = [];
+    this.displayedHeartRate = 0;
   }
 }
