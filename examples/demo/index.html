@@ -398,8 +398,9 @@
     <!-- Hidden video element for camera -->
     <video id="video" autoplay playsinline></video>
 
-    <script src="./dist/ppg-monitor.min.js"></script>
+    <script src="./dist/ppg.global.js"></script>
     <script>
+        const PPGMonitor = PPG.PPGMonitor;
         let ppg = null;
         let startTime = null;
         let timerInterval = null;
@@ -515,7 +516,7 @@
             timerInterval = setInterval(updateTimer, 1000);
 
             // Initialize PPG Monitor in headless mode
-            ppg = new PPGMonitor.default(null, {
+            ppg = new PPGMonitor(null, {
                 ui: { enabled: false },
 
                 onReady: (info) => {
