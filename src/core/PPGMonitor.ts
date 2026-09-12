@@ -926,7 +926,7 @@ export class PPGMonitor {
    */
   downloadDebugLog() {
     const json = JSON.stringify(this.getDebugLog(), null, 2);
-    const filename = `ppg-debug-${new Date().toISOString()}.json`;
+    const filename = `hrv-spot-check-${new Date().toISOString()}.json`;
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
