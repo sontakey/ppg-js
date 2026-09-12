@@ -1,5 +1,5 @@
 {
-  "name": "ppg-js",
+  "name": "@sontakey/ppg-js",
   "version": "0.2.0",
   "description": "Camera-based PPG in the browser: heart rate, IBI and HRV from a fingertip on a phone camera. Zero dependencies.",
   "type": "module",
@@ -49,7 +49,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/sontakey/ppg-js.git"
+    "url": "git+https://github.com/sontakey/ppg-js.git"
   },
   "devDependencies": {
     "tsup": "^8.5.1",

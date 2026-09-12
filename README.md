@@ -3,8 +3,8 @@
 Real-time heart rate and HRV from a phone camera, in the browser.
 
 [![CI](https://github.com/sontakey/ppg-js/actions/workflows/test.yml/badge.svg)](https://github.com/sontakey/ppg-js/actions/workflows/test.yml)
-[![npm version](https://img.shields.io/npm/v/ppg-js.svg)](https://www.npmjs.com/package/ppg-js)
-[![bundle size](https://img.shields.io/bundlephobia/minzip/ppg-js)](https://bundlephobia.com/package/ppg-js)
+[![npm version](https://img.shields.io/npm/v/%40sontakey%2Fppg-js.svg)](https://www.npmjs.com/package/@sontakey/ppg-js)
+[![bundle size](https://img.shields.io/bundlephobia/minzip/@sontakey/ppg-js)](https://bundlephobia.com/package/@sontakey/ppg-js)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 `ppg-js` uses the camera and (where available) the flash to capture a
@@ -57,13 +57,13 @@ Needs a real camera and HTTPS — open it on a phone.
 ### Install
 
 ```bash
-npm install ppg-js
+npm install @sontakey/ppg-js
 ```
 
 ### CDN
 
 ```html
-<script src="https://unpkg.com/ppg-js/dist/index.global.js"></script>
+<script src="https://unpkg.com/@sontakey/ppg-js/dist/index.global.js"></script>
 <script>
   const monitor = new PPG.PPGMonitor(null, { ui: { enabled: false }, onQualityUpdate: console.log });
 </script>
@@ -74,7 +74,7 @@ The CDN build exposes a global `PPG` (IIFE). The core injects no CSS; the demo a
 ### Example
 
 ```javascript
-import PPGMonitor from 'ppg-js';
+import PPGMonitor from '@sontakey/ppg-js';
 
 const ppg = new PPGMonitor('#container', {
   onReady: ({ torchSupported }) => {
