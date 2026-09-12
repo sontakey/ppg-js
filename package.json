@@ -1,20 +1,38 @@
 {
   "name": "ppg-js",
-  "version": "1.0.0",
+  "version": "0.2.0-alpha",
   "description": "Real-time PPG signal monitoring with camera-based photoplethysmography",
-  "main": "dist/ppg-monitor.js",
-  "module": "dist/ppg-monitor.esm.js",
-  "browser": "dist/ppg-monitor.min.js",
-  "style": "dist/ppg-monitor.css",
+  "type": "module",
+  "main": "dist/index.cjs",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "browser": "dist/index.global.js",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./hrv": {
+      "types": "./dist/hrv/index.d.ts",
+      "import": "./dist/hrv/index.js",
+      "require": "./dist/hrv/index.cjs"
+    }
+  },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "rollup -c",
-    "dev": "rollup -c -w",
+    "build": "tsup",
+    "postbuild": "mkdir -p examples/demo/dist && cp dist/index.global.js examples/demo/dist/ppg.global.js",
+    "dev": "tsup --watch",
     "serve": "python3 -m http.server 8080",
     "test": "node test/run-all.js",
-    "replay": "node tools/replay.js",
+    "replay": "tsx tools/replay.js",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -33,15 +51,9 @@
     "type": "git",
     "url": "https://github.com/sontakey/ppg-js.git"
   },
-  "dependencies": {
-    "d3": "^7.8.5",
-    "fft.js": "^4.0.4"
-  },
   "devDependencies": {
-    "@rollup/plugin-commonjs": "^25.0.7",
-    "@rollup/plugin-node-resolve": "^15.2.3",
-    "@rollup/plugin-terser": "^0.4.4",
-    "rollup": "^4.9.4",
-    "rollup-plugin-postcss": "^4.0.2"
+    "tsup": "^8.5.1",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
   }
 }
