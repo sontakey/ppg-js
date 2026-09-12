@@ -363,6 +363,8 @@
             <!-- Cancel Button - Fixed at Bottom -->
             <div class="button-container fixed-bottom">
                 <button class="btn btn-cancel" onclick="cancelMeasurement()">Cancel</button>
+                <button id="save-debug-log-btn" class="btn btn-cancel" style="margin-left: 10px;" onclick="saveDebugLog()">Save debug log</button>
+                <button id="copy-debug-log-btn" class="btn btn-cancel" style="margin-left: 10px;" onclick="copyDebugLog()">Copy debug log</button>
             </div>
         </div>
     </div>
@@ -376,6 +378,7 @@
         let startTime = null;
         let timerInterval = null;
         let ppgSignalBuffer = [];
+        let lastDebugLog = null; // survives ppg.destroy() so Save works after Cancel too
         const MAX_SIGNAL_POINTS = 100;
 
         // Canvas setup for PPG waveform
@@ -557,8 +560,40 @@
             });
         }
 
+        function saveDebugLog() {
+            const log = ppg ? ppg.getDebugLog() : lastDebugLog;
+            if (!log) {
+                alert('No PPG session yet — start a measurement first.');
+                return;
+            }
+            const json = JSON.stringify(log, null, 2);
+            const filename = `ppg-debug-${new Date().toISOString()}.json`;
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            console.log('Saved debug log:', filename);
+        }
+
+        function copyDebugLog() {
+            const log = ppg ? ppg.getDebugLog() : lastDebugLog;
+            if (!log) {
+                alert('No PPG session yet — start a measurement first.');
+                return;
+            }
+            navigator.clipboard.writeText(JSON.stringify(log))
+                .then(() => alert('Debug log copied to clipboard.'))
+                .catch(err => alert('Copy failed: ' + err.message));
+        }
+
         function cancelMeasurement() {
             if (ppg) {
+                lastDebugLog = ppg.getDebugLog();
                 ppg.stop();
                 ppg.destroy();
                 ppg = null;
