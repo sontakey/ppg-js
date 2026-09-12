@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-12
+
+First npm release.
+
+- TypeScript core, zero runtime dependencies, ESM + CJS + IIFE builds with type declarations.
+- `PPG` class with typed events; `PPGMonitor` kept as a deprecated alias.
+- Fingertip pipeline: rear-lens lock, ROI center crop, red/green channel selection, amplitude-aware peak detection with parabolic refinement, missed-beat rejection, FFT/IBI cross-check, NO_FINGER/SETTLING/MEASURING gate, strict per-window `good` contract.
+- Live/replay parity: the live path warms the bandpass with the previous window and reads ring buffers chronologically; a parity test drives the real engine against two real iPhone recordings.
+- iOS: playsinline capture video, torch re-apply watchdog, `expectedDisplayTime` timestamps.
+- Always-on debug recorder with per-window instrumentation, track-settings snapshots and constraint attempts; `tools/replay.js` for offline diagnosis.
+- HRV Spot Check demo app (3-minute protocol, Kubios-style ANS/HRV report) at https://ppg-js.vercel.app.
+
 ### Added
 - iOS `requestVideoFrameCallback` timing fix: use `expectedDisplayTime`/`nowMs`
   instead of `mediaTime` (always 0 on iOS live streams), unified clock domain

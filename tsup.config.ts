@@ -12,14 +12,5 @@ export default defineConfig([
     outDir: 'dist',
     // fft.js is no longer a dependency (own radix-2 FFT); no other runtime deps.
     treeshake: true
-  },
-  {
-    entry: { index: 'src/hrv/index.ts' },
-    format: ['esm', 'cjs'],
-    dts: true,
-    sourcemap: true,
-    minify: true,
-    outDir: 'dist/hrv',
-    treeshake: true
   }
 ]);

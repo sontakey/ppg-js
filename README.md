@@ -63,17 +63,18 @@ npm install ppg-js
 ### CDN
 
 ```html
-<link rel="stylesheet" href="https://unpkg.com/ppg-js/dist/ppg-monitor.css">
-<script src="https://unpkg.com/ppg-js/dist/ppg-monitor.min.js"></script>
+<script src="https://unpkg.com/ppg-js/dist/index.global.js"></script>
+<script>
+  const monitor = new PPG.PPGMonitor(null, { ui: { enabled: false }, onQualityUpdate: console.log });
+</script>
 ```
 
-The CDN build exposes a global `PPGMonitor` (UMD/IIFE).
+The CDN build exposes a global `PPG` (IIFE). The core injects no CSS; the demo app in `examples/app/` shows a full UI built on the public API.
 
 ### Example
 
 ```javascript
 import PPGMonitor from 'ppg-js';
-import 'ppg-js/dist/ppg-monitor.css';
 
 const ppg = new PPGMonitor('#container', {
   onReady: ({ torchSupported }) => {

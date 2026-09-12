@@ -1,7 +1,7 @@
 {
   "name": "ppg-js",
-  "version": "0.2.0-alpha",
-  "description": "Real-time PPG signal monitoring with camera-based photoplethysmography",
+  "version": "0.2.0",
+  "description": "Camera-based PPG in the browser: heart rate, IBI and HRV from a fingertip on a phone camera. Zero dependencies.",
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
@@ -16,11 +16,6 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    },
-    "./hrv": {
-      "types": "./dist/hrv/index.d.ts",
-      "import": "./dist/hrv/index.js",
-      "require": "./dist/hrv/index.cjs"
     }
   },
   "files": [
@@ -43,9 +38,14 @@
     "camera",
     "signal-processing",
     "health",
-    "biometrics"
+    "biometrics",
+    "hrv",
+    "rmssd",
+    "ibi",
+    "webrtc",
+    "getusermedia"
   ],
-  "author": "Sameer Shariff",
+  "author": "Sameer Sontakey",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -55,5 +55,13 @@
     "tsup": "^8.5.1",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3"
+  },
+  "homepage": "https://github.com/sontakey/ppg-js#readme",
+  "bugs": {
+    "url": "https://github.com/sontakey/ppg-js/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   }
 }
