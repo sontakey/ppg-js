@@ -1,6 +1,6 @@
 import { computeFFT, calculateSNRFromPSD } from './fft.js';
 import { getQualityStatus, generateGuidance } from './helpers.js';
-import { filtfiltBandpass } from './filter.js';
+import { filtfiltBandpassWithContext } from './filter.js';
 import { detectPeaks, computeIBIs, heartRateFromIBIs, rmssd, crossCheckHeartRate, slewLimit } from './peaks.js';
 import { sdnn } from './hrv.js';
 import { evaluateQuality } from './quality.js';
@@ -27,6 +27,7 @@ export class SignalProcessor {
   constructor(options: any = {}) {
     this.windowLength = options.windowLength || 300;
     this.sampleRate = options.sampleRate || 60;
+    this.prevRawWindow = new Float32Array(0);
     this.cardiacBandLow = options.cardiacBandLow || 0.75;
     this.cardiacBandHigh = options.cardiacBandHigh || 4.0;
     this.fftSize = options.fftSize || 256;
@@ -97,7 +98,13 @@ export class SignalProcessor {
     // Time-domain peak detection: bandpass the raw (non-detrended) signal so
     // filter zero-phase padding effects don't compound with the linear
     // detrend, then find systolic peaks and derive real per-beat IBI/HR/RMSSD.
-    const filtered = filtfiltBandpass(rawSignal, sampleRate, this.cardiacBandLow, this.cardiacBandHigh);
+    // Warm the zero-phase filter with the previous window's raw samples,
+    // exactly like tools/replay.js does. Without this every window boundary
+    // starts the biquad from rest and the startup transient reads as a fake
+    // beat (250-340ms IBI) next to a missed one (2.4-3s IBI) - the live
+    // 'Irregular beats' signature from the 2026-09-12 iPhone log.
+    const filtered = filtfiltBandpassWithContext(this.prevRawWindow, rawSignal, sampleRate, this.cardiacBandLow, this.cardiacBandHigh);
+    this.prevRawWindow = Float32Array.from(rawSignal);
     const windowDurationSec = rawSignal.length / sampleRate;
     const nowSec = opts.nowSec ?? windowDurationSec;
     const windowStartSec = nowSec - windowDurationSec;
@@ -261,6 +268,7 @@ export class SignalProcessor {
    * Reset processor state
    */
   reset() {
+    this.prevRawWindow = new Float32Array(0);
     this.previousVariance = 0;
     this.qualityFrameCount = 0;
     this.ibiHistoryMs = [];

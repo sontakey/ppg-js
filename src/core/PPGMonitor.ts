@@ -29,6 +29,37 @@ function peakToPeak(arr) {
 }
 
 /**
+ * `redBuf`/`greenBuf`/`acdc`/`frameTimestamps` are ring buffers written at
+ * `slot = nFrame % windowLength` - reading them slot-by-slot (buf[0..N-1])
+ * is NOT chronological order once the ring has wrapped: buf[newestSlot] is
+ * the most recent sample and buf[newestSlot+1] is the OLDEST, so a raw
+ * linear read has a one-sample discontinuity right at the wrap seam (always
+ * between slot 0 and slot 1, since processing only ever happens when
+ * nFrame % windowLength === 0, i.e. newestSlot is always 0).
+ *
+ * Every consumer downstream assumes a time-ordered window: detrend() fits a
+ * linear regression against sample INDEX, and the bandpass filter is fed
+ * the raw buffer directly for peak detection - both treat that manufactured
+ * jump as real signal, and filtfilt turns a single hard discontinuity into
+ * a broadband transient that the peak detector reads as several extra
+ * beats (or drowns real ones), which is exactly the "artifactRatio
+ * 0.25-0.42, HR 0, ibi_rejected out_of_range" signature seen live while
+ * offline replay (which slices a genuinely linear array) is clean on the
+ * identical samples. Rotate to oldest-first before handing a ring buffer to
+ * anything that cares about sample order.
+ * @param {Float32Array|Float64Array} buf
+ * @param {number} newestSlot - index last written (this.nFrame % windowLength)
+ * @returns {Float32Array} same type/length, oldest sample first
+ */
+function toChronological(buf, newestSlot) {
+  const n = buf.length;
+  const out = new buf.constructor(n);
+  out.set(buf.subarray(newestSlot + 1, n), 0);
+  out.set(buf.subarray(0, newestSlot + 1), n - newestSlot - 1);
+  return out;
+}
+
+/**
  * PPG Monitor - Real-time photoplethysmography signal monitoring
  * @class
  */
@@ -526,10 +557,22 @@ export class PPGMonitor {
         // window on a marginal difference). A channel whose DC is too low
         // (near-dark, e.g. an uncovered/under-covered green channel) is
         // excluded - its AC/DC ratio is quantization noise, not signal.
-        const redDc = windowMean(this.redBuf);
-        const greenDc = windowMean(this.greenBuf);
-        const redAc = peakToPeak(this.redBuf) / (redDc || 1);
-        const greenAc = peakToPeak(this.greenBuf) / (greenDc || 1);
+        // Ring buffers are written at slot = nFrame % windowLength, which is
+        // NOT the same as chronological (oldest-first) order once the ring
+        // has wrapped - rotate before handing to anything that assumes
+        // sample order (detrend's linear fit, the bandpass filter, and the
+        // measured-sample-rate min/max scan below). See toChronological()
+        // doc comment for why skipping this manufactures a fake
+        // discontinuity every single window.
+        const newestSlot = this.nFrame % this.options.signal.windowLength;
+        const acdcChrono = toChronological(this.acdc, newestSlot);
+        const redChrono = toChronological(this.redBuf, newestSlot);
+        const greenChrono = toChronological(this.greenBuf, newestSlot);
+
+        const redDc = windowMean(redChrono);
+        const greenDc = windowMean(greenChrono);
+        const redAc = peakToPeak(redChrono) / (redDc || 1);
+        const greenAc = peakToPeak(greenChrono) / (greenDc || 1);
         const redEligible = redDc > MIN_CHANNEL_DC;
         const greenEligible = greenDc > MIN_CHANNEL_DC;
         const redRatio = redEligible ? redAc : 0;
@@ -540,11 +583,13 @@ export class PPGMonitor {
         this.lastAcDcRatio = this.selectedChannel === 'green' ? greenRatio : redRatio;
 
         // Detrend signal
-        const detrendedArray = detrend(this.acdc);
+        const detrendedArray = detrend(acdcChrono);
         this.ac = new Float32Array(detrendedArray);
         this.acWindow = windowMean(this.ac);
 
         // Real measured sample rate for this window, not an assumed FPS.
+        // (frameTimestamps' min/max scan doesn't care about ring order, so
+        // it's read directly - no chronological rotation needed here.)
         const sampleRate = this.measuredSampleRate();
 
         // Only run HR/IBI/RMSSD/SDNN while MEASURING - the first ~15s of any
@@ -553,7 +598,7 @@ export class PPGMonitor {
         // whole change is built from. Strict per-window quality gating
         // (utils/quality.js `good`) happens inside process().
         if (fingerState === STATE.MEASURING) {
-          this.currentMetrics = this.signalProcessor.process(this.acdc, this.ac, sampleRate, {
+          this.currentMetrics = this.signalProcessor.process(acdcChrono, this.ac, sampleRate, {
             fingerState,
             acDcRatio: this.lastAcDcRatio,
             nowSec: sessionSec
