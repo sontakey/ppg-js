@@ -128,6 +128,12 @@ export class PPGMonitor {
     try {
       // Create video and canvas elements
       this.video = document.createElement('video');
+      // iOS Safari refuses inline playback (and stops delivering frames)
+      // unless these are set before the stream is attached.
+      this.video.setAttribute('playsinline', '');
+      this.video.playsInline = true;
+      this.video.muted = true;
+      this.video.autoplay = true;
       this.canvas = document.createElement('canvas');
       this.ctx = this.canvas.getContext('2d');
 
@@ -246,7 +252,8 @@ export class PPGMonitor {
       // Wait for video to be ready
       await new Promise<void>((resolve) => {
         this.video.onloadedmetadata = () => {
-          this.video.play();
+          const p = this.video.play();
+          if (p && p.catch) p.catch((e) => this.recorder.pushEvent({ t: performance.now(), type: 'video_play_rejected', error: String(e) }));
           resolve();
         };
       });

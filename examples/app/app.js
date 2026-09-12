@@ -59,7 +59,7 @@ function updatePlacementScreen(metrics) {
   const remaining = metrics.settleRemainingSec || 0;
   const coachEl = document.getElementById('coach-line');
   const ring = document.getElementById('settle-ring');
-  const circumference = 2 * Math.PI * 70;
+  const circumference = 2 * Math.PI * 96;
   if (metrics.fingerState === 'SETTLING') {
     coachEl.textContent = `Hold still... ${Math.ceil(remaining)}s`;
     const frac = 1 - Math.min(1, remaining / SETTLE_SEC);
@@ -628,7 +628,10 @@ function startSession() {
     },
   });
 
-  monitor.start().catch((err) => {
+  monitor.start().then(() => {
+    const host = document.getElementById('camera-preview');
+    host.replaceChildren(monitor.video);
+  }).catch((err) => {
     console.error('start() failed', err);
     showScreen('ready');
   });

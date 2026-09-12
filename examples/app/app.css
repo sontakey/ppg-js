@@ -439,3 +439,8 @@ h2 {
 
 .btn-primary:disabled { opacity: 0.45; cursor: not-allowed; }
 #desktop-note { margin-top: 12px; }
+
+.camera-preview-wrap { position: relative; width: 180px; height: 180px; margin: 0 auto 20px; }
+#camera-preview { position: absolute; inset: 6px; border-radius: 50%; overflow: hidden; background: #0d0f14; }
+#camera-preview video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.settle-ring-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
