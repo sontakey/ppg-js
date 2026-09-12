@@ -489,12 +489,20 @@
             ppg = new PPGMonitor.default(null, {
                 ui: { enabled: false },
 
-                onReady: () => {
+                onReady: (info) => {
                     console.log('PPG Monitor ready');
 
                     // Connect camera stream to visible preview
                     if (ppg.stream) {
                         document.getElementById('camera-preview').srcObject = ppg.stream;
+                    }
+
+                    // iOS Safari (and some other browsers) don't expose a
+                    // torch API at all - tell the user to use a room light
+                    // instead of silently failing to light up the finger.
+                    if (info && !info.torchSupported) {
+                        document.getElementById('instruction-text').textContent =
+                            'No flashlight control on this browser - point your finger at a bright light or lamp instead.';
                     }
                 },
 
