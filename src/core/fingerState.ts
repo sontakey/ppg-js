@@ -71,6 +71,17 @@ export class FingerStateMachine {
     this.stateEnteredAt = 0;
     this.selectedChannel = null;
 
+    // SETTLING episode continuity: a short bounce out of SETTLING and
+    // straight back in (debounce noise, < bounceGraceSec) must not reset
+    // the settle countdown - see update() below and the app's ring UI.
+    this.bounceGraceSec = opts.bounceGraceSec ?? 0.5;
+    this._settlingEntryTSec = null;
+    this._lastLeftSettlingAt = null;
+    // Last non-null transition reason, retained across no-change frames so
+    // the app can show a persistent "SETTLING · reason" line instead of it
+    // flashing for one frame and disappearing.
+    this.lastReason = null;
+
     // DC drift is measured on a 1s-moving-average-smoothed red mean:
     // drift = |mean(last 1s) - mean(1s ending 3s ago)|. Keep 4s of raw
     // samples (native cadence) to compute both windows on demand.
@@ -93,8 +104,13 @@ export class FingerStateMachine {
     this.largeDriftStreak = 0;
   }
 
-  /** Seconds already spent in the current state (for a "hold still... Ns" countdown). */
+  /** Seconds already spent in the current state (for a "hold still... Ns" countdown).
+   * While SETTLING, uses the episode start (see update()) so a sub-500ms
+   * bounce out and back into SETTLING doesn't reset the countdown to 6. */
   timeInState(tSec) {
+    if (this.state === STATE.SETTLING && this._settlingEntryTSec != null) {
+      return Math.max(0, tSec - this._settlingEntryTSec);
+    }
     return Math.max(0, tSec - this.stateEnteredAt);
   }
 
@@ -152,10 +168,19 @@ export class FingerStateMachine {
 
     if (!present) {
       if (prevState !== STATE.NO_FINGER) reason = 'finger_lifted';
+      // A bounce out of SETTLING that returns within bounceGraceSec is
+      // debounce noise, not a real lift - keep the settle episode alive
+      // (don't clear _settlingEntryTSec) so the countdown doesn't reset.
+      if (prevState === STATE.SETTLING) this._lastLeftSettlingAt = tSec;
       this.state = STATE.NO_FINGER;
     } else if (prevState === STATE.NO_FINGER) {
       this.state = STATE.SETTLING;
       reason = 'finger_placed';
+      const bounced = this._settlingEntryTSec != null &&
+        this._lastLeftSettlingAt != null &&
+        (tSec - this._lastLeftSettlingAt) < this.bounceGraceSec;
+      if (!bounced) this._settlingEntryTSec = tSec;
+      // else: keep the prior _settlingEntryTSec - episode continues.
     } else if (prevState === STATE.SETTLING) {
       const settled = this.timeInState(tSec) >= this.settleSec;
       if (settled && drift < this.driftEnterCounts && acdcStreakOk) {
@@ -178,6 +203,19 @@ export class FingerStateMachine {
     if (changed) {
       this.stateEnteredAt = tSec;
       this.largeDriftStreak = 0;
+    }
+    if (reason) this.lastReason = reason;
+    if (changed && this.state === STATE.MEASURING) {
+      // Settling succeeded - the episode is over; the next SETTLING entry
+      // (after a future lift) must start a fresh countdown.
+      this._settlingEntryTSec = null;
+    }
+    if (changed && this.state === STATE.SETTLING && (reason === 'large_drift' || this._settlingEntryTSec == null)) {
+      // large_drift (MEASURING -> SETTLING) always starts a fresh episode;
+      // otherwise only start fresh if there's no episode already open (a
+      // finger_placed re-entry after a bounce reuses the open episode -
+      // see the `bounced` branch above, which leaves this non-null).
+      this._settlingEntryTSec = tSec;
     }
     if (changed && this.state === STATE.SETTLING) {
       // A lift, a large drift, or a fresh placement all invalidate whatever

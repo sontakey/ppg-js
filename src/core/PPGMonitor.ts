@@ -194,6 +194,10 @@ export class PPGMonitor {
       // never assume torch exists (iOS Safari has none).
       const track = this.stream.getVideoTracks()[0];
       this.torchSupported = false;
+      // Exposed for the app's debug overlay / getDebugLog() readers -
+      // 'on' | 'off' | 'unsupported' | 'unknown' (unknown before the first
+      // read succeeds).
+      this.torchState = 'unknown';
       let capabilities: any = {};
       const advanced: any = {};
       let constraintsApplied = false;
@@ -203,9 +207,12 @@ export class PPGMonitor {
       let exposureModeAvailable = false;
       try {
         capabilities = track.getCapabilities ? track.getCapabilities() : {};
+        this._torchCapable = !!capabilities.torch;
         if (capabilities.torch) {
           advanced.torch = true;
           this.torchSupported = true;
+        } else {
+          this.torchState = 'unsupported';
         }
         // Real devices vary: iPhone rear cameras expose no exposureMode at
         // all (confirmed on the phone this fix targets) - log that
@@ -288,6 +295,7 @@ export class PPGMonitor {
       this.recorder.start({
         userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
         screen: typeof screen !== 'undefined' ? { width: screen.width, height: screen.height } : null,
+        devicePixelRatio: typeof window !== 'undefined' ? window.devicePixelRatio : null,
         trackSettings: track.getSettings ? track.getSettings() : null,
         trackCapabilities: capabilities,
         constraintsRequested: advanced,
@@ -315,8 +323,43 @@ export class PPGMonitor {
       // this keeps the hot path untouched.
       this._lastTrackSettings = track.getSettings ? track.getSettings() : {};
       track.onended = () => this.recorder.pushEvent({ t: performance.now(), type: 'track_ended' });
-      track.onmute = () => this.recorder.pushEvent({ t: performance.now(), type: 'track_muted' });
-      track.onunmute = () => this.recorder.pushEvent({ t: performance.now(), type: 'track_unmuted' });
+      track.onmute = () => {
+        this.recorder.pushEvent({ t: performance.now(), type: 'track_muted' });
+      };
+      track.onunmute = () => {
+        this.recorder.pushEvent({ t: performance.now(), type: 'track_unmuted' });
+        // A mute/unmute cycle is exactly the kind of camera-session blip
+        // (iOS backgrounding/interruption) that silently drops torch -
+        // re-assert it the moment the track is live again.
+        this._reapplyTorchIfNeeded('track_unmute');
+      };
+
+      // Torch can be silently dropped by the OS on any camera-session
+      // interruption (background/foreground, another app grabbing the
+      // camera, an iOS re-exposure event) with no track-level event fired
+      // for it specifically - poll every 2s while running, and eagerly on
+      // page visibility return, so the flash is never left off for long
+      // once the page can see the finger again.
+      this._torchWatchInterval = setInterval(() => this._reapplyTorchIfNeeded('interval'), 2000);
+      this._onVisibilityChange = () => {
+        this.recorder.pushEvent({ t: performance.now(), type: 'visibilitychange', visibilityState: document.visibilityState });
+        if (document.visibilityState === 'visible') this._reapplyTorchIfNeeded('visibilitychange');
+      };
+      document.addEventListener('visibilitychange', this._onVisibilityChange);
+      this._onPageHide = () => {
+        this.recorder.pushEvent({ t: performance.now(), type: 'pagehide' });
+        this._persistLastSessionLog();
+      };
+      window.addEventListener('pagehide', this._onPageHide);
+
+      // Periodic full track-settings snapshot (every 10s), independent of
+      // state transitions - see job 5: a session with zero state changes
+      // (e.g. stuck NO_FINGER the whole time) must still show settings drift.
+      this._settingsSnapshotInterval = setInterval(() => {
+        const liveTrack = this.stream && this.stream.getVideoTracks()[0];
+        if (!liveTrack || !liveTrack.getSettings) return;
+        this.recorder.pushEvent({ t: performance.now(), type: 'track_settings_snapshot', settings: liveTrack.getSettings() });
+      }, 10000);
 
 
       // Initialize chart if UI is enabled
@@ -364,6 +407,12 @@ export class PPGMonitor {
     }
     this.nFrame = 0; // stop processing frames still in flight after this call
 
+    // Stop torch/settings watchers and page-lifecycle listeners started in start().
+    if (this._torchWatchInterval) { clearInterval(this._torchWatchInterval); this._torchWatchInterval = null; }
+    if (this._settingsSnapshotInterval) { clearInterval(this._settingsSnapshotInterval); this._settingsSnapshotInterval = null; }
+    if (this._onVisibilityChange) { document.removeEventListener('visibilitychange', this._onVisibilityChange); this._onVisibilityChange = null; }
+    if (this._onPageHide) { window.removeEventListener('pagehide', this._onPageHide); this._onPageHide = null; }
+
     // Stop video stream
     if (this.stream) {
       this.stream.getTracks().forEach(track => track.stop());
@@ -380,6 +429,10 @@ export class PPGMonitor {
     if (this.uiRenderer) {
       window.removeEventListener('resize', this.handleResize);
     }
+
+    // Persist the log for the debug menu's "Share last session log" -
+    // covers explicit Stop and Cancel, both of which call stop().
+    this._persistLastSessionLog();
   }
 
   /**
@@ -430,6 +483,10 @@ export class PPGMonitor {
 
       if (stateChanged) {
         this.recorder.pushEvent({ t: timestampSec * 1000, type: 'state_transition', state: fingerState, reason: stateReason });
+        const liveTrackForSnapshot = this.stream && this.stream.getVideoTracks()[0];
+        if (liveTrackForSnapshot && liveTrackForSnapshot.getSettings) {
+          this.recorder.pushEvent({ t: timestampSec * 1000, type: 'track_settings_snapshot', settings: liveTrackForSnapshot.getSettings(), trigger: 'state_transition' });
+        }
         if (fingerState === STATE.SETTLING) {
           // A lift, a large drift, or a fresh placement all invalidate the
           // sample buffer - reset it so stale pre-transition samples can
@@ -441,6 +498,11 @@ export class PPGMonitor {
           this.redBuf.fill(rMean);
           this.greenBuf.fill(gMean);
           this.signalProcessor.reset();
+          // The finger returning is exactly when torch is most likely to
+          // have been dropped (backgrounded while lifted, OS reclaimed the
+          // camera session, etc.) - re-assert it right away rather than
+          // waiting up to 2s for the interval check.
+          this._reapplyTorchIfNeeded('state_transition_settling');
         }
       }
 
@@ -527,6 +589,14 @@ export class PPGMonitor {
             })
           : this.currentMetrics.quality.reason;
 
+        // Log every distinct coaching message shown, with when it first
+        // appeared - see job 5 (full debug log completeness).
+        if (this.currentMetrics.guidanceMessage !== this._lastLoggedCoachMessage) {
+          this._lastLoggedCoachMessage = this.currentMetrics.guidanceMessage;
+          this.recorder.pushEvent({ t: timestampSec * 1000, type: 'coaching_message', message: this.currentMetrics.guidanceMessage, state: fingerState });
+        }
+
+
         // Session-long tachogram + good-window accounting, for the demo's
         // IBI plot and the Stop-time summary (getSessionSummary()). Only
         // GOOD windows contribute HR/RMSSD/SDNN samples and accepted-beat
@@ -545,6 +615,36 @@ export class PPGMonitor {
           rmssd: this.currentMetrics.rmssd,
           sdnn: this.currentMetrics.sdnn
         });
+
+        // Per-window instrumentation record - the primary tool for
+        // remotely diagnosing "Irregular beats detected" and similar
+        // stuck-quality reports without hardware access (see job 4).
+        {
+          const details = Array.isArray(this.currentMetrics.ibiDetails) ? this.currentMetrics.ibiDetails : [];
+          const rejectionReasons = {};
+          for (const d of details) {
+            if (d.valid) continue;
+            const key = d.reason || 'unknown';
+            rejectionReasons[key] = (rejectionReasons[key] || 0) + 1;
+          }
+          this.recorder.pushWindow({
+            t: sessionSec,
+            state: fingerState,
+            acdc: this.lastAcDcRatio,
+            dcRed: redDc,
+            dcGreen: greenDc,
+            channel: this.selectedChannel,
+            artifactRatio: this.currentMetrics.artifactRatio,
+            ibiCount: this.currentMetrics.quality ? this.currentMetrics.quality.ibiCount : 0,
+            fftHr: this.currentMetrics.heartRateFFT ?? 0,
+            ibiHr: this.currentMetrics.heartRateSource === 'ibi' ? this.currentMetrics.heartRateRaw : null,
+            fftAgree: !this.currentMetrics.ibiFftDisagree,
+            good: this.currentMetrics.quality.good,
+            reason: this.currentMetrics.quality.reason,
+            rejectionReasons,
+            sampleRate
+          });
+        }
 
 
         // Log derived events for offline/live comparison (see utils/recorder.js).
@@ -730,6 +830,74 @@ export class PPGMonitor {
     // feeding garbage into the FFT/filter frequency axis.
     if (rate < 1 || rate > 240) return this.options.signal.sampleRate;
     return rate;
+  }
+
+  /**
+   * Re-read torch state from the live track and, if the device supports
+   * torch but it has flipped off, re-apply {advanced:[{torch:true}]}.
+   * Called on a 2s interval, on every SETTLING-entering state transition,
+   * on visibilitychange-to-visible, and on track unmute - see start().
+   * Logs `torch_lost` the moment torch is observed off, and
+   * `torch_reapplied` with the constraint result either way.
+   * @param {string} trigger - why this check ran, for the debug log
+   */
+  async _reapplyTorchIfNeeded(trigger) {
+    if (!this._torchCapable || !this.stream) return;
+    const track = this.stream.getVideoTracks()[0];
+    if (!track || track.readyState !== 'live') return;
+    let settings: any = {};
+    try {
+      settings = track.getSettings ? track.getSettings() : {};
+    } catch (err) {
+      return;
+    }
+    const isOn = settings.torch === true;
+    const prevState = this.torchState;
+    this.torchState = isOn ? 'on' : 'off';
+    if (isOn) return; // nothing to do - torch is already lit
+    if (prevState === 'on') {
+      this.recorder.pushEvent({ t: performance.now(), type: 'torch_lost', trigger });
+    }
+    try {
+      await track.applyConstraints({ advanced: [{ torch: true }] });
+      const after = track.getSettings ? track.getSettings() : {};
+      this.torchState = after.torch === true ? 'on' : 'off';
+      this.recorder.pushEvent({ t: performance.now(), type: 'torch_reapplied', trigger, ok: this.torchState === 'on' });
+    } catch (err) {
+      this.recorder.pushEvent({ t: performance.now(), type: 'torch_reapplied', trigger, ok: false, error: String(err && err.message || err) });
+    }
+  }
+
+  /**
+   * Persist the current debug log to localStorage under a fixed key, so the
+   * app's debug menu can offer "Share last session log" even after a crash/
+   * reload (pagehide) or an explicit Cancel/Stop - see job 6. Drops the
+   * heaviest field (samples) first if the quota is exceeded, and marks
+   * `truncated:true` in the log itself so nothing looks silently complete.
+   */
+  _persistLastSessionLog() {
+    try {
+      const log = this.getDebugLog();
+      let json = JSON.stringify(log);
+      const LIMIT = 4.5 * 1024 * 1024; // localStorage is commonly ~5-10MB/origin
+      if (json.length > LIMIT) {
+        this.recorder.markTruncated();
+        const truncatedLog = { ...log, samples: log.samples.slice(-2000), truncated: true };
+        json = JSON.stringify(truncatedLog);
+      }
+      localStorage.setItem('ppg_last_session_log', json);
+    } catch (err) {
+      // Quota exceeded or localStorage unavailable (private mode) - drop
+      // frames and retry once with just meta+events+windows, never throw:
+      // losing the log is bad, but crashing stop()/pagehide is worse.
+      try {
+        this.recorder.markTruncated();
+        const minimal = { ...this.getDebugLog(), samples: [] };
+        localStorage.setItem('ppg_last_session_log', JSON.stringify(minimal));
+      } catch (err2) {
+        console.warn('Could not persist debug log:', err2);
+      }
+    }
   }
 
   /**

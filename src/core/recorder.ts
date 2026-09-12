@@ -12,6 +12,9 @@ const DEFAULT_CAP = 10 * 60 * 60; // 10 minutes @ 60fps
  * memory unbounded. Oldest samples are overwritten once the cap is hit.
  */
 class RingBuffer {
+  // ponytail: index signature matches the other core classes' JS->TS move.
+  [key: string]: any;
+
   constructor(cap) {
     this.cap = cap;
     this.buf = new Array(cap);
@@ -37,6 +40,9 @@ class RingBuffer {
 }
 
 export class DebugRecorder {
+  // ponytail: index signature matches the other core classes' JS->TS move.
+  [key: string]: any;
+
   /** @param {number} [capSamples] - ring buffer size for raw samples */
   constructor(capSamples = DEFAULT_CAP) {
     this.samples = new RingBuffer(capSamples);
@@ -98,12 +104,32 @@ export class DebugRecorder {
     this.events.push(event);
   }
 
+  /**
+   * Per-window quality/instrumentation record (see PPGMonitor.js computeFrame).
+   * Same ring-buffer discipline as events (capped, no unbounded growth).
+   */
+  pushWindow(win) {
+    if (!this.windows) this.windows = [];
+    if (this.windows.length >= this.eventsCap) this.windows.shift();
+    this.windows.push(win);
+  }
+
+  /**
+   * Mark the log truncated (e.g. localStorage quota exceeded on persist) -
+   * surfaced in toJSON() so a share/summary never silently looks complete.
+   */
+  markTruncated() {
+    this.truncated = true;
+  }
+
   toJSON() {
     return {
       meta: this.meta,
       samples: this.samples.toArray(),
       events: this.events,
-      timestampAnomalies: this.timestampAnomalies || { zero: 0, nonMonotonic: 0, nonFinite: 0 }
+      windows: this.windows || [],
+      timestampAnomalies: this.timestampAnomalies || { zero: 0, nonMonotonic: 0, nonFinite: 0 },
+      truncated: !!this.truncated
     };
   }
 }
