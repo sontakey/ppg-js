@@ -1,0 +1,699 @@
+// examples/app/app.js — dogfoods ppg-js's public API as a third-party dev would.
+// PPGMonitor (deprecated alias of PPG) is exposed by ../demo/dist/ppg.global.js (IIFE build).
+
+const screens = {
+  ready: document.getElementById('screen-ready'),
+  placement: document.getElementById('screen-placement'),
+  measuring: document.getElementById('screen-measuring'),
+  summary: document.getElementById('screen-summary'),
+};
+
+function showScreen(name) {
+  for (const key in screens) screens[key].hidden = key !== name;
+}
+
+let monitor = null;
+const SETTLE_SEC = 6; // must match FingerStateMachine default (library doesn't expose it)
+const waveBuf = new Array(180).fill(0.5); // ~3s at ~60Hz, matches the demo's live strip
+
+function resetWaveBuffer() {
+  waveBuf.fill(0.5);
+}
+
+function drawWave() {
+  const canvas = document.getElementById('wave-canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = '#4fd1c5';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  const n = waveBuf.length;
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * canvas.width;
+    const y = canvas.height - waveBuf[i] * canvas.height;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+}
+
+function drawTachogram() {
+  const canvas = document.getElementById('tacho-canvas');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!monitor) return;
+  const points = monitor.getTachogram().slice(-60);
+  if (!points.length) return;
+  const ibis = points.map(p => p.ibiMs);
+  const min = Math.min(...ibis), max = Math.max(...ibis) || min + 1;
+  points.forEach((p, i) => {
+    const x = (i / (points.length - 1 || 1)) * canvas.width;
+    const y = canvas.height - ((p.ibiMs - min) / (max - min || 1)) * canvas.height;
+    ctx.fillStyle = p.valid ? '#4fd1c5' : '#6b7280';
+    ctx.beginPath();
+    ctx.arc(x, y, p.valid ? 2.5 : 2, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function updatePlacementScreen(metrics) {
+  const remaining = metrics.settleRemainingSec || 0;
+  const coachEl = document.getElementById('coach-line');
+  const ring = document.getElementById('settle-ring');
+  const circumference = 2 * Math.PI * 70;
+  if (metrics.fingerState === 'SETTLING') {
+    coachEl.textContent = `Hold still... ${Math.ceil(remaining)}s`;
+    const frac = 1 - Math.min(1, remaining / SETTLE_SEC);
+    ring.style.strokeDashoffset = String(circumference * (1 - frac));
+  } else {
+    coachEl.textContent = metrics.guidanceMessage || 'Cover the lens and flash with your fingertip pad';
+    ring.style.strokeDashoffset = String(circumference);
+  }
+  document.getElementById('torch-note').hidden = monitor ? monitor.torchSupported !== false : true;
+}
+
+function updateMeasuringScreen(metrics) {
+  const good = metrics.quality && metrics.quality.good;
+  document.getElementById('hr-value').textContent = good ? Math.round(metrics.heartRate) : '--';
+  document.getElementById('rmssd-value').textContent = good ? Math.round(metrics.rmssd) : '--';
+  document.getElementById('sdnn-value').textContent = good ? Math.round(metrics.sdnn) : '--';
+
+  const pill = document.getElementById('quality-pill');
+  pill.classList.toggle('good', !!good);
+  pill.classList.toggle('bad', !good);
+  document.getElementById('quality-text').textContent = good
+    ? `Good signal · ${metrics.qualityScore}`
+    : (metrics.quality ? metrics.quality.reason : metrics.guidanceMessage) || 'Settling';
+
+  drawTachogram();
+}
+
+function renderSummary() {
+  renderReport(monitor.getTachogram().filter(p => p.valid).map(p => p.ibiMs));
+}
+
+// ------------------------------------------------------------ HRV report --
+
+function fmt(v, digits) {
+  if (v == null || Number.isNaN(v) || v === 'n/a') return '--';
+  return typeof v === 'number' ? v.toFixed(digits == null ? 0 : digits) : String(v);
+}
+
+function ansInterpretation(pnsIndex, snsIndex) {
+  const label = (z, posWord, negWord) => {
+    if (Math.abs(z) < 0.5) return 'near the population average';
+    return z > 0 ? `above average (${posWord})` : `below average (${negWord})`;
+  };
+  return `Parasympathetic (PNS) activity is ${label(pnsIndex, 'more rest-and-digest tone', 'less rest-and-digest tone')}; ` +
+    `sympathetic (SNS) activity is ${label(snsIndex, 'more arousal/stress tone', 'less arousal/stress tone')}.`;
+}
+
+function drawBipolarBar(canvasParent, value, cls) {
+  const RANGE = 3; // domain shown; tick marks below are only -2..+2 per spec
+  const clamped = Math.max(-RANGE, Math.min(RANGE, value || 0));
+  const pctOf = (v) => ((v + RANGE) / (2 * RANGE)) * 100;
+  const zeroPct = pctOf(0);
+  const valuePct = pctOf(clamped);
+
+  const bar = document.createElement('div');
+  bar.className = 'bipolar-bar';
+
+  const fill = document.createElement('div');
+  fill.className = `fill ${cls}`;
+  const left = Math.min(valuePct, zeroPct);
+  const width = Math.abs(valuePct - zeroPct);
+  fill.style.left = left + '%';
+  fill.style.width = width + '%';
+  bar.appendChild(fill);
+
+  const zero = document.createElement('div');
+  zero.className = 'zero-line';
+  bar.appendChild(zero);
+
+  const valueLabel = document.createElement('div');
+  valueLabel.className = `bar-value-label ${cls}`;
+  valueLabel.textContent = fmt(value, 2);
+  valueLabel.style.left = valuePct + '%';
+  valueLabel.style.transform = clamped >= 0 ? 'translate(4px, -50%)' : 'translate(calc(-100% - 4px), -50%)';
+  bar.appendChild(valueLabel);
+
+  canvasParent.appendChild(bar);
+
+  const ticks = document.createElement('div');
+  ticks.className = 'bipolar-ticks';
+  for (let t = -2; t <= 2; t++) {
+    const tick = document.createElement('span');
+    tick.style.left = pctOf(t) + '%';
+    tick.textContent = (t > 0 ? '+' : '') + t;
+    ticks.appendChild(tick);
+  }
+  canvasParent.appendChild(ticks);
+
+  const meanLabel = document.createElement('div');
+  meanLabel.className = 'zero-mean-label';
+  meanLabel.textContent = 'population mean';
+  meanLabel.style.left = zeroPct + '%';
+  canvasParent.appendChild(meanLabel);
+}
+
+// Shared canvas setup: backs the canvas at devicePixelRatio and returns a
+// context pre-scaled to CSS pixels, plus the CSS-pixel width/height to draw
+// with. Call once per draw before any drawing commands.
+function setupHiDPICanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth || canvas.width;
+  const cssH = canvas.clientHeight || canvas.height;
+  canvas.width = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cssW, cssH);
+  return { ctx, W: cssW, H: cssH };
+}
+
+const AXIS_FONT = '11px -apple-system, sans-serif';
+const AXIS_COLOR = '#a7adba'; // >=4.5:1 on #0e1015 chart background
+const GRID_COLOR = 'rgba(167,173,186,0.15)';
+
+function drawPSD(canvas, fd) {
+  const { ctx, W, H } = setupHiDPICanvas(canvas);
+  if (!fd.ok) return;
+  const padL = 34, padR = 8, padT = 16, padB = 20;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const maxF = 0.5;
+  const idx = fd.freqs.map((f, i) => i).filter(i => fd.freqs[i] <= maxF);
+  const maxP = Math.max(...idx.map(i => fd.psd[i]), 1e-6) * 1.1;
+  const xOf = (f) => padL + (f / maxF) * plotW;
+  const yOf = (p) => padT + plotH - (p / maxP) * plotH;
+
+  // shaded bands (behind curve)
+  const bandColor = (f) => f < 0.04 ? 'rgba(107,114,128,0.28)' : f < 0.15 ? 'rgba(245,160,110,0.22)' : f <= 0.4 ? 'rgba(79,209,197,0.22)' : 'transparent';
+  const bandEdges = [0.0033, 0.04, 0.15, 0.4];
+  for (let i = 0; i < bandEdges.length - 1; i++) {
+    const f0 = bandEdges[i], f1 = bandEdges[i + 1];
+    ctx.fillStyle = bandColor((f0 + f1) / 2);
+    ctx.fillRect(xOf(f0), padT, xOf(f1) - xOf(f0), plotH);
+  }
+
+  // y gridlines + labels (3-4 ticks)
+  ctx.font = AXIS_FONT;
+  ctx.fillStyle = AXIS_COLOR;
+  ctx.strokeStyle = GRID_COLOR;
+  ctx.lineWidth = 1;
+  const yTicks = 4;
+  for (let t = 0; t <= yTicks; t++) {
+    const p = (maxP / yTicks) * t;
+    const y = yOf(p);
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(W - padR, y);
+    ctx.stroke();
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(p >= 100 ? p.toFixed(0) : p.toFixed(1), padL - 5, y);
+  }
+  ctx.save();
+  ctx.translate(10, padT + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.fillText('ms\u00b2/Hz', 0, 0);
+  ctx.restore();
+
+  // x ticks every 0.1 Hz
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let f = 0; f <= maxF + 1e-9; f += 0.1) {
+    const x = xOf(f);
+    ctx.fillText(f.toFixed(1), x, padT + plotH + 4);
+  }
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText('Hz', W - padR, padT + plotH + 4 + 12);
+
+  // filled smooth area under the PSD curve
+  ctx.beginPath();
+  idx.forEach((i, k) => {
+    const x = xOf(fd.freqs[i]), y = yOf(fd.psd[i]);
+    if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.lineTo(xOf(fd.freqs[idx[idx.length - 1]]), padT + plotH);
+  ctx.lineTo(xOf(fd.freqs[idx[0]]), padT + plotH);
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(242,244,247,0.18)';
+  ctx.fill();
+  ctx.beginPath();
+  idx.forEach((i, k) => {
+    const x = xOf(fd.freqs[i]), y = yOf(fd.psd[i]);
+    if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.strokeStyle = '#f2f4f7';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // band labels along the top
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(167,173,186,0.9)';
+  ctx.fillText('VLF', (xOf(0.0033) + xOf(0.04)) / 2, padT + 2);
+  ctx.fillText('LF', (xOf(0.04) + xOf(0.15)) / 2, padT + 2);
+  ctx.fillText('HF', (xOf(0.15) + xOf(0.4)) / 2, padT + 2);
+}
+
+function drawPoincare(canvas, nl, flagged) {
+  const { ctx, W, H } = setupHiDPICanvas(canvas);
+  const pts = nl.poincarePoints;
+  if (!pts || !pts.length) return;
+  // A point (rr[i], rr[i+1]) is an outlier if either beat was flagged as an
+  // artifact; autoscale to the accepted (non-outlier) points only so a rare
+  // spike can't squash the cluster, matching the tachogram/PSD treatment.
+  const isOutlier = (i) => !!(flagged && (flagged[i] || flagged[i + 1]));
+  const accepted = pts.filter((_, i) => !isOutlier(i));
+  const scaleSrc = accepted.length ? accepted.flat() : pts.flat();
+  const dataMin = Math.min(...scaleSrc), dataMax = Math.max(...scaleSrc);
+  const span = (dataMax - dataMin) || 1;
+  const min = dataMin - span * 0.08, max = dataMax + span * 0.08;
+
+  const padL = 40, padR = 12, padT = 14, padB = 34;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const clip = (v) => Math.max(min, Math.min(max, v));
+  const toXY = (rrN, rrN1) => [
+    padL + ((clip(rrN) - min) / (max - min)) * plotW,
+    padT + plotH - ((clip(rrN1) - min) / (max - min)) * plotH,
+  ];
+
+  // gridlines + shared tick scale on both axes (same units, same range)
+  ctx.font = AXIS_FONT;
+  ctx.strokeStyle = GRID_COLOR;
+  ctx.fillStyle = AXIS_COLOR;
+  ctx.lineWidth = 1;
+  const ticks = 5;
+  for (let t = 0; t <= ticks; t++) {
+    const v = min + ((max - min) / ticks) * t;
+    const [x] = toXY(v, min);
+    const [, y] = toXY(min, v);
+    ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.fillText(v.toFixed(0), x, padT + plotH + 4);
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(v.toFixed(0), padL - 5, y);
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('RRn (ms)', padL + plotW / 2, H - 4);
+  ctx.save();
+  ctx.translate(11, padT + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.fillText('RRn+1 (ms)', 0, 0);
+  ctx.restore();
+
+  // identity line y = x
+  ctx.strokeStyle = 'rgba(167,173,186,0.4)';
+  ctx.setLineDash([4, 4]);
+  const [x0, y0] = toXY(min, min), [x1, y1] = toXY(max, max);
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // accepted points
+  ctx.fillStyle = 'rgba(79,209,197,0.55)';
+  accepted.forEach(([a, b]) => {
+    const [x, y] = toXY(a, b);
+    ctx.beginPath();
+    ctx.arc(x, y, 2, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // outliers: hollow orange, clipped to axis range
+  let offScale = 0;
+  ctx.strokeStyle = '#f5a06e';
+  ctx.lineWidth = 1.2;
+  pts.forEach(([a, b], i) => {
+    if (!isOutlier(i)) return;
+    if (a < min || a > max || b < min || b > max) offScale++;
+    const [x, y] = toXY(a, b);
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+
+  // SD1/SD2 ellipse centered at (mean,mean), rotated 45deg
+  const meanV = scaleSrc.reduce((s, v) => s + v, 0) / scaleSrc.length;
+  const [cx, cy] = toXY(meanV, meanV);
+  const scale = plotW / (max - min);
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.rotate(-Math.PI / 4);
+  ctx.strokeStyle = '#f5a06e';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, nl.sd2 * scale, nl.sd1 * scale, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+
+  // legend, corner away from the data cluster
+  ctx.font = '10px -apple-system, sans-serif';
+  ctx.fillStyle = 'rgba(167,173,186,0.9)';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'top';
+  ctx.fillText('— SD1/SD2 ellipse', padL + 4, padT + 2);
+  if (offScale > 0) {
+    ctx.fillStyle = '#f5a06e';
+    ctx.textAlign = 'right';
+    ctx.fillText(`${offScale} outlier${offScale === 1 ? '' : 's'} off-scale`, padL + plotW - 4, padT + 2);
+  }
+}
+
+function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
+  const { ctx, W, H } = setupHiDPICanvas(canvas);
+  if (!ibiMs.length) return;
+  const dataMin = Math.min(...ibiMs), dataMax = Math.max(...ibiMs) || Math.min(...ibiMs) + 1;
+  const span = (dataMax - dataMin) || 1;
+  const min = dataMin - span * 0.1, max = dataMax + span * 0.1;
+  const times = [0];
+  for (let i = 0; i < ibiMs.length; i++) times.push(times[times.length - 1] + ibiMs[i] / 1000);
+  const totalSec = times[times.length - 1];
+
+  const padL = 40, padR = 8, padT = 10, padB = 22;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const xOf = (t) => padL + (t / (totalSec || 1)) * plotW;
+  const yOf = (v) => padT + plotH - ((v - min) / (max - min)) * plotH;
+
+  ctx.font = AXIS_FONT;
+  ctx.strokeStyle = GRID_COLOR;
+  ctx.fillStyle = AXIS_COLOR;
+  ctx.lineWidth = 1;
+
+  // y ticks (RR ms), 4 ticks
+  for (let t = 0; t <= 3; t++) {
+    const v = min + ((max - min) / 3) * t;
+    const y = yOf(v);
+    ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+    ctx.fillText(v.toFixed(0), padL - 5, y);
+  }
+  ctx.save();
+  ctx.translate(10, padT + plotH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.fillText('RR (ms)', 0, 0);
+  ctx.restore();
+
+  // x ticks: 5-6 ticks as mm:ss
+  const nTicks = 5;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  for (let t = 0; t <= nTicks; t++) {
+    const sec = (totalSec / nTicks) * t;
+    const x = xOf(sec);
+    const mm = Math.floor(sec / 60), ss = Math.round(sec % 60);
+    ctx.fillText(`${mm}:${String(ss).padStart(2, '0')}`, x, padT + plotH + 4);
+  }
+
+  // corrected-vs-raw dashed segment where a beat was corrected
+  if (correctedMs && correctedMs.length === ibiMs.length) {
+    ctx.strokeStyle = 'rgba(167,173,186,0.8)';
+    ctx.setLineDash([3, 3]);
+    ctx.lineWidth = 1;
+    ibiMs.forEach((v, i) => {
+      if (!flagged || !flagged[i]) return;
+      const x = xOf(times[i]);
+      ctx.beginPath();
+      ctx.moveTo(x, yOf(v));
+      ctx.lineTo(x, yOf(correctedMs[i]));
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+  }
+
+  // raw RR line
+  ctx.strokeStyle = '#4fd1c5';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ibiMs.forEach((v, i) => {
+    const x = xOf(times[i]), y = yOf(v);
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // artifacts as hollow orange dots
+  ctx.strokeStyle = '#f5a06e';
+  ctx.lineWidth = 1.2;
+  ibiMs.forEach((v, i) => {
+    if (!flagged || !flagged[i]) return;
+    const x = xOf(times[i]), y = yOf(v);
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.stroke();
+  });
+}
+
+// Builds the full scrollable report from a list of accepted IBIs (ms).
+// Exposed via renderSummary() in the real flow and window.__demoReport() for QA.
+function renderReport(acceptedIbiMs) {
+  const el = document.getElementById('report-content');
+  el.innerHTML = '';
+
+  if (!acceptedIbiMs.length) {
+    el.innerHTML = `
+      <h2>Session report</h2>
+      <p class="insufficient">No good-quality windows were captured this session — try again with steadier finger placement.</p>
+    `;
+    return;
+  }
+
+  const result = HRVAnalysis.analyzeHRV(acceptedIbiMs);
+  const td = result.timeDomain, fd = result.frequencyDomain, nl = result.nonlinear, ans = result.ans;
+  const durationSec = result.meta.totalDurationSec;
+  const goodPct = Math.round(monitor && monitor.getSessionSummary ? monitor.getSessionSummary().goodFraction * 100 : 100);
+
+  const header = document.createElement('div');
+  header.className = 'report-card report-header';
+  header.innerHTML = `
+    <h2>Session report</h2>
+    <div class="meta-row">
+      <span>${new Date().toLocaleString()}</span>
+      <span>Duration <b>${(durationSec / 60).toFixed(1)} min</b></span>
+      <span>Good signal <b>${goodPct}%</b></span>
+      <span>Beats used <b>${result.meta.nBeats}</b></span>
+      <span>Corrected <b>${result.meta.pctCorrected.toFixed(1)}%</b></span>
+    </div>
+  `;
+  el.appendChild(header);
+
+  // ANS balance card
+  const ansCard = document.createElement('div');
+  ansCard.className = 'report-card';
+  ansCard.innerHTML = '<h3 style="margin-top:0">ANS balance (vs. population reference)</h3>';
+  if (ans.ok) {
+    const pnsWrap = document.createElement('div');
+    pnsWrap.className = 'ans-bar-wrap';
+    pnsWrap.innerHTML = '<div class="bar-label"><span>PNS index</span><span></span></div>';
+    drawBipolarBar(pnsWrap, ans.pnsIndex, 'pns');
+    const snsWrap = document.createElement('div');
+    snsWrap.className = 'ans-bar-wrap';
+    snsWrap.innerHTML = '<div class="bar-label"><span>SNS index</span><span></span></div>';
+    drawBipolarBar(snsWrap, ans.snsIndex, 'sns');
+    ansCard.appendChild(pnsWrap);
+    ansCard.appendChild(snsWrap);
+    const line = document.createElement('p');
+    line.className = 'ans-line';
+    line.textContent = ansInterpretation(ans.pnsIndex, ans.snsIndex);
+    ansCard.appendChild(line);
+  } else {
+    ansCard.innerHTML += `<p class="insufficient">${ans.reason}</p>`;
+  }
+  el.appendChild(ansCard);
+
+  // Time domain
+  const tdCard = document.createElement('div');
+  tdCard.className = 'report-card';
+  tdCard.innerHTML = '<h3 style="margin-top:0">Time domain</h3>';
+  if (td.ok) {
+    tdCard.innerHTML += `
+      <table class="hrv-table">
+        <tr><td>Mean RR</td><td>${fmt(td.meanRR, 0)} ms</td></tr>
+        <tr><td>Mean HR</td><td>${fmt(td.meanHR, 0)} bpm</td></tr>
+        <tr><td>Min / Max HR (5-beat avg)</td><td>${fmt(td.minHR, 0)} / ${fmt(td.maxHR, 0)} bpm</td></tr>
+        <tr><td>SDNN</td><td>${fmt(td.sdnn, 1)} ms</td></tr>
+        <tr><td>RMSSD</td><td>${fmt(td.rmssd, 1)} ms</td></tr>
+        <tr><td>NN50 / pNN50</td><td>${fmt(td.nn50, 0)} / ${fmt(td.pnn50, 1)}%</td></tr>
+        <tr><td>HRV triangular index</td><td>${fmt(td.triangularIndex, 1)}</td></tr>
+        <tr><td>TINN</td><td>${fmt(td.tinn, 0)} ms</td></tr>
+      </table>`;
+  } else {
+    tdCard.innerHTML += `<p class="insufficient">${td.reason}</p>`;
+  }
+  el.appendChild(tdCard);
+
+  // Frequency domain
+  const fdCard = document.createElement('div');
+  fdCard.className = 'report-card';
+  fdCard.innerHTML = '<h3 style="margin-top:0">Frequency domain</h3>';
+  if (fd.ok) {
+    fdCard.innerHTML += `
+      <div class="report-canvas-wrap">
+        <canvas id="psd-canvas" width="440" height="160"></canvas>
+        <div class="psd-legend"><span class="vlf">VLF 0.0033-0.04 Hz</span><span class="lf">LF 0.04-0.15 Hz</span><span class="hf">HF 0.15-0.4 Hz</span></div>
+      </div>
+      <table class="hrv-table">
+        <tr><td>Total power</td><td>${fmt(fd.totalPower, 0)} ms&sup2;</td></tr>
+        <tr><td>VLF power</td><td>${fmt(fd.vlf.power, 0)} ms&sup2;</td></tr>
+        <tr><td>LF power (peak)</td><td>${fmt(fd.lf.power, 0)} ms&sup2; (${fmt(fd.lf.peakFrequency, 3)} Hz)</td></tr>
+        <tr><td>HF power (peak)</td><td>${fmt(fd.hf.power, 0)} ms&sup2; (${fmt(fd.hf.peakFrequency, 3)} Hz)</td></tr>
+        <tr><td>LF/HF ratio</td><td>${fmt(fd.lfhf, 2)}</td></tr>
+        <tr><td>LF n.u. / HF n.u.</td><td>${fmt(fd.lfnu, 1)} / ${fmt(fd.hfnu, 1)}</td></tr>
+        <tr><td>Respiration rate (estimated)</td><td>${fmt(fd.respirationRateBpm, 1)} breaths/min</td></tr>
+      </table>`;
+  } else {
+    fdCard.innerHTML += `<p class="insufficient">${fd.reason}</p>`;
+  }
+  el.appendChild(fdCard);
+  if (fd.ok) drawPSD(document.getElementById('psd-canvas'), fd);
+
+  // Nonlinear
+  const nlCard = document.createElement('div');
+  nlCard.className = 'report-card';
+  nlCard.innerHTML = '<h3 style="margin-top:0">Nonlinear</h3>';
+  if (nl.ok) {
+    nlCard.innerHTML += `
+      <div class="report-canvas-wrap">
+        <canvas id="poincare-canvas" width="300" height="300"></canvas>
+        <div class="poincare-legend"><span>SD1/SD2 ellipse</span></div>
+      </div>
+      <table class="hrv-table">
+        <tr><td>SD1</td><td>${fmt(nl.sd1, 1)} ms</td></tr>
+        <tr><td>SD2</td><td>${fmt(nl.sd2, 1)} ms</td></tr>
+        <tr><td>SD1/SD2 ratio</td><td>${fmt(nl.sd1sd2Ratio, 2)}</td></tr>
+        <tr><td>Sample entropy (m=2, r=0.2&middot;SDNN)</td><td>${fmt(nl.sampleEntropy, 2)}</td></tr>
+        <tr><td>DFA &alpha;1 (4-16 beats)</td><td>${fmt(nl.dfaAlpha1, 2)}</td></tr>
+      </table>
+      ${nl.note ? `<p class="insufficient">${nl.note}</p>` : ''}`;
+  } else {
+    nlCard.innerHTML += `<p class="insufficient">${nl.reason}</p>`;
+  }
+  el.appendChild(nlCard);
+  if (nl.ok) drawPoincare(document.getElementById('poincare-canvas'), nl, result.meta.flagged);
+
+  // Tachogram
+  const tachoCard = document.createElement('div');
+  tachoCard.className = 'report-card';
+  tachoCard.innerHTML = `
+    <h3 style="margin-top:0">RR tachogram (whole session)</h3>
+    <div class="report-canvas-wrap"><canvas id="report-tacho-canvas" width="440" height="140"></canvas></div>
+    <p class="report-note">Orange dots mark beats flagged as artifacts (&gt;20% deviation from local median) and corrected for frequency analysis.</p>
+  `;
+  el.appendChild(tachoCard);
+  drawReportTachogram(document.getElementById('report-tacho-canvas'), acceptedIbiMs, result.meta.flagged, HRVAnalysis.correctArtifacts(acceptedIbiMs).corrected);
+
+  // Footer
+  const footer = document.createElement('div');
+  footer.className = 'report-footer';
+  footer.innerHTML = `
+    <p><strong>Method notes:</strong> time/frequency/nonlinear HRV per Task Force of ESC/NASPE (1996, Circulation
+    93:1043-65). Detrending is a 2nd-order polynomial fit (not full Tarvainen 2002 smoothness-priors). PSD via
+    Welch's method, 256-sample Hann segments, 50% overlap, own radix-2 FFT. PNS/SNS indices are z-scores against
+    Nunan, Sandercock &amp; Brodie (2010, PACE 33:1407-17) healthy-adult short-term HRV norms and Baevsky's Stress
+    Index formula — this is a <strong>population reference, not a diagnosis</strong>. Not a medical device.</p>
+  `;
+  el.appendChild(footer);
+}
+
+function startSession() {
+  showScreen('placement');
+  resetWaveBuffer();
+
+  monitor = new PPGMonitor(null, {
+    ui: { enabled: false },
+    onReady: ({ torchSupported }) => {
+      document.getElementById('torch-note').hidden = torchSupported !== false;
+    },
+    onQualityUpdate: (metrics) => {
+      if (metrics.fingerState === 'MEASURING') {
+        if (screens.measuring.hidden) showScreen('measuring');
+        updateMeasuringScreen(metrics);
+      } else {
+        if (screens.placement.hidden && screens.measuring.hidden === false) {
+          // dropped back out of MEASURING (lift/drift) — show placement coaching again
+          showScreen('placement');
+        }
+        updatePlacementScreen(metrics);
+      }
+    },
+    onSignalUpdate: ({ value }) => {
+      waveBuf.push(value);
+      waveBuf.shift();
+      if (!screens.measuring.hidden) drawWave();
+    },
+    onError: (err) => {
+      alert('Camera error: ' + (err && err.message ? err.message : err));
+      showScreen('ready');
+    },
+  });
+
+  monitor.start().catch((err) => {
+    console.error('start() failed', err);
+    showScreen('ready');
+  });
+}
+
+function stopSession() {
+  if (monitor) {
+    monitor.stop();
+  }
+  renderSummary();
+  showScreen('summary');
+}
+
+document.getElementById('btn-start').addEventListener('click', startSession);
+document.getElementById('btn-cancel-placement').addEventListener('click', () => {
+  if (monitor) { monitor.stop(); monitor.destroy(); monitor = null; }
+  showScreen('ready');
+});
+document.getElementById('btn-stop').addEventListener('click', stopSession);
+document.getElementById('btn-again').addEventListener('click', () => {
+  if (monitor) { monitor.destroy(); monitor = null; }
+  showScreen('ready');
+});
+document.getElementById('btn-save-log').addEventListener('click', () => {
+  if (monitor) monitor.downloadDebugLog();
+});
+document.getElementById('btn-save-report').addEventListener('click', () => {
+  window.print();
+});
+
+// QA-only hook: force a screen into a representative state without a real
+// camera session, so headless visual QA can screenshot all 4 screens.
+// Not part of the public library API — demo-app testing aid only.
+window.__demoState = function (name) {
+  if (name === 'ready') { showScreen('ready'); return; }
+  if (name === 'placement') {
+    showScreen('placement');
+    updatePlacementScreen({ fingerState: 'SETTLING', guidanceMessage: 'Good signal — hold steady', settleRemainingSec: 4 });
+    return;
+  }
+  if (name === 'measuring') {
+    showScreen('measuring');
+    resetWaveBuffer();
+    for (let i = 0; i < waveBuf.length; i++) waveBuf[i] = 0.5 + 0.3 * Math.sin(i / 6);
+    drawWave();
+    monitor = monitor || { getTachogram: () => Array.from({ length: 40 }, (_, i) => ({ ibiMs: 800 + 40 * Math.sin(i / 3), valid: i % 7 !== 0 })) };
+    drawTachogram();
+    updateMeasuringScreen({ heartRate: 72, rmssd: 45, sdnn: 52, qualityScore: 88, quality: { good: true, reason: null } });
+    return;
+  }
+  if (name === 'summary') {
+    monitor = {
+      getSessionSummary: () => ({ goodFraction: 0.83 }),
+      getTachogram: () => Array.from({ length: 40 }, (_, i) => ({ ibiMs: 800 + 40 * Math.sin(i / 3), valid: i % 7 !== 0 })),
+    };
+    renderSummary();
+    showScreen('summary');
+  }
+};
+
+// QA-only hook: render the full HRV report from an explicit list of accepted
+// IBIs (ms), so headless QA (playwright) can screenshot the real report
+// against the real 200s fixture without a camera session. Not public API.
+window.__demoReport = function (acceptedIbiMs) {
+  monitor = monitor || { getSessionSummary: () => ({ goodFraction: 1 }) };
+  renderReport(acceptedIbiMs);
+  showScreen('summary');
+};

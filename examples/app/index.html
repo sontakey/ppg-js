@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pulse — ppg-js demo</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app" class="screen-host">
+
+  <!-- READY -->
+  <section id="screen-ready" class="screen" data-screen="ready">
+    <div class="content">
+      <h1>Pulse</h1>
+      <p class="lead">Measures your heart rate and heart-rate variability using your phone's rear camera — no wearable needed.</p>
+      <p class="disclaimer">Not a medical device. For personal curiosity only, not diagnosis or treatment.</p>
+    </div>
+    <button id="btn-start" class="btn-primary" type="button">Start</button>
+  </section>
+
+  <!-- PLACEMENT -->
+  <section id="screen-placement" class="screen" data-screen="placement" hidden>
+    <div class="content">
+      <div class="finger-illustration" aria-hidden="true">
+        <svg viewBox="0 0 200 200" width="180" height="180">
+          <circle cx="100" cy="100" r="70" fill="none" stroke="#3a3f4b" stroke-width="3"/>
+          <circle cx="100" cy="100" r="70" fill="none" stroke="#4fd1c5" stroke-width="4"
+                  stroke-dasharray="440" id="settle-ring" stroke-linecap="round" transform="rotate(-90 100 100)"/>
+          <!-- phone camera cluster: body, main lens, flash, both labelled -->
+          <rect x="55" y="55" width="90" height="60" rx="14" fill="#20242e" stroke="#3a3f4b" stroke-width="2"/>
+          <circle cx="82" cy="85" r="20" fill="#0d0f14" stroke="#454b58" stroke-width="2"/>
+          <circle cx="82" cy="85" r="12" fill="#171a21"/>
+          <circle cx="82" cy="85" r="4" fill="#3a4250"/>
+          <circle cx="118" cy="72" r="7" fill="#fff3c4" stroke="#454b58" stroke-width="1.5"/>
+          <text x="82" y="45" text-anchor="middle" font-size="10" fill="#c3c9d4">lens</text>
+          <text x="118" y="45" text-anchor="middle" font-size="10" fill="#c3c9d4">flash</text>
+          <line x1="82" y1="49" x2="82" y2="64" stroke="#5a6272" stroke-width="1"/>
+          <line x1="118" y1="49" x2="118" y2="64" stroke="#5a6272" stroke-width="1"/>
+          <!-- fingertip covering both lens and flash -->
+          <ellipse cx="100" cy="86" rx="42" ry="46" fill="#e8b98c" opacity="0.9"/>
+          <ellipse cx="100" cy="86" rx="42" ry="46" fill="none" stroke="#c99a6c" stroke-width="1.5" opacity="0.6"/>
+        </svg>
+      </div>
+      <p id="coach-line" class="coach-line" role="status" aria-live="polite">Cover the lens and flash with your fingertip pad</p>
+      <p id="torch-note" class="torch-note" hidden>Your phone's flashlight can't be turned on by this page (iOS Safari has no flashlight API). Turn it on yourself from Control Center, then cover the lens and the light with your fingertip.</p>
+    </div>
+    <button id="btn-cancel-placement" class="btn-secondary btn-bordered" type="button">Cancel</button>
+  </section>
+
+  <!-- MEASURING -->
+  <section id="screen-measuring" class="screen" data-screen="measuring" hidden>
+    <div class="content measuring-content">
+      <div class="hr-hero">
+        <span id="hr-value" class="hr-value">--</span>
+        <span class="hr-unit">bpm</span>
+      </div>
+      <div class="quality-pill" id="quality-pill">
+        <span id="quality-dot" class="quality-dot"></span>
+        <span id="quality-text">Settling</span>
+      </div>
+      <div class="secondary-row">
+        <div class="secondary-metric"><span class="sm-label">RMSSD</span><span id="rmssd-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
+        <div class="secondary-metric"><span class="sm-label">SDNN</span><span id="sdnn-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
+      </div>
+      <canvas id="wave-canvas" class="wave-canvas" width="600" height="120" aria-hidden="true"></canvas>
+      <canvas id="tacho-canvas" class="tacho-canvas" width="600" height="60" aria-hidden="true"></canvas>
+    </div>
+    <button id="btn-stop" class="btn-secondary" type="button">Stop</button>
+  </section>
+
+  <!-- SUMMARY / HRV REPORT -->
+  <section id="screen-summary" class="screen report-screen" data-screen="summary" hidden>
+    <div class="content report-content" id="report-content">
+      <!-- rendered entirely by renderReport() in app.js -->
+    </div>
+    <div class="summary-actions no-print">
+      <button id="btn-save-report" class="btn-secondary btn-bordered" type="button">Save report</button>
+      <button id="btn-save-log" class="btn-secondary btn-bordered" type="button">Save debug log</button>
+      <button id="btn-again" class="btn-primary" type="button">Measure again</button>
+    </div>
+  </section>
+
+  <div id="video-container" class="video-container" hidden></div>
+</div>
+
+<script src="../demo/dist/ppg.global.js"></script>
+<script>window.PPGMonitor = PPG.PPGMonitor;</script>
+<script src="hrv-analysis.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
