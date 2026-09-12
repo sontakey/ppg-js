@@ -48,6 +48,10 @@ export function selectChannel(prevChannel, redRatio, greenRatio, hysteresisFacto
 }
 
 export class FingerStateMachine {
+  // ponytail: index signature instead of per-field declarations - straight
+  // JS->TS move, tightening the surface is Phase 2 hygiene work.
+  [key: string]: any;
+
   /**
    * @param {Object} [opts]
    * @param {number} [opts.settleSec=6] - seconds of finger-present before MEASURING is allowed
@@ -56,7 +60,7 @@ export class FingerStateMachine {
    * @param {number} [opts.minAcDcRatio=0.005] - min AC/DC ratio (0.5%) to enter MEASURING
    * @param {number} [opts.debounceSec=0.3] - finger presence must be stable this long before it flips
    */
-  constructor(opts = {}) {
+  constructor(opts: any = {}) {
     this.settleSec = opts.settleSec ?? 6;
     this.driftEnterCounts = opts.driftEnterCounts ?? 6;
     this.driftExitCounts = opts.driftExitCounts ?? 12;

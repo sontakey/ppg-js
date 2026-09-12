@@ -1,9 +1,9 @@
-import { computeFFT, calculateSNRFromPSD } from './utils/fft.js';
-import { getQualityStatus, generateGuidance } from './utils/helpers.js';
-import { filtfiltBandpass } from './utils/filter.js';
-import { detectPeaks, computeIBIs, heartRateFromIBIs, rmssd, crossCheckHeartRate, slewLimit } from './utils/peaks.js';
-import { sdnn } from './utils/hrv.js';
-import { evaluateQuality } from './utils/quality.js';
+import { computeFFT, calculateSNRFromPSD } from './fft.js';
+import { getQualityStatus, generateGuidance } from './helpers.js';
+import { filtfiltBandpass } from './filter.js';
+import { detectPeaks, computeIBIs, heartRateFromIBIs, rmssd, crossCheckHeartRate, slewLimit } from './peaks.js';
+import { sdnn } from './hrv.js';
+import { evaluateQuality } from './quality.js';
 
 /**
  * Signal Processor for PPG signal quality analysis
@@ -11,6 +11,10 @@ import { evaluateQuality } from './utils/quality.js';
  * and generates quality metrics and user guidance
  */
 export class SignalProcessor {
+  // ponytail: index signature instead of per-field declarations - this is a
+  // straight JS->TS move, tightening the surface is Phase 2 hygiene work.
+  [key: string]: any;
+
   /**
    * Create a Signal Processor
    * @param {Object} options - Signal processing options
@@ -20,7 +24,7 @@ export class SignalProcessor {
    * @param {number} options.cardiacBandHigh - Upper cardiac frequency (Hz)
    * @param {number} options.fftSize - FFT size (power of 2)
    */
-  constructor(options = {}) {
+  constructor(options: any = {}) {
     this.windowLength = options.windowLength || 300;
     this.sampleRate = options.sampleRate || 60;
     this.cardiacBandLow = options.cardiacBandLow || 0.75;
@@ -65,7 +69,7 @@ export class SignalProcessor {
    *   Defaults to the window's own duration if omitted (single-window tests).
    * @returns {Object} Signal quality metrics
    */
-  process(rawSignal, detrendedSignal, sampleRate = this.sampleRate, opts = {}) {
+  process(rawSignal: any, detrendedSignal: any, sampleRate: any = this.sampleRate, opts: any = {}) {
     // Compute FFT and PSD (kept: coarse frequency-domain SNR/quality signal)
     const fftResult = computeFFT(detrendedSignal, this.fftSize, sampleRate);
 

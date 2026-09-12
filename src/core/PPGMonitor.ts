@@ -1,12 +1,11 @@
 import { SignalProcessor } from './SignalProcessor.js';
-import { UIRenderer } from './UIRenderer.js';
-import { detrend } from './utils/detrend.js';
-import { windowMean } from './utils/helpers.js';
-import { createDefaultOptions, getContainerElement } from './utils/helpers.js';
-import { DebugRecorder } from './utils/recorder.js';
-import { pickBackCamera } from './utils/camera.js';
-import { FingerStateMachine, STATE, selectChannel } from './utils/fingerState.js';
-import { coachingMessage, qualityScore } from './utils/coaching.js';
+import { detrend } from './detrend.js';
+import { windowMean } from './helpers.js';
+import { createDefaultOptions, getContainerElement } from './helpers.js';
+import { DebugRecorder } from './recorder.js';
+import { pickBackCamera } from './camera.js';
+import { FingerStateMachine, STATE, selectChannel } from './fingerState.js';
+import { coachingMessage, qualityScore } from './coaching.js';
 
 // Small offscreen canvas the frame is downscaled into before getImageData -
 // 64x48 is plenty for a channel-mean ROI and is far cheaper per frame than
@@ -34,6 +33,10 @@ function peakToPeak(arr) {
  * @class
  */
 export class PPGMonitor {
+  // ponytail: index signature instead of per-field declarations - straight
+  // JS->TS move, tightening the surface is Phase 2 hygiene work.
+  [key: string]: any;
+
   /**
    * Create a PPG Monitor instance
    * @param {string|HTMLElement|null} container - Container element or selector (null for headless mode)
@@ -48,8 +51,10 @@ export class PPGMonitor {
 
     // Initialize components
     this.signalProcessor = new SignalProcessor(this.options.signal);
-    this.uiRenderer = this.options.ui.enabled && this.containerElement ?
-      new UIRenderer(this.containerElement, this.options.ui) : null;
+    // UI rendering (chart, video preview, technical info) lives in the demo
+    // app now - the core bundle never touches the DOM beyond the video/
+    // canvas elements it creates for capture, and never injects CSS.
+    this.uiRenderer = null;
 
     // State
     this.video = null;
@@ -183,8 +188,8 @@ export class PPGMonitor {
       // never assume torch exists (iOS Safari has none).
       const track = this.stream.getVideoTracks()[0];
       this.torchSupported = false;
-      let capabilities = {};
-      const advanced = {};
+      let capabilities: any = {};
+      const advanced: any = {};
       let constraintsApplied = false;
       let constraintsError = null;
       let zoomApplied = false;
@@ -239,7 +244,7 @@ export class PPGMonitor {
       this.video.srcObject = this.stream;
 
       // Wait for video to be ready
-      await new Promise((resolve) => {
+      await new Promise<void>((resolve) => {
         this.video.onloadedmetadata = () => {
           this.video.play();
           resolve();
@@ -288,7 +293,7 @@ export class PPGMonitor {
         frameCallbackMode: usesRVFC ? 'requestVideoFrameCallback' : 'requestAnimationFrame',
         roi: { widthFraction: roiWidthFraction, heightFraction: roiHeightFraction, ...this.roiSourceRect },
         signalOptions: this.options.signal,
-        appVersion: typeof PPG_JS_VERSION !== 'undefined' ? PPG_JS_VERSION : null,
+        appVersion: null,
         videoInputs: videoInputsMeta,
         chosenDeviceId,
         chosenLabel,
@@ -375,7 +380,7 @@ export class PPGMonitor {
    * @param {number} [now] - performance.now()-relative timestamp (seconds)
    *   when using requestVideoFrameCallback; falls back to Date.now() under rAF.
    */
-  computeFrame(now) {
+  computeFrame(now?: number) {
     const DURATION = 100; // Initial frames to skip
     const timestampSec = now !== undefined ? now / 1000 : Date.now() / 1000;
 
@@ -411,7 +416,7 @@ export class PPGMonitor {
       // NO_FINGER/SETTLING/MEASURING gate. Runs every frame (cheap: a few
       // comparisons + a short rolling-drift array), not just at window
       // boundaries, so a lift is caught immediately rather than up to 5s late.
-      const sessionSec = this.initTime ? (new Date() - this.initTime) / 1000 : timestampSec;
+      const sessionSec = this.initTime ? (Date.now() - Number(this.initTime)) / 1000 : timestampSec;
       const acDcForGate = this.lastAcDcRatio;
       const { state: fingerState, changed: stateChanged, reason: stateReason } =
         this.fingerState.update({ tSec: sessionSec, redMean: rMean, greenMean: gMean, blueMean: bMean, acDcRatio: acDcForGate });
@@ -630,7 +635,7 @@ export class PPGMonitor {
       // Emit signal update callback
       if (this.options.onSignalUpdate) {
         this.options.onSignalUpdate({
-          time: (new Date() - this.initTime) / 1000,
+          time: (Date.now() - Number(this.initTime)) / 1000,
           value: this.acFrame,
           isProcessing: this.isSignal === 1
         });
@@ -638,7 +643,7 @@ export class PPGMonitor {
 
       // Update technical info (lazy update every 10 frames)
       if (this.frameCount % 10 === 0 && this.uiRenderer) {
-        const frameTime = ((new Date() - this.initTime) / 1000).toFixed(2);
+        const frameTime = ((Date.now() - Number(this.initTime)) / 1000).toFixed(2);
         const videoTime = this.video.currentTime.toFixed(2);
         const fps = (this.frameCount / this.video.currentTime).toFixed(3);
 

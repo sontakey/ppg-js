@@ -1,20 +1,25 @@
 /**
- * PPG JS - Real-time PPG signal monitoring library
+ * PPG JS - Real-time PPG signal monitoring library (core bundle: no CSS,
+ * no bundled UI - see examples/demo for a reference UI built on the events
+ * below).
  * @module ppg-js
  */
 
-import PPGMonitor from './PPGMonitor.js';
-import { SignalProcessor } from './SignalProcessor.js';
-import { detrend } from './utils/detrend.js';
-import { computeFFT, calculateSNRFromPSD } from './utils/fft.js';
-import './styles/ppg-monitor.css';
+import { PPG } from './core/PPG.js';
+import { PPGMonitor } from './core/PPGMonitor.js';
+import { SignalProcessor } from './core/SignalProcessor.js';
+import { detrend } from './core/detrend.js';
+import { computeFFT, calculateSNRFromPSD } from './core/fft.js';
 
-// Export main class as default
-export default PPGMonitor;
+export { PPG };
+export type { PPGOptions, PPGMetrics, PPGCapabilities, PPGState } from './core/PPG.js';
 
-// Export additional utilities for advanced users
+/** @deprecated use `PPG` - kept as a thin alias for one release (v0.2.x). */
+export { PPGMonitor };
+
+export default PPG;
+
 export {
-  PPGMonitor,
   SignalProcessor,
   detrend,
   computeFFT,

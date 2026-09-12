@@ -1,33 +1,67 @@
-import FFT from 'fft.js';
+// Own minimal radix-2 Cooley-Tukey FFT (real input) - replaces the fft.js
+// dependency. fftSize must be a power of 2 (caller controls this; SignalProcessor
+// always passes 256). In-place iterative implementation, no allocation per call
+// beyond the working real/imag arrays.
+function radix2FFT(real: Float64Array, imag: Float64Array): void {
+  const n = real.length;
+  // Bit-reversal permutation
+  for (let i = 1, j = 0; i < n; i++) {
+    let bit = n >> 1;
+    for (; j & bit; bit >>= 1) j ^= bit;
+    j ^= bit;
+    if (i < j) {
+      [real[i], real[j]] = [real[j], real[i]];
+      [imag[i], imag[j]] = [imag[j], imag[i]];
+    }
+  }
+  // Iterative Cooley-Tukey butterflies
+  for (let len = 2; len <= n; len <<= 1) {
+    const ang = (-2 * Math.PI) / len;
+    const wr = Math.cos(ang), wi = Math.sin(ang);
+    for (let i = 0; i < n; i += len) {
+      let curWr = 1, curWi = 0;
+      for (let k = 0; k < len / 2; k++) {
+        const uR = real[i + k], uI = imag[i + k];
+        const vR = real[i + k + len / 2] * curWr - imag[i + k + len / 2] * curWi;
+        const vI = real[i + k + len / 2] * curWi + imag[i + k + len / 2] * curWr;
+        real[i + k] = uR + vR;
+        imag[i + k] = uI + vI;
+        real[i + k + len / 2] = uR - vR;
+        imag[i + k + len / 2] = uI - vI;
+        const nextWr = curWr * wr - curWi * wi;
+        const nextWi = curWr * wi + curWi * wr;
+        curWr = nextWr; curWi = nextWi;
+      }
+    }
+  }
+}
+
+export interface FFTResult {
+  psd: Float32Array;
+  fftSize: number;
+  sampleRate: number;
+  freqResolution: number;
+}
 
 /**
  * Compute FFT and Power Spectral Density
- *
- * @param {Array|Float32Array} signal - Input signal
- * @param {number} fftSize - FFT size (must be power of 2)
- * @returns {Object} { psd, peakIdx, peakFrequency, sampleRate }
+ * @param signal - Input signal
+ * @param fftSize - FFT size (must be power of 2)
  */
-export function computeFFT(signal, fftSize = 256, sampleRate = 60) {
+export function computeFFT(signal: ArrayLike<number>, fftSize = 256, sampleRate = 60): FFTResult {
   const n = signal.length;
 
-  // Pad signal to FFT size
-  const paddedSignal = new Float32Array(fftSize);
+  const real = new Float64Array(fftSize);
+  const imag = new Float64Array(fftSize);
   for (let i = 0; i < Math.min(n, fftSize); i++) {
-    paddedSignal[i] = signal[i];
+    real[i] = signal[i];
   }
 
-  // Compute FFT using FFT.js library
-  const fft = new FFT(fftSize);
-  const out = fft.createComplexArray();
-  const input = fft.toComplexArray(paddedSignal);
-  fft.transform(out, input);
+  radix2FFT(real, imag);
 
-  // Calculate Power Spectral Density (magnitude squared)
   const psd = new Float32Array(fftSize / 2);
   for (let i = 0; i < fftSize / 2; i++) {
-    const real = out[2 * i];
-    const imag = out[2 * i + 1];
-    psd[i] = real * real + imag * imag;
+    psd[i] = real[i] * real[i] + imag[i] * imag[i];
   }
 
   return {
@@ -38,23 +72,29 @@ export function computeFFT(signal, fftSize = 256, sampleRate = 60) {
   };
 }
 
+export interface SNRResult {
+  snr_dB: number;
+  peakIdx: number;
+  peakFrequency: number;
+  signalPower: number;
+  noisePower: number;
+  totalPower: number;
+}
+
 /**
  * Calculate SNR from Power Spectral Density
- *
- * @param {Float32Array} psd - Power spectral density array
- * @param {number} freqResolution - Frequency resolution (Hz per bin)
- * @param {number} cardiacBandLow - Lower cardiac frequency (Hz)
- * @param {number} cardiacBandHigh - Upper cardiac frequency (Hz)
- * @returns {Object} { snr_dB, peakIdx, peakFrequency }
  */
-export function calculateSNRFromPSD(psd, freqResolution, cardiacBandLow = 0.75, cardiacBandHigh = 4.0) {
-  // Define frequency bands
+export function calculateSNRFromPSD(
+  psd: Float32Array,
+  freqResolution: number,
+  cardiacBandLow = 0.75,
+  cardiacBandHigh = 4.0
+): SNRResult {
   const signalBandIdx = {
     low: Math.floor(cardiacBandLow / freqResolution),
     high: Math.ceil(cardiacBandHigh / freqResolution)
   };
 
-  // Calculate power in signal and total bands
   let signalPower = 0;
   let totalPower = 0;
   let maxPower = 0;
@@ -65,8 +105,6 @@ export function calculateSNRFromPSD(psd, freqResolution, cardiacBandLow = 0.75, 
 
     if (i >= signalBandIdx.low && i <= signalBandIdx.high) {
       signalPower += psd[i];
-
-      // Track peak for heart rate estimation
       if (psd[i] > maxPower) {
         maxPower = psd[i];
         peakIdx = i;
@@ -74,22 +112,10 @@ export function calculateSNRFromPSD(psd, freqResolution, cardiacBandLow = 0.75, 
     }
   }
 
-  // Calculate noise power
   const noisePower = totalPower - signalPower;
-
-  // Calculate SNR in dB (add small epsilon to avoid log(0))
   const epsilon = 1e-10;
   const snr_dB = 10 * Math.log10((signalPower + epsilon) / (noisePower + epsilon));
-
-  // Extract peak frequency
   const peakFrequency = peakIdx * freqResolution;
 
-  return {
-    snr_dB,
-    peakIdx,
-    peakFrequency,
-    signalPower,
-    noisePower,
-    totalPower
-  };
+  return { snr_dB, peakIdx, peakFrequency, signalPower, noisePower, totalPower };
 }
