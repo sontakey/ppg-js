@@ -133,6 +133,9 @@ function main() {
   const log = JSON.parse(readFileSync(path, 'utf8'));
   const result = replay(log);
 
+  const trackChanges = (log.events || []).filter(e => e.type === 'track_settings_changed').length;
+  console.log(`Camera: ${result.meta ? (result.meta.chosenLabel || '(facingMode fallback, no label match)') : '(none)'}`);
+  console.log(`Track setting changes mid-session: ${trackChanges}`);
   console.log(`Meta: ${result.meta ? JSON.stringify(result.meta.frameCallbackMode || result.meta) : '(none)'}`);
   console.log(`Samples: ${result.nSamples}, duration: ${result.durationSec.toFixed(1)}s`);
   console.log(

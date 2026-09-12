@@ -327,8 +327,9 @@
                     <div id="finger-circle" class="finger-circle poor"></div>
                 </div>
                 <div id="instruction-text" class="instruction-text">
-                    Please hold your finger over the camera and try to limit movement
+                    Cover the main (wide) rear lens and the flash with your fingertip, not the whole camera cluster
                 </div>
+                <div id="camera-label-text" class="instruction-text" style="font-size: 12px; opacity: 0.6;"></div>
             </div>
 
             <!-- PPG Waveform Card -->
@@ -506,6 +507,14 @@
                     if (info && !info.torchSupported) {
                         document.getElementById('instruction-text').textContent =
                             'No flashlight control on this browser - point your finger at a bright light or lamp instead.';
+                    }
+
+                    // Show which physical lens was locked in (debug aid for
+                    // confirming iOS didn't hand us the ultra-wide/virtual cam).
+                    const meta = ppg.getDebugLog().meta;
+                    if (meta && meta.chosenLabel) {
+                        document.getElementById('camera-label-text').textContent =
+                            `Camera: ${meta.chosenLabel} (${meta.chosenBy})`;
                     }
                 },
 
