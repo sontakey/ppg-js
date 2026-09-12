@@ -62,7 +62,7 @@ export class SignalProcessor {
     // detrend, then find systolic peaks and derive real per-beat IBI/HR/RMSSD.
     const filtered = filtfiltBandpass(rawSignal, sampleRate, this.cardiacBandLow, this.cardiacBandHigh);
     const peakTimes = detectPeaks(filtered, sampleRate);
-    const { ibisMs, artifactCount, totalCount } = computeIBIs(peakTimes);
+    const { ibisMs, artifactCount, totalCount, details: ibiDetails } = computeIBIs(peakTimes);
     this.ibiHistoryMs.push(...ibisMs);
     if (this.ibiHistoryMs.length > 40) {
       this.ibiHistoryMs = this.ibiHistoryMs.slice(-40);
@@ -106,7 +106,12 @@ export class SignalProcessor {
       signalPower: snrResult.signalPower,
       noisePower: snrResult.noisePower,
       peakFrequency: snrResult.peakFrequency,
-      heartRateFFT: Math.round(heartRateFFT)
+      heartRateFFT: Math.round(heartRateFFT),
+      // Raw per-window detections, for the debug recorder / replay
+      // comparison (see utils/recorder.js, tools/replay.js). Not used by
+      // the UI.
+      peakTimesSec: peakTimes,
+      ibiDetails
     };
   }
 

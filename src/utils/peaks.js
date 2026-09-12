@@ -70,16 +70,21 @@ export function detectPeaks(signal, sampleRate, minRefractorySec = 0.3) {
  */
 export function computeIBIs(peakTimes, minIbiMs = 300, maxIbiMs = 2000, maxJumpFraction = 0.3) {
   const ibisMs = [];
+  const details = []; // one entry per candidate IBI, for debug/replay comparison
   let artifactCount = 0;
   const recent = [];
 
   for (let i = 1; i < peakTimes.length; i++) {
     const ibi = (peakTimes[i] - peakTimes[i - 1]) * 1000;
     let valid = ibi >= minIbiMs && ibi <= maxIbiMs;
+    let reason = valid ? null : 'out_of_range';
 
     if (valid && recent.length >= 3) {
       const median = medianOf(recent.slice(-5));
-      if (Math.abs(ibi - median) / median > maxJumpFraction) valid = false;
+      if (Math.abs(ibi - median) / median > maxJumpFraction) {
+        valid = false;
+        reason = 'jump_vs_median';
+      }
     }
 
     if (valid) {
@@ -88,9 +93,10 @@ export function computeIBIs(peakTimes, minIbiMs = 300, maxIbiMs = 2000, maxJumpF
     } else {
       artifactCount++;
     }
+    details.push({ peakTimeSec: peakTimes[i], ibiMs: ibi, valid, reason });
   }
 
-  return { ibisMs, artifactCount, totalCount: peakTimes.length - 1 };
+  return { ibisMs, artifactCount, totalCount: peakTimes.length - 1, details };
 }
 
 function medianOf(arr) {

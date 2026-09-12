@@ -3,6 +3,7 @@ import { UIRenderer } from './UIRenderer.js';
 import { detrend } from './utils/detrend.js';
 import { windowMean } from './utils/helpers.js';
 import { createDefaultOptions, getContainerElement } from './utils/helpers.js';
+import { DebugRecorder } from './utils/recorder.js';
 
 /**
  * PPG Monitor - Real-time photoplethysmography signal monitoring
@@ -61,6 +62,11 @@ export class PPGMonitor {
     // Bind methods
     this.computeFrame = this.computeFrame.bind(this);
     this.handleResize = this.handleResize.bind(this);
+
+    // Always-on raw debug recorder (see utils/recorder.js). No toggle: a
+    // bad/unrepeatable session must never be lost. Exported on demand via
+    // getDebugLog()/downloadDebugLog().
+    this.recorder = new DebugRecorder();
   }
 
   /**
@@ -91,9 +97,12 @@ export class PPGMonitor {
       // never assume torch exists (iOS Safari has none).
       const track = this.stream.getVideoTracks()[0];
       this.torchSupported = false;
+      let capabilities = {};
+      const advanced = {};
+      let constraintsApplied = false;
+      let constraintsError = null;
       try {
-        const capabilities = track.getCapabilities ? track.getCapabilities() : {};
-        const advanced = {};
+        capabilities = track.getCapabilities ? track.getCapabilities() : {};
         if (capabilities.torch) {
           advanced.torch = true;
           this.torchSupported = true;
@@ -109,9 +118,11 @@ export class PPGMonitor {
         }
         if (Object.keys(advanced).length > 0) {
           await track.applyConstraints({ advanced: [advanced] });
+          constraintsApplied = true;
         }
       } catch (err) {
         console.warn('Could not apply camera capability constraints:', err);
+        constraintsError = String(err && err.message || err);
       }
 
       // Assign stream to video
@@ -131,6 +142,23 @@ export class PPGMonitor {
 
       // Initialize timing
       this.initTime = new Date();
+
+      // Capture session metadata once, for debug replay parity checks.
+      const usesRVFC = typeof this.video.requestVideoFrameCallback === 'function';
+      this.recorder.start({
+        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
+        screen: typeof screen !== 'undefined' ? { width: screen.width, height: screen.height } : null,
+        trackSettings: track.getSettings ? track.getSettings() : null,
+        trackCapabilities: capabilities,
+        constraintsRequested: advanced,
+        constraintsApplied,
+        constraintsError,
+        torchSupported: this.torchSupported,
+        frameCallbackMode: usesRVFC ? 'requestVideoFrameCallback' : 'requestAnimationFrame',
+        roi: { width: this.video.videoWidth, height: this.video.videoHeight, x: 0, y: 0 },
+        signalOptions: this.options.signal,
+        appVersion: typeof PPG_JS_VERSION !== 'undefined' ? PPG_JS_VERSION : null
+      });
 
       // Initialize chart if UI is enabled
       if (this.uiRenderer) {
@@ -209,17 +237,26 @@ export class PPGMonitor {
       this.ctx.drawImage(this.video, 0, 0, this.video.videoWidth, this.video.videoHeight);
       const frame = this.ctx.getImageData(0, 0, this.video.videoWidth, this.video.videoHeight);
 
-      // Extract red channel mean
+      // Extract per-channel means of the ROI (the whole frame - same pixels
+      // the pipeline actually uses below).
       const count = frame.data.length / 4;
-      let rgbRed = 0;
+      let rSum = 0, gSum = 0, bSum = 0;
       for (let i = 0; i < count; i++) {
-        rgbRed += frame.data[i * 4]; // Red channel
+        rSum += frame.data[i * 4];
+        gSum += frame.data[i * 4 + 1];
+        bSum += frame.data[i * 4 + 2];
       }
+      const rMean = rSum / count;
+      const gMean = gSum / count;
+      const bMean = bSum / count;
 
       // Invert and normalize. Camera PPG: more blood under the finger means
       // more light absorption, so raw red intensity DROPS at systole -
       // inverting here makes systolic peaks maxima, matching a pulse oximeter.
-      const xMean = 1 - rgbRed / (count * 255);
+      const xMean = 1 - rMean / 255;
+
+      // Raw debug sample - always recorded, no toggle.
+      this.recorder.pushSample({ t: timestampSec * 1000, r: rMean, g: gMean, b: bMean });
 
       // Store in buffer
       const slot = this.nFrame % this.options.signal.windowLength;
@@ -244,6 +281,33 @@ export class PPGMonitor {
 
         // Calculate signal quality
         this.currentMetrics = this.signalProcessor.process(this.acdc, this.ac, sampleRate);
+
+        // Log derived events for offline/live comparison (see utils/recorder.js).
+        const windowEndMs = timestampSec * 1000;
+        const windowStartMs = windowEndMs - (this.options.signal.windowLength / sampleRate) * 1000;
+        if (Array.isArray(this.currentMetrics.peakTimesSec)) {
+          for (const peakSec of this.currentMetrics.peakTimesSec) {
+            this.recorder.pushEvent({ t: windowStartMs + peakSec * 1000, type: 'peak' });
+          }
+        }
+        if (Array.isArray(this.currentMetrics.ibiDetails)) {
+          for (const d of this.currentMetrics.ibiDetails) {
+            this.recorder.pushEvent({
+              t: windowStartMs + d.peakTimeSec * 1000,
+              type: d.valid ? 'ibi_accepted' : 'ibi_rejected',
+              ibiMs: d.ibiMs,
+              reason: d.reason
+            });
+          }
+        }
+        this.recorder.pushEvent({
+          t: windowEndMs,
+          type: 'metrics_update',
+          heartRate: this.currentMetrics.heartRate,
+          rmssd: this.currentMetrics.rmssd,
+          qualityStatus: this.currentMetrics.qualityStatus,
+          snr_dB: this.currentMetrics.snr_dB
+        });
 
         // Update UI
         if (this.uiRenderer) {
@@ -361,6 +425,46 @@ export class PPGMonitor {
     if (this.uiRenderer) {
       this.uiRenderer.handleResize();
     }
+  }
+
+  /**
+   * Get the raw debug log recorded so far: {meta, samples, events}.
+   * Available whether or not the session is still running.
+   * @returns {{meta: Object|null, samples: Array, events: Array}}
+   */
+  getDebugLog() {
+    return this.recorder.toJSON();
+  }
+
+  /**
+   * Trigger a browser download of the debug log as JSON. Works via
+   * Blob + <a download> on Android Chrome and iOS Safari 13+ (iOS shows
+   * the share sheet instead of a direct save - that's expected).
+   * @returns {string} filename used
+   */
+  downloadDebugLog() {
+    const json = JSON.stringify(this.getDebugLog(), null, 2);
+    const filename = `ppg-debug-${new Date().toISOString()}.json`;
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    return filename;
+  }
+
+  /**
+   * Copy the debug log JSON to the clipboard - fallback for browsers/contexts
+   * where a download prompt isn't convenient (e.g. no Files app handy).
+   * @returns {Promise<void>}
+   */
+  async copyDebugLogToClipboard() {
+    const json = JSON.stringify(this.getDebugLog());
+    await navigator.clipboard.writeText(json);
   }
 
   /**
