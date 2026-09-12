@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- iOS `requestVideoFrameCallback` timing fix: use `expectedDisplayTime`/`nowMs`
+  instead of `mediaTime` (always 0 on iOS live streams), unified clock domain
+- Timestamp regression tests (`test/timestamps.test.js`), recorder timestamp
+  repair guards, replay-side timing reconstruction
+- Rear-camera lens lock by device label, with mid-session lens-swap detection
+- Node replay tool (`tools/replay.js`, `npm run replay`) that runs a recorded
+  debug log through the exact same filter/peak/IBI pipeline used live
+- Always-on raw debug recorder (`src/utils/recorder.js`) plus
+  `getDebugLog()` / `downloadDebugLog()` / `copyDebugLogToClipboard()` on
+  `PPGMonitor`, and Save/Copy debug log buttons in the demo
+- Synthetic-signal test for the real filter -> peak -> IBI pipeline
+- `npm test` script wiring all suites into one command (CI gate)
+
+### Fixed
+- Removed the ~8-minute freeze alternation that stopped the UI/chart from
+  updating for long stretches of any real measurement
+- Hardcoded 60 Hz sample-rate assumption replaced with a per-window measured
+  rate from real frame timestamps
+- Camera constraints tightened (facingMode/back-lens selection) to stop iOS
+  silently handing out a multi-camera virtual device mid-session
+
 ## [1.0.0] - 2024-12-22
 
 ### Added
