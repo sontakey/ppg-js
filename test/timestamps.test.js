@@ -68,15 +68,25 @@ import { replay } from '../tools/replay.js';
   const samples = [];
   for (let i = 0; i < n; i++) {
     const tSec = i / fps; // true capture time, NOT stored (simulating the bug)
-    const red = 128 - 20 * Math.sin(2 * Math.PI * hrHz * tSec); // dips = pulse
-    samples.push({ t: 0, r: red, g: 128, b: 128 }); // all-zero, as an old bad log
+    // Realistic camera-PPG amplitude (see replay.test.js's generator doc
+    // comment): DC ~200, AC ~1.5% of DC. A big swing (previously 20/128,
+    // ~16%) crosses the isFingerPresent red>120 threshold every cycle and
+    // never settles - real fingertip PPG never swings that far.
+    const dcRed = 200;
+    const acAmplitude = 3;
+    const red = dcRed - acAmplitude * Math.sin(2 * Math.PI * hrHz * tSec);
+    // green/blue low so isFingerPresent (utils/fingerState.js) passes -
+    // a real covered fingertip reads high red, low green/blue.
+    samples.push({ t: 0, r: red, g: 30, b: 30 }); // all-zero, as an old bad log
   }
   const log = { meta: { trackSettings: { frameRate: fps } }, samples, events: [] };
   const result = replay(log);
   assert.ok(result.reconstructed, 'replay must flag reconstructed timing');
   assert.ok(result.durationSec > 25, 'reconstructed duration should be close to 30s');
 
-  const measuredHr = result.hrTimeline[result.hrTimeline.length - 1].heartRate;
+  const measuringWindows = result.hrTimeline.filter(w => w.state === 'MEASURING');
+  assert.ok(measuringWindows.length > 0, 'must reach MEASURING within 30s');
+  const measuredHr = measuringWindows[measuringWindows.length - 1].heartRate;
   assert.ok(
     Math.abs(measuredHr - targetHr) <= 1,
     `reconstructed HR ${measuredHr} should be within 1bpm of ${targetHr}`

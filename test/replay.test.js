@@ -71,13 +71,19 @@ function generateSyntheticDebugLog(durationSec, hrBpm, nominalFps) {
     const harmonic2 = 0.1 * Math.sin(2 * Math.PI * 2 * hrHz * t + 0.6);
     const drift = 0.02 * Math.sin(2 * Math.PI * 0.05 * t);
     const noise = (rng() - 0.5) * 0.03;
-    const dcOffset = 0.5;
-    // xMean (post-inversion signal) target; invert back to a raw red value
-    // the same way PPGMonitor computes xMean = 1 - r/255.
-    const xMean = dcOffset + 0.05 * (fundamental + harmonic2) + drift + noise;
-    const r = (1 - xMean) * 255;
+    // Realistic camera-PPG amplitude: DC ~200/255, AC ~1.5% of DC (matches
+    // the real iPhone log this whole change is built from) - not the 10%
+    // amplitude used elsewhere in this file for filter/peak-detector
+    // stress-testing, which would swing red below the isFingerPresent
+    // threshold (utils/fingerState.js) and falsely flicker NO_FINGER.
+    const dcRed = 200;
+    const acAmplitude = 3; // ~1.5% of 200
+    const r = dcRed - acAmplitude * (fundamental + harmonic2) + drift * 20 + noise * 20;
 
-    rec.pushSample({ t: t * 1000, r, g: r, b: r });
+    // Finger-present heuristic (see utils/fingerState.js isFingerPresent)
+    // needs red high, green/blue low - a well-covered fingertip pad reads
+    // this way (skin+blood absorb green/blue, transmit/reflect red).
+    rec.pushSample({ t: t * 1000, r, g: 30, b: 30 });
   }
 
   return rec.toJSON();
@@ -88,9 +94,9 @@ function generateSyntheticDebugLog(durationSec, hrBpm, nominalFps) {
   const log = generateSyntheticDebugLog(60, targetHr, 30);
   const result = replay(log);
 
-  const lastWindows = result.hrTimeline.slice(-3).map(w => w.heartRate).filter(hr => hr > 0);
-  assert.ok(lastWindows.length > 0, 'replay must produce at least one non-zero HR window near the end');
-  const finalHr = lastWindows[lastWindows.length - 1];
+  const measuringWindows = result.hrTimeline.filter(w => w.state === 'MEASURING' && w.heartRate > 0);
+  assert.ok(measuringWindows.length > 0, 'replay must reach MEASURING and produce at least one non-zero HR window');
+  const finalHr = measuringWindows[measuringWindows.length - 1].heartRate;
 
   console.log(`[replay HR recovery] target=${targetHr}bpm replay(final)=${finalHr}bpm`);
   assert.ok(

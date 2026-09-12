@@ -13,7 +13,7 @@
     "build": "rollup -c",
     "dev": "rollup -c -w",
     "serve": "python3 -m http.server 8080",
-    "test": "node test/ppg-pipeline.test.js && node test/replay.test.js && node test/camera.test.js && node test/timestamps.test.js",
+    "test": "node test/run-all.js",
     "replay": "node tools/replay.js",
     "prepublishOnly": "npm run build"
   },
