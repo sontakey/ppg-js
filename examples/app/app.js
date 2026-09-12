@@ -15,14 +15,14 @@ function showScreen(name) {
 let monitor = null;
 const SETTLE_SEC = 6; // must match FingerStateMachine default (library doesn't expose it)
 const SESSION_SEC = 180; // fixed 3-minute measuring protocol
-const waveBuf = new Array(180).fill(0.5); // ~3s at ~60Hz, matches the demo's live strip
-const placementWaveBuf = new Array(180).fill(0.5); // raw trace shown on the Placement screen too
+const waveBuf = new Array(180).fill(0); // ~3s at ~60Hz, matches the demo's live strip
+const placementWaveBuf = new Array(180).fill(0); // raw trace shown on the Placement screen too
 let measuringStartedAt = null; // Date.now() ms when MEASURING was first reached this session
 let sessionTimerId = null;
 
 function resetWaveBuffer() {
-  waveBuf.fill(0.5);
-  placementWaveBuf.fill(0.5);
+  waveBuf.fill(0);
+  placementWaveBuf.fill(0);
 }
 
 function drawWaveOn(canvasId, buf) {
@@ -33,9 +33,15 @@ function drawWaveOn(canvasId, buf) {
   ctx.lineWidth = 2;
   ctx.beginPath();
   const n = buf.length;
+  // Values are detrended AC (a few counts out of ~190, i.e. ~0.01), so
+  // autoscale to the visible buffer's own range with a small floor.
+  let lo = Infinity, hi = -Infinity;
+  for (const v of buf) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  const span = Math.max(hi - lo, 1e-4);
+  const pad = canvas.height * 0.1;
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * canvas.width;
-    const y = canvas.height - buf[i] * canvas.height;
+    const y = canvas.height - pad - ((buf[i] - lo) / span) * (canvas.height - 2 * pad);
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
