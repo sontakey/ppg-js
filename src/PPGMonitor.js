@@ -211,9 +211,9 @@ export class PPGMonitor {
       // settings don't change fast enough to need per-frame polling, and
       // this keeps the hot path untouched.
       this._lastTrackSettings = track.getSettings ? track.getSettings() : {};
-      track.onended = () => this.recorder.pushEvent({ t: Date.now(), type: 'track_ended' });
-      track.onmute = () => this.recorder.pushEvent({ t: Date.now(), type: 'track_muted' });
-      track.onunmute = () => this.recorder.pushEvent({ t: Date.now(), type: 'track_unmuted' });
+      track.onended = () => this.recorder.pushEvent({ t: performance.now(), type: 'track_ended' });
+      track.onmute = () => this.recorder.pushEvent({ t: performance.now(), type: 'track_muted' });
+      track.onunmute = () => this.recorder.pushEvent({ t: performance.now(), type: 'track_unmuted' });
 
 
       // Initialize chart if UI is enabled
@@ -453,8 +453,17 @@ export class PPGMonitor {
     // measuredSampleRate() below needs. Falls back to requestAnimationFrame
     // on browsers without rVFC (older Safari).
     if (this.video.requestVideoFrameCallback) {
-      this.rvfcHandle = this.video.requestVideoFrameCallback((_nowMs, metadata) => {
-        this.computeFrame(metadata.mediaTime * 1000);
+      this.rvfcHandle = this.video.requestVideoFrameCallback((nowMs, metadata) => {
+        // WebKit live camera streams report mediaTime as 0 on iOS (it's a
+        // media-element timeline concept that doesn't apply to a live
+        // MediaStream), which poisons measuredSampleRate() and every peak
+        // timestamp downstream. expectedDisplayTime and nowMs are both in
+        // the performance.now() clock domain (ms) and are always populated,
+        // so prefer expectedDisplayTime (closer to actual capture) and fall
+        // back to nowMs. Never use mediaTime.
+        const edt = metadata.expectedDisplayTime;
+        const t = (typeof edt === 'number' && isFinite(edt) && edt > 0) ? edt : nowMs;
+        this.computeFrame(t);
       });
     } else {
       this.animationId = requestAnimationFrame(() => this.computeFrame(performance.now()));
