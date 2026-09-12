@@ -53,11 +53,43 @@ export class DebugRecorder {
    */
   start(meta) {
     this.meta = { startTime: new Date().toISOString(), ...meta };
+    this.lastT = -Infinity;
+    this.timestampAnomalies = { zero: 0, nonMonotonic: 0, nonFinite: 0 };
   }
 
-  /** @param {{t:number,r:number,g:number,b:number}} sample - t in ms */
+  /**
+   * @param {{t:number,r:number,g:number,b:number}} sample - t in ms
+   * A sample whose t is non-finite, non-increasing, or (after the first
+   * sample) exactly zero is still stored - a bad session should never be
+   * lost - but its t is repaired with performance.now() so the file stays
+   * replayable, and the anomaly is counted in this.timestampAnomalies.
+   */
   pushSample(sample) {
-    this.samples.push(sample);
+    if (this.lastT === undefined) this.lastT = -Infinity;
+    if (!this.timestampAnomalies) this.timestampAnomalies = { zero: 0, nonMonotonic: 0, nonFinite: 0 };
+
+    let t = sample.t;
+    const isFirst = this.samples.count === 0;
+    let bad = false;
+    if (!Number.isFinite(t)) {
+      this.timestampAnomalies.nonFinite++;
+      bad = true;
+    } else if (!isFirst && t === 0) {
+      this.timestampAnomalies.zero++;
+      bad = true;
+    } else if (t <= this.lastT) {
+      this.timestampAnomalies.nonMonotonic++;
+      bad = true;
+    }
+    if (bad) {
+      // performance.now() is relative to process/page start, so it can
+      // itself be <= lastT (e.g. lastT came from a large mediaTime-derived
+      // value before this fix). Nudge forward by a nominal frame period so
+      // the repaired stream is always strictly increasing and replayable.
+      t = Math.max(performance.now(), this.lastT + 1);
+    }
+    this.lastT = t;
+    this.samples.push(t === sample.t ? sample : { ...sample, t });
   }
 
   /** @param {Object} event - must include t (ms) and type */
@@ -70,7 +102,8 @@ export class DebugRecorder {
     return {
       meta: this.meta,
       samples: this.samples.toArray(),
-      events: this.events
+      events: this.events,
+      timestampAnomalies: this.timestampAnomalies || { zero: 0, nonMonotonic: 0, nonFinite: 0 }
     };
   }
 }

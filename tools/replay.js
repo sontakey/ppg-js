@@ -27,6 +27,16 @@ export function replay(log) {
     throw new Error('debug log has fewer than 2 samples - nothing to replay');
   }
 
+  // --- reconstruct timing for old logs where every t is 0/identical -------
+  const allSameT = samples.every(s => s.t === samples[0].t);
+  let reconstructed = false;
+  if (allSameT) {
+    reconstructed = true;
+    const fps = (log.meta && log.meta.trackSettings && log.meta.trackSettings.frameRate) || 30;
+    const dtMs = 1000 / fps;
+    samples.forEach((s, i) => { s.t = i * dtMs; });
+  }
+
   // --- fps / timing stats ------------------------------------------------
   const times = samples.map(s => s.t / 1000); // seconds
   const dts = [];
@@ -106,6 +116,8 @@ export function replay(log) {
 
   return {
     meta: log.meta || null,
+    reconstructed,
+    timestampAnomalies: log.timestampAnomalies || null,
     nSamples: samples.length,
     durationSec,
     fps: { mean: meanFps, min: minFps, max: maxFps, jitterSec: jitter },
@@ -133,8 +145,18 @@ function main() {
   const log = JSON.parse(readFileSync(path, 'utf8'));
   const result = replay(log);
 
-  const trackChanges = (log.events || []).filter(e => e.type === 'track_settings_changed').length;
+  if (result.reconstructed) {
+    console.log('*** RECONSTRUCTED TIMING: all recorded sample timestamps were 0/identical ***');
+    console.log('*** (old log format or an rVFC mediaTime=0 bug) - timing was synthesized from frameRate ***\n');
+  }
+  if (result.timestampAnomalies) {
+    const a = result.timestampAnomalies;
+    if (a.zero || a.nonMonotonic || a.nonFinite) {
+      console.log(`Timestamp anomalies (repaired at record time): zero=${a.zero} nonMonotonic=${a.nonMonotonic} nonFinite=${a.nonFinite}\n`);
+    }
+  }
   console.log(`Camera: ${result.meta ? (result.meta.chosenLabel || '(facingMode fallback, no label match)') : '(none)'}`);
+  const trackChanges = (log.events || []).filter(e => e.type === 'track_settings_changed').length;
   console.log(`Track setting changes mid-session: ${trackChanges}`);
   console.log(`Meta: ${result.meta ? JSON.stringify(result.meta.frameCallbackMode || result.meta) : '(none)'}`);
   console.log(`Samples: ${result.nSamples}, duration: ${result.durationSec.toFixed(1)}s`);
