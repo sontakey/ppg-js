@@ -3,23 +3,58 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Pulse — ppg-js demo</title>
+<title>HRV Spot Check</title>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
 <div id="app" class="screen-host">
 
+  <!-- DEBUG MENU: '...' trigger + bottom sheet, present on every screen -->
+  <button id="btn-debug-menu" class="debug-menu-trigger" type="button" aria-label="Debug menu">&#8942;</button>
+  <div id="debug-sheet-backdrop" class="debug-sheet-backdrop" hidden></div>
+  <div id="debug-sheet" class="debug-sheet" hidden role="dialog" aria-label="Debug menu">
+    <div class="debug-sheet-handle"></div>
+    <button id="btn-debug-share" class="btn-secondary btn-bordered" type="button">Share last session log</button>
+    <button id="btn-debug-copy" class="btn-secondary btn-bordered" type="button">Copy log summary</button>
+    <label class="debug-toggle-row"><input type="checkbox" id="chk-live-stats"> Show live stats</label>
+    <pre id="debug-live-stats" class="debug-live-stats" hidden></pre>
+    <button id="btn-debug-close" class="btn-secondary" type="button">Close</button>
+  </div>
+
   <!-- READY -->
   <section id="screen-ready" class="screen" data-screen="ready">
-    <div class="content">
-      <h1>Pulse</h1>
-      <p class="lead">Measures your heart rate and heart-rate variability using your phone's rear camera — no wearable needed.</p>
-      <p class="disclaimer">Phone only for now.</p>
-      <p class="disclaimer">Not a medical device. For personal curiosity only, not diagnosis or treatment.</p>
-    </div>
-    <button id="btn-start" class="btn-primary" type="button">Start</button>
-    <p id="desktop-note" class="disclaimer" hidden>This demo is built for a phone. Open <strong>ppg-js.vercel.app</strong> on your phone and put a fingertip over the rear camera.</p>
-  </section>
+  <div class="content">
+    <p class="ready-eyebrow">3-minute analysis</p>
+    <h1>HRV Spot Check</h1>
+    <p class="lead">A fingertip scan of your heart rate and heart-rate variability, right from your phone's camera.</p>
+    <ol class="ready-steps">
+      <li class="ready-step">
+        <span class="ready-step-num">1</span>
+        <span class="ready-step-text">
+          <strong>Cover the camera and flash.</strong>
+          Place your fingertip gently over the rear camera and flash.
+        </span>
+      </li>
+      <li class="ready-step">
+        <span class="ready-step-num">2</span>
+        <span class="ready-step-text">
+          <strong>Hold still for 3 minutes.</strong>
+          Breathe normally and rest your hand on a table if you can.
+        </span>
+      </li>
+      <li class="ready-step">
+        <span class="ready-step-num">3</span>
+        <span class="ready-step-text">
+          <strong>Wait for the ring to complete.</strong>
+          Keep your finger in place until the countdown ring finishes.
+        </span>
+      </li>
+    </ol>
+    <p class="disclaimer">Not a medical device. For personal curiosity only, not diagnosis or treatment.</p>
+  </div>
+  <button id="btn-start" class="btn-primary" type="button">Start</button>
+  <p id="desktop-note" class="disclaimer" hidden>Open on your phone. HRV Spot Check needs a rear camera and flash. Open this page on your phone to begin.</p>
+</section>
 
   <!-- PLACEMENT -->
   <section id="screen-placement" class="screen" data-screen="placement" hidden>
@@ -29,6 +64,8 @@
         <svg class="settle-ring-svg" viewBox="0 0 200 200"><circle cx="100" cy="100" r="96" fill="none" stroke="#4fd1c5" stroke-width="4" stroke-dasharray="603" id="settle-ring" stroke-linecap="round" transform="rotate(-90 100 100)"/></svg>
       </div>
       <p id="coach-line" class="coach-line" role="status" aria-live="polite">Cover the lens and flash with your fingertip pad</p>
+      <p id="state-line" class="state-line" aria-hidden="true"></p>
+      <canvas id="placement-wave-canvas" class="wave-canvas wave-canvas-small" width="600" height="60" aria-hidden="true"></canvas>
       <p id="torch-note" class="torch-note" hidden>Your phone's flashlight can't be turned on by this page (iOS Safari has no flashlight API). Turn it on yourself from Control Center, then cover the lens and the light with your fingertip.</p>
     </div>
     <button id="btn-cancel-placement" class="btn-secondary btn-bordered" type="button">Cancel</button>
@@ -41,6 +78,7 @@
         <span id="hr-value" class="hr-value">--</span>
         <span class="hr-unit">bpm</span>
       </div>
+      <p id="session-countdown" class="session-countdown">3:00</p>
       <div class="quality-pill" id="quality-pill">
         <span id="quality-dot" class="quality-dot"></span>
         <span id="quality-text">Settling</span>

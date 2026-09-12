@@ -1,0 +1,49 @@
+{
+  "pack": "HRV Spot Check — home screen inspiration (extension of docs/design/inspiration.md)",
+  "source": "Mobbin via Composio MOBBIN_MCP_SEARCH_SCREENS",
+  "transport": "composio_mcp (COMPOSIO_MULTI_EXECUTE_TOOL router)",
+  "params": {"platform": "ios", "mode": "deep", "limit": 6, "sync_response_to_workbench": true},
+  "lanes": [
+    {
+      "id": "lane1",
+      "query": "measurement onboarding hold still instructions",
+      "screens_returned": 6,
+      "apps": ["Noom", "DoorDash Dasher", "Wise", "Instacart", "Grab Driver", "Woolworths"],
+      "selected": [
+        {"id": "2ab004fb-e3df-4916-868c-1753daf84daf", "app": "Noom", "mobbin_url": "https://mobbin.com/screens/2ab004fb-e3df-4916-868c-1753daf84daf", "local_image": "docs/design/mobbin-home/images/01_lane1_01_Noom_2ab004fb.webp", "pattern": "Tip counter + timeboxed coaching sentence + single bottom CTA", "why_it_fits": "shows duration-in-copy pattern ('just 30 seconds')", "do_not_copy": "lifestyle photography, white-card-over-photo treatment"},
+        {"id": "c2e3413e-6575-40a5-bc4a-3b181d9b0b00", "app": "Instacart", "mobbin_url": "https://mobbin.com/screens/c2e3413e-6575-40a5-bc4a-3b181d9b0b00", "local_image": "docs/design/mobbin-home/images/01_lane1_04_Instacart_c2e3413e.webp", "pattern": "bold instruction title + one-sentence why", "why_it_fits": "instruction + reason pairing", "do_not_copy": "red error-state color coding, blue text-link CTA"},
+        {"id": "ba8b9f32-ae5b-4204-98da-53451defc8dd", "app": "Woolworths", "mobbin_url": "https://mobbin.com/screens/ba8b9f32-ae5b-4204-98da-53451defc8dd", "local_image": "docs/design/mobbin-home/images/01_lane1_06_Woolworths_ba8b9f32.webp", "pattern": "hero illustration + title + one physical-action sub-line, no progress chrome", "why_it_fits": "cleanest single-screen instruction skeleton", "do_not_copy": "3D rendered hand/phone illustration, green brand accent"}
+      ]
+    },
+    {
+      "id": "lane2",
+      "query": "wellness app home hero single CTA dark",
+      "screens_returned": 6,
+      "apps": ["pliability", "Calm Sleep", "Opal", "Breathwrk", "TIDE", "Ultrahuman"],
+      "selected": [
+        {"id": "c7702c95-1376-4097-a321-0c0460a5aa03", "app": "Breathwrk", "mobbin_url": "https://mobbin.com/screens/c7702c95-1376-4097-a321-0c0460a5aa03", "local_image": "docs/design/mobbin-home/images/02_lane2_04_Breathwrk_c7702c95.webp", "pattern": "one headline + one giant centered CTA as the hero", "why_it_fits": "purest single-action gate of the six", "do_not_copy": "glow/halo button chrome, day-streak gamification row"},
+        {"id": "1b3deee1-a193-4e36-93b0-7e89740f9c5c", "app": "Opal", "mobbin_url": "https://mobbin.com/screens/1b3deee1-a193-4e36-93b0-7e89740f9c5c", "local_image": "docs/design/mobbin-home/images/02_lane2_03_Opal_1b3deee1.webp", "pattern": "hero block + coaching line + bottom CTA card", "why_it_fits": "control case proving skeleton is metric-agnostic", "do_not_copy": "gemstone 3D illustration, score-pill row"}
+      ]
+    },
+    {
+      "id": "lane3",
+      "query": "step instructions minimal illustration",
+      "screens_returned": 6,
+      "apps": ["Quicken", "Superpower", "UNIQLO", "Tabby", "Whatnot", "Airbnb"],
+      "selected": [
+        {"id": "a9d0b169-e1ea-4611-b273-35401129a917", "app": "Airbnb", "mobbin_url": "https://mobbin.com/screens/a9d0b169-e1ea-4611-b273-35401129a917", "local_image": "docs/design/mobbin-home/images/03_lane3_06_Airbnb_a9d0b169.webp", "pattern": "numbered rows: number + bold title + one sentence + divider", "why_it_fits": "cleanest, most premium numbered-step skeleton", "do_not_copy": "3D isometric icons, pink CTA color"},
+        {"id": "7df088f8-dea2-4a33-88df-d476e926b113", "app": "Superpower", "mobbin_url": "https://mobbin.com/screens/7df088f8-dea2-4a33-88df-d476e926b113", "local_image": "docs/design/mobbin-home/images/03_lane3_02_Superpower_7df088f8.webp", "pattern": "numbered rows with divider + subhead framing 'three steps'", "why_it_fits": "subhead pattern for framing a fixed step count", "do_not_copy": "orange step-number color, lab-photo thumbnails"},
+        {"id": "3e4017ad-bca8-4f6c-b412-e6669499a8f1", "app": "Whatnot", "mobbin_url": "https://mobbin.com/screens/3e4017ad-bca8-4f6c-b412-e6669499a8f1", "local_image": "docs/design/mobbin-home/images/03_lane3_05_Whatnot_3e4017ad.webp", "pattern": "icon-led rows, title + one sentence, no numerals", "why_it_fits": "alternative non-numeral row style", "do_not_copy": "yellow accent, multi-screen '1 of N' footer counter"}
+      ]
+    }
+  ],
+  "distinct_apps_count": 18,
+  "selections_count": 8,
+  "visual_qa": {
+    "sheets_reviewed": ["docs/design/mobbin-home/sheets/lane1.png", "docs/design/mobbin-home/sheets/lane2.png", "docs/design/mobbin-home/sheets/lane3.png"],
+    "sheets_total": 3,
+    "all_reviewed": true,
+    "method": "one vision_analyze call per sheet, notes written immediately to docs/design/mobbin-home/notes/lane-0N.md"
+  },
+  "integrity_check": "see terminal output in task transcript: all 18 webp files exist, RIFF magic bytes verified, sips decode succeeded, zero duplicate ids, zero duplicate paths, id prefixes match filenames and mobbin_urls"
+}

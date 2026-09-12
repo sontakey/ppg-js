@@ -444,3 +444,134 @@ h2 {
 #camera-preview { position: absolute; inset: 6px; border-radius: 50%; overflow: hidden; background: #0d0f14; }
 #camera-preview video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .settle-ring-svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+/* Debug menu: '...' trigger on every screen + bottom sheet */
+.debug-menu-trigger {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 8px);
+  right: 12px;
+  z-index: 50;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255,255,255,0.08);
+  color: #a7adba;
+  font-size: 20px;
+  line-height: 1;
+}
+.debug-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 60;
+}
+.debug-sheet {
+  position: fixed;
+  left: 0; right: 0; bottom: 0;
+  z-index: 61;
+  background: #14161d;
+  border-radius: 16px 16px 0 0;
+  padding: 8px 20px calc(env(safe-area-inset-bottom) + 20px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.debug-sheet-handle {
+  width: 36px; height: 4px;
+  background: #3a3f4a;
+  border-radius: 2px;
+  margin: 8px auto 4px;
+}
+.debug-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #c3c9d4;
+  padding: 6px 0;
+}
+.debug-live-stats {
+  position: fixed;
+  top: calc(env(safe-area-inset-top) + 48px);
+  right: 12px;
+  z-index: 55;
+  background: rgba(0,0,0,0.7);
+  color: #4fd1c5;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 6px 8px;
+  border-radius: 6px;
+  white-space: pre;
+  max-width: 220px;
+}
+.state-line { font-size: 12px; color: #6b7280; margin-top: -8px; }
+.wave-canvas-small { height: 40px; opacity: 0.8; }
+.session-countdown { font-variant-numeric: tabular-nums; font-size: 15px; color: #a7adba; margin: -8px 0 4px; }
+
+
+.debug-sheet[hidden], .debug-sheet-backdrop[hidden] { display: none; }
+
+/* Ready screen (home) */
+/* Scoped to #screen-ready only — uses existing app.css tokens (#4fd1c5 teal,
+   #8a90a0/#c3c9d4 muted text, #2c313c hairline) so this pastes verbatim into
+   index.html without touching app.css. */
+
+#screen-ready .ready-eyebrow {
+  font-size: 13px;
+  font-weight: 600;
+  color: #4fd1c5;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin: 0;
+}
+
+#screen-ready .ready-steps {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  width: 100%;
+  max-width: 32em;
+  text-align: left;
+}
+
+#screen-ready .ready-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 0;
+  border-top: 1px solid #2c313c;
+}
+
+#screen-ready .ready-step:first-child {
+  border-top: none;
+}
+
+#screen-ready .ready-step-num {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: #1c2028;
+  color: #4fd1c5;
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#screen-ready .ready-step-text {
+  font-size: 15px;
+  line-height: 1.45;
+  color: #c3c9d4;
+}
+
+#screen-ready .ready-step-text strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 600;
+  color: #f2f4f7;
+  margin-bottom: 2px;
+}

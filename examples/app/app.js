@@ -14,26 +14,39 @@ function showScreen(name) {
 
 let monitor = null;
 const SETTLE_SEC = 6; // must match FingerStateMachine default (library doesn't expose it)
+const SESSION_SEC = 180; // fixed 3-minute measuring protocol
 const waveBuf = new Array(180).fill(0.5); // ~3s at ~60Hz, matches the demo's live strip
+const placementWaveBuf = new Array(180).fill(0.5); // raw trace shown on the Placement screen too
+let measuringStartedAt = null; // Date.now() ms when MEASURING was first reached this session
+let sessionTimerId = null;
 
 function resetWaveBuffer() {
   waveBuf.fill(0.5);
+  placementWaveBuf.fill(0.5);
 }
 
-function drawWave() {
-  const canvas = document.getElementById('wave-canvas');
+function drawWaveOn(canvasId, buf) {
+  const canvas = document.getElementById(canvasId);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.strokeStyle = '#4fd1c5';
   ctx.lineWidth = 2;
   ctx.beginPath();
-  const n = waveBuf.length;
+  const n = buf.length;
   for (let i = 0; i < n; i++) {
     const x = (i / (n - 1)) * canvas.width;
-    const y = canvas.height - waveBuf[i] * canvas.height;
+    const y = canvas.height - buf[i] * canvas.height;
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
   ctx.stroke();
+}
+
+function drawWave() {
+  drawWaveOn('wave-canvas', waveBuf);
+}
+
+function drawPlacementWave() {
+  drawWaveOn('placement-wave-canvas', placementWaveBuf);
 }
 
 function drawTachogram() {
@@ -60,7 +73,13 @@ function updatePlacementScreen(metrics) {
   const coachEl = document.getElementById('coach-line');
   const ring = document.getElementById('settle-ring');
   const circumference = 2 * Math.PI * 96;
-  if (metrics.fingerState === 'SETTLING') {
+  if (measuringStartedAt != null) {
+    // Bounced out of MEASURING mid-protocol (lift/drift) - the 3-minute
+    // countdown is paused (see tickSessionCountdown), not reset; coach the
+    // user to resume rather than showing the normal placement copy.
+    coachEl.textContent = 'Keep your finger on';
+    ring.style.strokeDashoffset = String(circumference);
+  } else if (metrics.fingerState === 'SETTLING') {
     coachEl.textContent = `Hold still... ${Math.ceil(remaining)}s`;
     const frac = 1 - Math.min(1, remaining / SETTLE_SEC);
     ring.style.strokeDashoffset = String(circumference * (1 - frac));
@@ -69,6 +88,14 @@ function updatePlacementScreen(metrics) {
     ring.style.strokeDashoffset = String(circumference);
   }
   document.getElementById('torch-note').hidden = monitor ? monitor.torchSupported !== false : true;
+
+  // Muted state+reason line - so the user (and a support/debug read of the
+  // screen) can see WHY a SETTLING bounce happened instead of just seeing
+  // the ring silently reset (see job 3).
+  const stateEl = document.getElementById('state-line');
+  const reason = monitor && monitor.fingerState ? monitor.fingerState.lastReason : null;
+  stateEl.textContent = reason ? `${metrics.fingerState} · ${reason}` : (metrics.fingerState || '');
+  drawPlacementWave();
 }
 
 function updateMeasuringScreen(metrics) {
@@ -85,6 +112,36 @@ function updateMeasuringScreen(metrics) {
     : (metrics.quality ? metrics.quality.reason : metrics.guidanceMessage) || 'Settling';
 
   drawTachogram();
+}
+
+// Fixed 3-minute protocol: starts counting down the moment MEASURING is
+// first reached, pauses (holds the last value) while the state drops back
+// out of MEASURING (lift/drift), and auto-stops at 0:00. Ticked on a plain
+// 1s interval rather than off onQualityUpdate, so the countdown updates
+// smoothly even across ~5s metric windows.
+function fmtCountdown(sec) {
+  const s = Math.max(0, Math.ceil(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function tickSessionCountdown() {
+  const el = document.getElementById('session-countdown');
+  if (measuringStartedAt == null) {
+    el.textContent = fmtCountdown(SESSION_SEC);
+    return;
+  }
+  const inMeasuring = monitor && monitor.getMetrics && monitor.getMetrics().fingerState === 'MEASURING';
+  if (!inMeasuring) {
+    // Paused: countdown label holds its last value; updatePlacementScreen
+    // shows "Keep your finger on" while bounced out of MEASURING.
+    return;
+  }
+  const elapsedSec = (Date.now() - measuringStartedAt) / 1000;
+  const remaining = SESSION_SEC - elapsedSec;
+  el.textContent = fmtCountdown(remaining);
+  if (remaining <= 0) {
+    stopSession();
+  }
 }
 
 function renderSummary() {
@@ -453,7 +510,7 @@ function renderReport(acceptedIbiMs) {
 
   if (!acceptedIbiMs.length) {
     el.innerHTML = `
-      <h2>Session report</h2>
+      <h2>HRV Spot Check report</h2>
       <p class="insufficient">No good-quality windows were captured this session — try again with steadier finger placement.</p>
     `;
     return;
@@ -467,7 +524,7 @@ function renderReport(acceptedIbiMs) {
   const header = document.createElement('div');
   header.className = 'report-card report-header';
   header.innerHTML = `
-    <h2>Session report</h2>
+    <h2>HRV Spot Check report</h2>
     <div class="meta-row">
       <span>${new Date().toLocaleString()}</span>
       <span>Duration <b>${(durationSec / 60).toFixed(1)} min</b></span>
@@ -597,8 +654,17 @@ function renderReport(acceptedIbiMs) {
 }
 
 function startSession() {
+  // Strict phone gate at the point of camera access too - not just the
+  // Ready-screen UI disable, so this can never be invoked (e.g. via the
+  // console or a future button) on desktop and grab getUserMedia there.
+  if (!isPhone) return;
+
   showScreen('placement');
   resetWaveBuffer();
+  measuringStartedAt = null;
+  document.getElementById('session-countdown').textContent = fmtCountdown(SESSION_SEC);
+  if (sessionTimerId) clearInterval(sessionTimerId);
+  sessionTimerId = setInterval(tickSessionCountdown, 1000);
 
   monitor = new PPGMonitor(null, {
     ui: { enabled: false },
@@ -607,6 +673,7 @@ function startSession() {
     },
     onQualityUpdate: (metrics) => {
       if (metrics.fingerState === 'MEASURING') {
+        if (measuringStartedAt == null) measuringStartedAt = Date.now();
         if (screens.measuring.hidden) showScreen('measuring');
         updateMeasuringScreen(metrics);
       } else {
@@ -620,7 +687,10 @@ function startSession() {
     onSignalUpdate: ({ value }) => {
       waveBuf.push(value);
       waveBuf.shift();
+      placementWaveBuf.push(value);
+      placementWaveBuf.shift();
       if (!screens.measuring.hidden) drawWave();
+      if (!screens.placement.hidden) drawPlacementWave();
     },
     onError: (err) => {
       alert('Camera error: ' + (err && err.message ? err.message : err));
@@ -638,6 +708,8 @@ function startSession() {
 }
 
 function stopSession() {
+  if (sessionTimerId) { clearInterval(sessionTimerId); sessionTimerId = null; }
+  measuringStartedAt = null;
   if (monitor) {
     monitor.stop();
   }
@@ -668,6 +740,117 @@ document.getElementById('btn-save-log').addEventListener('click', () => {
 document.getElementById('btn-save-report').addEventListener('click', () => {
   window.print();
 });
+
+// ---------------------------------------------------------- Debug menu --
+// Hidden '...' menu on every screen (job 6): share/download the LAST
+// session's log (persisted to localStorage by PPGMonitor on stop/cancel/
+// pagehide - works even with no active monitor, e.g. after Cancel or on
+// the report screen), a short copyable summary, and a live-stats overlay.
+const LAST_LOG_KEY = 'ppg_last_session_log';
+
+function getLastSessionLog() {
+  try {
+    const raw = localStorage.getItem(LAST_LOG_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function debugLogSummary(log) {
+  if (!log) return 'No session log available yet.';
+  const meta = log.meta || {};
+  const states = {};
+  for (const e of log.events || []) {
+    if (e.type === 'state_transition') states[e.state] = (states[e.state] || 0) + 1;
+  }
+  const goodWindows = (log.windows || []).filter(w => w.good).length;
+  const lastReason = [...(log.windows || [])].reverse().find(w => w.reason)?.reason || 'n/a';
+  const frameMode = meta.frameCallbackMode || 'unknown';
+  return [
+    `Device: ${meta.userAgent || 'unknown'}`,
+    `Camera: ${meta.chosenLabel || 'unknown'} (${meta.chosenBy || 'n/a'})`,
+    `Frame mode: ${frameMode}`,
+    `Torch supported: ${meta.torchSupported}`,
+    `State transitions: ${Object.entries(states).map(([k, v]) => `${k}=${v}`).join(', ') || 'none'}`,
+    `Good windows: ${goodWindows}/${(log.windows || []).length}`,
+    `Last reason: ${lastReason}`,
+    `Truncated: ${!!log.truncated}`
+  ].join('\n');
+}
+
+function openDebugSheet() {
+  document.getElementById('debug-sheet-backdrop').hidden = false;
+  document.getElementById('debug-sheet').hidden = false;
+}
+function closeDebugSheet() {
+  document.getElementById('debug-sheet-backdrop').hidden = true;
+  document.getElementById('debug-sheet').hidden = true;
+}
+document.getElementById('btn-debug-menu').addEventListener('click', openDebugSheet);
+document.getElementById('debug-sheet-backdrop').addEventListener('click', closeDebugSheet);
+document.getElementById('btn-debug-close').addEventListener('click', closeDebugSheet);
+
+document.getElementById('btn-debug-share').addEventListener('click', async () => {
+  const log = getLastSessionLog();
+  if (!log) { alert('No session log available yet.'); return; }
+  const json = JSON.stringify(log, null, 2);
+  const filename = `hrv-spot-check-${new Date().toISOString()}.json`;
+  const blob = new Blob([json], { type: 'application/json' });
+  if (navigator.share && navigator.canShare) {
+    const file = new File([blob], filename, { type: 'application/json' });
+    if (navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: filename });
+        return;
+      } catch (err) {
+        // user cancelled or share failed - fall through to download
+      }
+    }
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
+
+document.getElementById('btn-debug-copy').addEventListener('click', async () => {
+  const summary = debugLogSummary(getLastSessionLog());
+  try {
+    await navigator.clipboard.writeText(summary);
+    alert('Summary copied.');
+  } catch (err) {
+    alert(summary);
+  }
+});
+
+let liveStatsTimer = null;
+document.getElementById('chk-live-stats').addEventListener('change', (e) => {
+  const el = document.getElementById('debug-live-stats');
+  if (e.target.checked) {
+    el.hidden = false;
+    liveStatsTimer = setInterval(() => {
+      if (!monitor || !monitor.getMetrics) { el.textContent = 'no active session'; return; }
+      const m = monitor.getMetrics();
+      el.textContent = [
+        `state: ${m.fingerState}`,
+        `acdc: ${((m.acDcRatio || 0) * 100).toFixed(2)}%`,
+        `dcR/dcG: ${(m.selectedChannel === 'green' ? 'G' : 'R')}`,
+        `fps: ${(m.sampleRate || 0).toFixed(1)}`,
+        `torch: ${monitor.torchState || 'n/a'}`,
+        `artifactRatio: ${((m.artifactRatio || 0) * 100).toFixed(1)}%`
+      ].join('\n');
+    }, 500);
+  } else {
+    el.hidden = true;
+    if (liveStatsTimer) { clearInterval(liveStatsTimer); liveStatsTimer = null; }
+  }
+});
+
 
 // QA-only hook: force a screen into a representative state without a real
 // camera session, so headless visual QA can screenshot all 4 screens.
