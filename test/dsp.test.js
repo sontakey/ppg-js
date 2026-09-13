@@ -83,11 +83,13 @@ console.log('[dsp filter] passband flat within 2 dB over 45-180 bpm, breathing >
   assert.ok(tail.every(x => x.valid), `steady rhythm accepted after a bad seed (${tail.map(x => x.reason).join(',')})`);
   assert.ok(onset.details.slice(0, 2).every(x => !x.valid && x.reason === 'jump_vs_median'), 'cold-start seeds that disagree with the rhythm are dropped');
   assert.ok(onset.details[2].valid, 'a seed within the jump limit of the real rhythm (650 vs 780 ms) is kept');
+  assert.equal(onset.settledAtSec, onset.details[3].peakTimeSec, 'settledAtSec marks the first interval of the real rhythm');
   // A real change from 1000 ms to 650 ms (60 -> 92 bpm) is followed after
   // four consistent beats, and the earlier beats stay accepted.
   const change = computeIBIs(times([1000, 990, 1010, 1000, 995, 1005, 1000, 990, 650, 660, 640, 655, 650, 645]));
   assert.ok(change.details.slice(0, 8).every(x => x.valid), 'earlier beats at the old rate stay valid');
   assert.ok(change.details.slice(8).every(x => x.valid), `new rate accepted (${change.details.slice(8).map(x => x.reason).join(',')})`);
+  assert.equal(change.settledAtSec, null, 'a rate change after a settled start is not a cold start');
   // One premature beat plus its compensatory pause is still rejected.
   const ectopic = computeIBIs(times([800, 810, 790, 800, 500, 1100, 805, 795, 800]));
   assert.equal(ectopic.details[4].reason, 'jump_vs_median'); assert.equal(ectopic.details[5].reason, 'jump_vs_median');

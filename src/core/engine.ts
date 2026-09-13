@@ -478,7 +478,11 @@ export class PpgEngine {
     // metrics use only intervals between confidently timed beats.
     const accepted60 = last60.filter(d => d.valid).map(d => d.ibiMs);
     const hrv60 = last60.filter(d => d.valid && !d.lowSnr).map(d => d.ibiMs);
-    const artifactRatio = last60.length ? last60.filter(d => !d.valid).length / last60.length : 0;
+    // Intervals from before the reference settled (a noisy onset that had
+    // to be re-seeded) are settling, not irregularity: keep them out of the
+    // artifact tally so a rough start does not hold the gate for a minute.
+    const tallied = cont.settledAtSec == null ? last60 : last60.filter(d => d.peakTimeSec >= cont.settledAtSec!);
+    const artifactRatio = tallied.length ? tallied.filter(d => !d.valid).length / tallied.length : 0;
 
     // Pulsatile amplitude from accepted beats in the window (median per-beat), fall back to the spread.
     const winBeats = newPeaks.filter(p => p.valid);
@@ -490,7 +494,9 @@ export class PpgEngine {
     const heartRateIBI = heartRateFromIBIs(cont.ibisMs.slice(-40));
     const xc = crossCheckHeartRate(heartRateIBI, heartRateFFT);
     const heartRateRaw = xc.heartRate || heartRateFFT;
-    this.displayedHr = slewLimit(this.displayedHr, heartRateRaw, o.hrSlewPerWindow);
+    // Slew-limit only between consecutive good windows. After a bad stretch
+    // the displayed value is stale or was seeded by junk, so it snaps.
+    this.displayedHr = this.lastWindowValue && this.lastWindowValue.quality.good ? slewLimit(this.displayedHr, heartRateRaw, o.hrSlewPerWindow) : heartRateRaw;
 
     // ---- Timing uncertainty / RMSSD floor ---------------------------------
     const sig = this.peaks.filter(p => end - p.t <= 60).map(p => p.sigma);

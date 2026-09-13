@@ -147,6 +147,13 @@ export interface IbiResult {
   artifactCount: number;
   totalCount: number;
   details: IbiDetail[];
+  /**
+   * Time (s) of the first interval of the rhythm the reference settled on
+   * after a cold-start re-seed, or null when the first accepted intervals
+   * were already the rhythm. Intervals before it belong to the onset, not
+   * to the measurement.
+   */
+  settledAtSec: number | null;
 }
 
 /**
@@ -175,6 +182,7 @@ export function computeIBIs(
   // and are accepted retroactively.
   const RESEED_RUN = 4;
   let jumpRun: number[] = [];
+  let settledAtSec: number | null = null;
 
   for (let i = 1; i < peakTimes.length; i++) {
     const ibi = (peakTimes[i] - peakTimes[i - 1]) * 1000;
@@ -211,6 +219,7 @@ export function computeIBIs(
           // Later in a session the old intervals were real beats at an
           // earlier rate, so they stay.
           if (ibisMs.length < 2 * RESEED_RUN) {
+            settledAtSec = details[details.length - (RESEED_RUN - 1)].peakTimeSec;
             for (const d of details) {
               if (d.valid && Math.abs(d.ibiMs - runMedian) / runMedian > maxJumpFraction) {
                 d.valid = false; d.reason = 'jump_vs_median'; artifactCount++;
@@ -240,7 +249,7 @@ export function computeIBIs(
     details.push({ peakTimeSec: peakTimes[i], ibiMs: ibi, valid, reason });
   }
 
-  return { ibisMs, artifactCount, totalCount: Math.max(0, peakTimes.length - 1), details };
+  return { ibisMs, artifactCount, totalCount: Math.max(0, peakTimes.length - 1), details, settledAtSec };
 }
 
 export function medianOf(arr: ArrayLike<number>): number {

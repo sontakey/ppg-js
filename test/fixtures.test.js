@@ -127,13 +127,14 @@ console.log('\nALL FIXTURE TESTS PASSED');
 // The first three accepted intervals (1479, 1592, 649 ms) came from the
 // moments after finger placement. Before the re-seed rule every later beat
 // at ~780 ms was rejected as a jump against that reference and the session
-// never showed a heart rate. Observed after the fix: first good window at
-// t=40 s, HR 72-79 bpm.
+// never showed a heart rate. Observed after the fix: the reference re-seeds
+// at 17.9 s, onset intervals leave the artifact tally, the first good
+// window is 20.3-25.3 s, HR 72-82 bpm.
 {
   const fixture = JSON.parse(readFileSync(new URL('./fixtures/iphone-63s-noisy-onset.json', import.meta.url)));
   const r = runReplay(fixture);
   const good = r.hrTimeline.filter(w => w.quality.good);
-  assert.ok(good.length >= 3 && good[0].windowEndSec <= 46, `heart rate must appear by t=46 s (observed 45.3 s) (first good window ends at ${good[0] && good[0].windowEndSec})`);
+  assert.ok(good.length >= 3 && good[0].windowEndSec <= 26, `heart rate must appear by t=26 s (observed: window 20.3-25.3 s) (first good window ends at ${good[0] && good[0].windowEndSec})`);
   for (const w of good) assert.ok(w.heartRate >= 68 && w.heartRate <= 84, `good HR 68-84 bpm at t=${w.windowEndSec}s, got ${w.heartRate}`);
   const late = r.tachogram.filter(p => p.t >= 30);
   const accepted = late.filter(p => p.valid).length / late.length;

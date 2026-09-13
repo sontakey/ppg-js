@@ -38,8 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rate at all, "irregular beats" forever). Four consecutive mutually
   consistent rejects now re-seed the reference and are accepted
   retroactively; on a cold start the disagreeing seeds are dropped. The same
-  rule follows a real sustained rate change. Fixture
-  `iphone-63s-noisy-onset.json` reproduces the failure.
+  rule follows a real sustained rate change. Intervals from before the
+  re-seed count as settling, not irregularity, so they no longer hold the
+  quality gate for a minute, and the displayed heart rate snaps rather than
+  slews after a bad stretch. Fixture `iphone-63s-noisy-onset.json`
+  reproduces the failure (heart rate now at 20 s instead of never).
 - Demo report: the "population mean" caption under the PNS/SNS bars was
   absolutely positioned without a positioned parent, so it anchored to the
   page and floated over other cards while the report scrolled.
