@@ -77,6 +77,15 @@ function drawTachogram() {
   });
 }
 
+const STATE_TEXT = { NO_FINGER: 'Waiting for finger', SETTLING: 'Finger detected', MEASURING: 'Measuring' };
+const REASON_TEXT = {
+  finger_placed: 'settling',
+  settled: 'signal steady',
+  finger_lifted: 'finger lifted',
+  large_drift: 'light changed, resettling',
+  camera_resumed: 'camera restarted',
+};
+
 function updatePlacementScreen(metrics) {
   const remaining = metrics.settleRemainingSec || 0;
   const coachEl = document.getElementById('coach-line');
@@ -103,7 +112,7 @@ function updatePlacementScreen(metrics) {
   // the ring silently reset (see job 3).
   const stateEl = document.getElementById('state-line');
   const reason = monitor && monitor.fingerState ? monitor.fingerState.lastReason : null;
-  stateEl.textContent = reason ? `${metrics.fingerState} · ${reason}` : (metrics.fingerState || '');
+  stateEl.textContent = STATE_TEXT[metrics.fingerState] ? `${STATE_TEXT[metrics.fingerState]}${REASON_TEXT[reason] ? ' · ' + REASON_TEXT[reason] : ''}` : '';
   drawPlacementWave();
 }
 
