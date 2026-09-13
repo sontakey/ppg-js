@@ -10,7 +10,7 @@
   ],
   "headers": [
     {
-      "source": "/(.*)\\.html",
+      "source": "/:path*.html",
       "headers": [
         {
           "key": "Cache-Control",
@@ -19,7 +19,16 @@
       ]
     },
     {
-      "source": "/(app|demo)/?",
+      "source": "/app",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-store"
+        }
+      ]
+    },
+    {
+      "source": "/demo",
       "headers": [
         {
           "key": "Cache-Control",
