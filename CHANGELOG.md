@@ -17,8 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   30 s while one source still tracks it (0.4), and a rate at twice the held
   one is read as its harmonic. `RespirationEstimate.basis` says which rule
   produced the rate. On the 3 min spot check the first estimate moved from
-  95 s to 40 s after MEASURING, with one empty window instead of nine; the demo shows "estimating"
-  and a ≈ prefix for provisional rates.
+  95 s to 40 s after MEASURING, with one empty window instead of nine; the demo shows a ≈ prefix
+  for provisional rates.
 
 ### Added
 - `analyzeHRV` / `frequencyDomain` accept `respirationRateBpm` and report

@@ -135,8 +135,6 @@ function updateMeasuringScreen(metrics) {
     if (r && r.rateBpm != null) {
       // Below 0.5 the rate rests on one modulation source or a recent hold.
       respEl.textContent = `${r.confidence < 0.5 ? '≈' : ''}${r.rateBpm.toFixed(0)} br/min`;
-    } else if (metrics.fingerState === 'MEASURING') {
-      respEl.textContent = 'estimating (~45 s)';
     } else {
       respEl.textContent = '--';
     }
