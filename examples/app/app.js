@@ -239,11 +239,17 @@ function drawBipolarBar(canvasParent, value, cls) {
   }
   canvasParent.appendChild(ticks);
 
+  // The label is absolutely positioned, so it needs a positioned parent of
+  // its own; otherwise it anchors to the page and floats over other cards
+  // while the report scrolls.
+  const meanRow = document.createElement('div');
+  meanRow.className = 'bipolar-mean';
   const meanLabel = document.createElement('div');
   meanLabel.className = 'zero-mean-label';
   meanLabel.textContent = 'population mean';
   meanLabel.style.left = zeroPct + '%';
-  canvasParent.appendChild(meanLabel);
+  meanRow.appendChild(meanLabel);
+  canvasParent.appendChild(meanRow);
 }
 
 // Shared canvas setup: backs the canvas at devicePixelRatio and returns a
@@ -552,7 +558,8 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
     return;
   }
 
-  const result = PPG.hrv.analyzeHRV(beats, { rmssdFloorMs });
+  const fusionRespBpm = liveRespiration && liveRespiration.rateBpm != null && liveRespiration.confidence >= 0.5 ? liveRespiration.rateBpm : undefined;
+  const result = PPG.hrv.analyzeHRV(beats, { rmssdFloorMs, respirationRateBpm: fusionRespBpm });
   const td = result.timeDomain, fd = result.frequencyDomain, nl = result.nonlinear, ans = result.ans, si = result.stressIndex;
   const durationSec = result.meta.durationSec;
   const goodPct = Math.round(monitor && monitor.getSessionSummary ? monitor.getSessionSummary().goodFraction * 100 : 100);
@@ -639,7 +646,8 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
         <tr><td>Respiration rate (HF peak)</td><td>${fmt(fd.respirationRateBpm, 1)} breaths/min</td></tr>
         <tr><td>Respiration rate (pulse-train fusion)</td><td>${liveRespiration && liveRespiration.rateBpm != null ? `${fmt(liveRespiration.rateBpm, 1)} breaths/min (confidence ${fmt(liveRespiration.confidence, 2)})` : '--'}</td></tr>
         <tr><td>Coherence (0.04-0.26 Hz peak share)</td><td>${fmt(fd.coherence, 2)}</td></tr>
-      </table>`;
+      </table>
+      ${fd.respirationInLf ? `<p class="report-note">Breathing was slower than 9 breaths/min (${fmt(fusionRespBpm, 1)}/min), so respiratory sinus arrhythmia falls in the LF band. Read LF, LF n.u. and LF/HF as breathing-driven, not sympathetic; the HF-peak respiration rate is not the breathing rate here.</p>` : ''}`;
   } else {
     fdCard.innerHTML += `<p class="insufficient">${fd.reason}</p>`;
   }

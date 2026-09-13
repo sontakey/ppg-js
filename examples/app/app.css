@@ -311,8 +311,15 @@ h2 {
   background: #454b58;
 }
 
+.bipolar-mean {
+  position: relative;
+  height: 12px;
+  margin-bottom: 4px;
+}
+
 .zero-mean-label {
   position: absolute;
+  top: 0;
   transform: translateX(-50%);
   font-size: 9px;
   color: #5a6272;

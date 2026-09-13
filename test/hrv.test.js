@@ -106,6 +106,9 @@ function modulated(fHz, ampMs, durationSec, meanMs = 850) {
   const full = hrv.analyzeHRV(modulated(0.25, 40, 200), { rmssdFloorMs: 10 });
   assert.ok(full.timeDomain.ok && full.frequencyDomain.ok && full.ans.ok && full.ans.experimental === true);
   assert.equal(full.meta.rmssdFloorMs, 10);
+  assert.equal(full.frequencyDomain.respirationInLf, null, 'no breathing rate supplied -> null');
+  assert.equal(hrv.analyzeHRV(modulated(0.25, 40, 200), { respirationRateBpm: 6.7 }).frequencyDomain.respirationInLf, true, 'slow breathing flags LF');
+  assert.equal(hrv.analyzeHRV(modulated(0.25, 40, 200), { respirationRateBpm: 15 }).frequencyDomain.respirationInLf, false, 'normal breathing does not');
   console.log('[hrv misc] artifact correction, ultra-short, baseline, analyzeHRV: PASS');
 }
 

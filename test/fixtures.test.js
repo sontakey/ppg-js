@@ -76,3 +76,39 @@ const iphone52 = JSON.parse(readFileSync(new URL('./fixtures/iphone-52s.json', i
 }
 
 console.log('\nALL FIXTURE TESTS PASSED');
+
+// --- iphone-195s-slow-breathing.json: 3 min spot check, v0.3.0 app ----------
+// Clean torch-lit iPhone recording at 60 fps with periodic 30 fps dips (the
+// camera pipeline drops every other frame for ~20 s about once a minute, 846
+// dropped frames in total) and slow breathing (~6.7 breaths/min), which puts
+// respiratory sinus arrhythmia into the LF band. The numbers below are the
+// observed values; live and replay peaks matched 212/212 on this log.
+{
+  const { analyzeHRV } = await import('../src/hrv/index.ts');
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/iphone-195s-slow-breathing.json', import.meta.url)));
+  const r = runReplay(fixture);
+
+  assert.equal(r.comparisonToLive.missed, 0, 'replay must reproduce every live peak');
+  assert.equal(r.comparisonToLive.extra, 0, 'replay must not add peaks the device did not see');
+  assert.ok(r.summary.goodFraction >= 0.9, `>=90% good windows, got ${(r.summary.goodFraction * 100).toFixed(1)}%`);
+  assert.ok(r.summary.hr.median >= 65 && r.summary.hr.median <= 71, `median HR 65-71 bpm, got ${r.summary.hr.median}`);
+
+  // Frame-rate dips raise the timing floor but must not break HR or the gate.
+  const dipWindows = r.hrTimeline.filter(w => w.quality.good && w.sampleRate < 50);
+  assert.ok(dipWindows.length >= 4, `expect several good windows at <50 fps (got ${dipWindows.length})`);
+  for (const w of dipWindows) assert.ok(w.heartRate >= 60 && w.heartRate <= 82, `HR during a frame-rate dip stays plausible (t=${w.windowStartSec}s: ${w.heartRate})`);
+  assert.ok(Math.max(...r.hrTimeline.filter(w => w.quality.good).map(w => w.rmssdFloorMs)) < 20, 'RMSSD floor stays under 20 ms even through the dips');
+
+  // Slow breathing: the fusion estimate must be steady near 6.7 br/min at
+  // the end and the HRV module must flag that RSA sits in the LF band.
+  const lastResp = r.respirationTimeline[r.respirationTimeline.length - 1];
+  assert.ok(lastResp && lastResp.rateBpm > 5.5 && lastResp.rateBpm < 8 && lastResp.confidence >= 0.5, `final respiration ~6.7 br/min, got ${JSON.stringify(lastResp)}`);
+  const beats = r.tachogram.filter(p => p.valid && p.good && !p.lowSnr);
+  const hrv = analyzeHRV(beats, { respirationRateBpm: lastResp.rateBpm });
+  assert.ok(hrv.frequencyDomain.ok, hrv.frequencyDomain.reason);
+  assert.equal(hrv.frequencyDomain.respirationInLf, true, 'slow breathing must be flagged');
+  assert.ok(Math.abs(hrv.frequencyDomain.lf.peakFrequency - lastResp.rateBpm / 60) < 0.02, `LF peak (${hrv.frequencyDomain.lf.peakFrequency} Hz) must coincide with the breathing rate`);
+  assert.ok(hrv.timeDomain.rmssd > 55 && hrv.timeDomain.rmssd < 85, `RMSSD ~69 ms, got ${hrv.timeDomain.rmssd}`);
+
+  console.log(`[iphone-195s-slow-breathing] ${r.comparisonToLive.matched}/${r.comparisonToLive.liveEventCount} live peaks reproduced, good=${(r.summary.goodFraction * 100).toFixed(0)}%, ${dipWindows.length} good windows under 50 fps, resp=${lastResp.rateBpm.toFixed(1)}/min, LF peak=${hrv.frequencyDomain.lf.peakFrequency.toFixed(3)} Hz, RMSSD=${hrv.timeDomain.rmssd.toFixed(1)} ms: PASS`);
+}

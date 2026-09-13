@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `analyzeHRV` / `frequencyDomain` accept `respirationRateBpm` and report
+  `respirationInLf`: when an independent breathing estimate is under
+  9 breaths/min, respiratory sinus arrhythmia sits in the LF band and LF/HF
+  is breathing-driven. The demo report prints a note in that case.
+- Fixture `iphone-195s-slow-breathing.json`: a 3 min v0.3.0 spot check with
+  periodic 30 fps dips and ~6.7 breaths/min breathing, with regression
+  bounds on live/replay parity, gate rate, HR through the dips, respiration
+  and the LF peak.
+
+### Fixed
+- Demo report: the "population mean" caption under the PNS/SNS bars was
+  absolutely positioned without a positioned parent, so it anchored to the
+  page and floated over other cards while the report scrolled.
+- `tools/anonymize-log.js` now redacts device and group ids inside recorded
+  events too, not only in `meta`; the two `iphone-cros-*` fixtures were
+  re-anonymized.
+
 ## [0.3.0] - 2026-09-13
 
 Rebuild of the signal core after the September 2026 audit

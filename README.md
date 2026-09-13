@@ -269,7 +269,10 @@ accept/reject decision remains `quality.good`.
   triangular index, least-squares TINN, RR range
 - `frequencyDomain`: Welch PSD on a 4 Hz linear resample using real beat
   times, LF/HF (VLF only for ≥ 5 min), normalised units, HF-peak respiration,
-  coherence (0.04-0.26 Hz peak share); refuses recordings with > 20% gaps
+  coherence (0.04-0.26 Hz peak share); refuses recordings with > 20% gaps.
+  Pass `respirationRateBpm` (the engine's fusion estimate) and
+  `respirationInLf` tells you when breathing under 9/min has moved RSA into
+  the LF band, so LF/HF is breathing-driven rather than sympathetic
 - `nonlinear`: Poincaré SD1/SD2, sample entropy, DFA α1
 - `stressIndex`: Baevsky SI and its square root (the form Kubios reports)
 - `ansIndices` (experimental): PNS/SNS z-scores against cited references

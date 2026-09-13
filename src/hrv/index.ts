@@ -234,6 +234,14 @@ export interface FrequencyDomainResult {
   /** Resonance/coherence score: power within +-0.015 Hz of the 0.04-0.26 Hz peak over total 0.0033-0.4 Hz power (0-1). */
   coherence: number;
   gapFraction: number;
+  /**
+   * True when an independently measured breathing rate (`respirationRateBpm`
+   * option) is below 9 breaths/min (0.15 Hz): respiratory sinus arrhythmia
+   * then lands in the LF band, so LF, LF n.u. and LF/HF reflect breathing,
+   * not sympathetic tone (Task Force 1996; Shaffer & Ginsberg 2017). null
+   * when no breathing rate was supplied.
+   */
+  respirationInLf: boolean | null;
 }
 
 function hann(n: number): Float64Array {
@@ -358,7 +366,8 @@ export function detrendPoly2(series: ArrayLike<number>): Float64Array {
   return out;
 }
 
-export function frequencyDomain(input: BeatInput, opts: { minDurationSec?: number; maxGapFraction?: number; correctArtifacts?: boolean } = {}): FrequencyDomainResult {
+export function frequencyDomain(input: BeatInput, opts: { minDurationSec?: number; maxGapFraction?: number; correctArtifacts?: boolean; respirationRateBpm?: number } = {}): FrequencyDomainResult {
+  const respirationInLf = opts.respirationRateBpm != null && Number.isFinite(opts.respirationRateBpm) ? opts.respirationRateBpm / 60 < BANDS.hf[0] : null;
   const minDuration = opts.minDurationSec ?? 60;
   const maxGap = opts.maxGapFraction ?? 0.2;
   const beats = toBeats(input);
@@ -370,7 +379,7 @@ export function frequencyDomain(input: BeatInput, opts: { minDurationSec?: numbe
   const base: FrequencyDomainResult = {
     ok: false, durationSec, ultraShort: durationSec < 120, fs, segmentLengthSec: 0, segments: 0, freqs: [], psd: [], vlf: null,
     lf: { power: NaN, peakFrequency: null }, hf: { power: NaN, peakFrequency: null }, totalPower: NaN, lfhf: NaN, lfnu: NaN, hfnu: NaN,
-    respirationRateBpm: null, coherence: NaN, gapFraction
+    respirationRateBpm: null, coherence: NaN, gapFraction, respirationInLf
   };
   if (durationSec < minDuration) return { ...base, reason: `Need at least ${minDuration} s of beats for frequency analysis (have ${durationSec.toFixed(0)} s).` };
   if (gapFraction > maxGap) return { ...base, reason: `Too many gaps between accepted beats (${(gapFraction * 100).toFixed(0)}% of the recording).` };
@@ -619,16 +628,19 @@ export interface HrvAnalysis {
  * Full analysis of accepted beats. Pass beats with timestamps (`{ibiMs, t}`)
  * whenever you have them so gaps between accepted beats are handled
  * correctly. `rmssdFloorMs`, if known (the camera engine reports it), is
- * passed through so consumers can show it next to RMSSD.
+ * passed through so consumers can show it next to RMSSD. `respirationRateBpm`
+ * (from the engine's pulse-train fusion or any other independent source)
+ * sets `frequencyDomain.respirationInLf` when breathing is slow enough to
+ * move RSA into the LF band.
  */
-export function analyzeHRV(input: BeatInput, opts: { rmssdFloorMs?: number } = {}): HrvAnalysis {
+export function analyzeHRV(input: BeatInput, opts: { rmssdFloorMs?: number; respirationRateBpm?: number } = {}): HrvAnalysis {
   const beats = toBeats(input);
   const ibiMs = beats.map(b => b.ibiMs);
   const { t } = beatTimes(beats);
   const durationSec = t.length ? t[t.length - 1] - t[0] + (ibiMs[0] || 0) / 1000 : 0;
   const { flagged, pctCorrected } = correctArtifacts(ibiMs);
   const td = timeDomain(beats);
-  const fd = frequencyDomain(beats);
+  const fd = frequencyDomain(beats, { respirationRateBpm: opts.respirationRateBpm });
   const nl = nonlinear(ibiMs);
   const si = ibiMs.length >= 30 ? stressIndex(ibiMs) : stressIndex([]);
   const ans = ansIndices(td, si);

@@ -11,8 +11,22 @@ import { readFileSync, writeFileSync } from 'node:fs';
 
 const REDACTED = '[REDACTED]';
 
+const ID_KEYS = new Set(['deviceId', 'groupId', 'chosenDeviceId']);
+
+// Device and group ids also appear inside recorded events (track settings
+// snapshots and change events), so redact them wherever they occur.
+function redactIds(node) {
+  if (Array.isArray(node)) { node.forEach(redactIds); return; }
+  if (!node || typeof node !== 'object') return;
+  for (const k of Object.keys(node)) {
+    if (ID_KEYS.has(k) && typeof node[k] === 'string' && node[k] !== '') node[k] = REDACTED;
+    else redactIds(node[k]);
+  }
+}
+
 export function anonymizeLog(log) {
   const out = JSON.parse(JSON.stringify(log));
+  redactIds(out);
   const m = out.meta;
   if (!m) return out;
 
