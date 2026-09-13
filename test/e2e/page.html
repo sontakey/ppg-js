@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>ppg-js e2e</title>
+<script src="/dist/index.global.js"></script>
+<script>
+  window.__windows = [];
+  window.__errors = [];
+  window.__start = async () => {
+    const m = new PPG.PPGMonitor(null, {
+      wakeLock: false,
+      onQualityUpdate: (x) => window.__windows.push(JSON.parse(JSON.stringify(x))),
+      onError: (e) => window.__errors.push(String(e && e.message || e))
+    });
+    window.__monitor = m;
+    await m.start();
+    return { torch: m.torchSupported, mode: m.getDebugLog().meta.frameCallbackMode };
+  };
+</script>
+<p>ppg-js end-to-end harness</p>

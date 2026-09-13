@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-13
+
+Rebuild of the signal core after the September 2026 audit
+(`docs/audit/AUDIT-2026-09.md`). Heart rate was already right; this release
+makes the variability numbers trustworthy and the capture layer portable.
+
+### Changed
+- **One streaming engine** (`PpgEngine`) drives both the live camera path and
+  `tools/replay.js`. Windows are 5 s of signal time, every window is
+  interpolated onto one absolute time grid from the frame timestamps, and
+  beat times are absolute. Dropped or late frames no longer shift beats; the
+  live/replay parity test now asserts window-for-window equality.
+- **Filter**: 4th-order Butterworth high-pass + 2nd-order low-pass cascade,
+  zero-phase, reflection-padded. Flat within 1.4 dB over 45-180 bpm, 48 dB
+  down on breathing; the previous single biquad was 6 dB down at its own
+  band edges.
+- **Spectral heart rate**: every sample used, Hann window, zero-padding,
+  parabolic peak refinement (about 1 bpm resolution at any camera rate, was
+  14 bpm at 60 fps) and a sub-harmonic guard so a strong dicrotic wave no
+  longer doubles the rate.
+- **Beat timing**: 0.3 s least-squares vertex fit. Zero-variability RMSSD
+  floor 9-13 ms (was 20-26 ms; 52 ms with 10% dropped frames). The engine
+  reports its own `rmssdFloorMs` next to every RMSSD.
+- **Pulse amplitude** is now the bandpassed per-beat amplitude over DC, not
+  the raw window range; motion no longer passes the "weak pulse" check.
+- **Finger presence** is relative (red share of R+G+B, minimum red DC) and
+  drift thresholds are fractions of DC, so Android sensors with a bright
+  green channel and darker skin work with the defaults. All thresholds are
+  options and are written into the debug log.
+- **Quality gate** adds saturation, motion, pulse-shape (template
+  correlation) and double-count/missed-beat checks, each with a stable
+  `quality.code`.
+- **Camera**: each capability gets its own `advanced` constraint set (a
+  bundled set is applied all-or-nothing); exposure/white balance/focus lock
+  now happens after the finger has settled (`camera.lockExposure`), not while
+  the camera looks at the room; zoom is opt-in (`camera.zoom`); one retry on
+  `NotReadableError`; `captureTime` preferred for frame timestamps;
+  `presentedFrames` deltas counted as `droppedFrames`.
+- **Lifecycle**: screen wake lock while measuring (`wakeLock`), optional
+  DeviceMotion gate (`motion`), an error boundary around the frame loop,
+  `PPGError` with stable codes and user-facing guidance, a preflight check
+  for insecure contexts and in-app browsers, full reset on `start()`.
+- **Privacy**: the debug log is no longer written to `localStorage` unless
+  `debug.persistLastSession` is set; the user agent is omitted unless
+  `debug.includeUserAgent` is set.
+- **Coaching**: state is checked before the torch hint, so torch-less
+  devices get real guidance while measuring.
+- Session tachogram entries carry the window's `good` flag;
+  `getTachogram({ goodOnly: true })`.
+- Package: `browser` field removed, `require` condition ships its own types,
+  subpath exports `./dsp`, `./hrv`, `./sources`, `./engine`; strict
+  TypeScript throughout with real types on the public surface; `tsc` runs in
+  CI; a Playwright job runs the real `getUserMedia` path against a fake
+  camera fed from a recorded fixture.
+
+### Added
+- `@sontakey/ppg-js/hrv`: the HRV analysis ported from the demo with the
+  formula errors fixed (Baevsky stress index, linear RR resampling on real
+  beat times with gap handling, least-squares TINN, sample-standard
+  deviations, sample entropy template count, VLF hidden under 5 min) plus
+  lnRMSSD, ultra-short (60 s) RMSSD, a rolling lnRMSSD baseline with the
+  smallest worthwhile change, coherence, and experimental PNS/SNS indices
+  with cited references.
+- Respiration rate from the pulse train (interval, amplitude and baseline
+  modulation fused when they agree), on the `respiration` event.
+- `@sontakey/ppg-js/sources`: `BleHeartRateSource` (Web Bluetooth chest
+  strap, RR intervals) and `ArraySource` (replay).
+- Per-beat template quality (`templateSqi`), `clippedFraction`, `motion`,
+  `timingUncertaintyMs` in metrics.
+
+### Fixed
+- Recorder leaked samples across `start()` calls.
+- A beat inside the filter's edge region was lost at every window boundary.
+- Coaching showed the flashlight hint on torch-less devices even with a good
+  signal.
+- Demo report used beats from windows the quality gate had rejected.
+- Build no longer rewrites tracked HTML; deploy stamps every script tag so
+  the immutable cache cannot serve a stale app shell.
+
+### Removed
+- `SignalProcessor` (replaced by `PpgEngine`), the Rollup config, the
+  `.backup` sources and `LIBRARY_SUMMARY.md`; `examples/app/hrv-analysis.js`
+  (now `PPG.hrv`).
+
 ## [0.2.0] - 2026-09-12
 
 First npm release.
@@ -41,7 +125,7 @@ First npm release.
 - Camera constraints tightened (facingMode/back-lens selection) to stop iOS
   silently handing out a multi-camera virtual device mid-session
 
-## [1.0.0] - 2024-12-22
+## [1.0.0] - 2024-12-22 (pre-npm prototype; numbering predates the 0.x series above)
 
 ### Added
 - Complete library refactoring into modular, reusable npm package

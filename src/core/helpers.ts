@@ -1,142 +1,133 @@
-/**
- * Calculate mean of array or typed array
- *
- * @param {Array|Float32Array} array - Input array
- * @returns {number} Mean value
- */
-export function windowMean(array) {
+import type { EngineOptions } from './engine.js';
+
+/** Mean of an array or typed array. */
+export function windowMean(array: ArrayLike<number>): number {
   const n = array.length;
+  if (!n) return 0;
   let sum = 0;
-
-  for (let i = 0; i < n; i++) {
-    sum += array[i];
-  }
-
+  for (let i = 0; i < n; i++) sum += array[i];
   return sum / n;
 }
 
-/**
- * Get quality status from SNR value
- *
- * @param {number} snr - Signal-to-noise ratio in dB
- * @returns {string} Quality status: "Excellent", "Good", "Fair", or "Poor"
- */
-export function getQualityStatus(snr) {
-  if (snr >= 10) return "Excellent";
-  if (snr >= 5) return "Good";
-  if (snr >= 0) return "Fair";
-  return "Poor";
+/** Legacy SNR bucket label. */
+export function getQualityStatus(snr: number): 'Excellent' | 'Good' | 'Fair' | 'Poor' {
+  if (snr >= 10) return 'Excellent';
+  if (snr >= 5) return 'Good';
+  if (snr >= 0) return 'Fair';
+  return 'Poor';
 }
 
-/**
- * Generate user guidance message based on signal quality metrics
- *
- * @param {number} snr - Signal-to-noise ratio in dB
- * @param {number} pi - Perfusion index (%)
- * @param {number} stability - Signal stability (0-1)
- * @returns {string} Guidance message
- */
-export function generateGuidance(snr, pi, stability) {
-  if (snr < 0) {
-    if (pi < 0.3) {
-      return "Cover camera completely with finger";
-    }
-    return "Adjust finger placement";
-  }
-
-  if (snr >= 0 && snr < 5) {
-    if (pi < 1.0) {
-      return "Press finger more firmly";
-    }
-    if (pi > 15) {
-      return "Reduce finger pressure slightly";
-    }
-    if (stability < 0.5) {
-      return "Hold finger still";
-    }
-    return "Adjusting... hold steady";
-  }
-
-  if (snr >= 5 && snr < 10) {
-    return "Good signal - hold steady";
-  }
-
-  // snr >= 10
-  return "Excellent signal!";
+export interface CameraOptions {
+  width: ConstrainULong;
+  height: ConstrainULong;
+  frameRate: ConstrainDouble;
+  facingMode: ConstrainDOMString;
+  /** Digital zoom to request (opt-in; on some Android phones zoom > 1 switches to a lens with no torch). */
+  zoom: number | null;
+  /** When to lock exposure/white balance/focus: after the finger has settled (default), at start, or never. */
+  lockExposure: 'measuring' | 'start' | 'never';
+  /** Request the torch when the device advertises it. */
+  torch: boolean;
 }
 
-/**
- * Validate and merge user options with defaults
- *
- * @param {Object} userOptions - User-provided options
- * @returns {Object} Merged options
- */
-export function createDefaultOptions(userOptions = {}) {
-  const defaults = {
-    ui: {
-      enabled: true,
-      showVideo: true,
-      showMetrics: true,
-      showChart: true,
-      theme: 'light'
-    },
-    signal: {
-      windowLength: 300,      // 5 seconds at 60 FPS
-      sampleRate: 60,         // Target FPS
-      cardiacBandLow: 0.75,   // Hz (45 BPM)
-      cardiacBandHigh: 4.0,   // Hz (240 BPM)
-      fftSize: 256            // Next power of 2 >= 300
-    },
+export interface RoiOptions { widthFraction: number; heightFraction: number; }
+
+export interface DebugOptions {
+  /** Persist the last session's debug log to localStorage on stop()/pagehide (raw PPG is health data: opt-in). */
+  persistLastSession: boolean;
+  /** Include navigator.userAgent in the debug log meta. */
+  includeUserAgent: boolean;
+  /** Ring-buffer capacity for raw samples. */
+  sampleCap: number;
+}
+
+export interface MonitorCallbacks {
+  onReady: ((info: ReadyInfo) => void) | null;
+  onQualityUpdate: ((metrics: Record<string, unknown>) => void) | null;
+  onSignalUpdate: ((s: { time: number; value: number; isProcessing: boolean }) => void) | null;
+  onFrame: ((f: { frameCount: number; xMean: number; acFrame: number; clippedFraction: number }) => void) | null;
+  onState: ((s: { state: string; reason: string | null; time: number }) => void) | null;
+  onError: ((err: unknown) => void) | null;
+}
+
+export interface ReadyInfo {
+  torchSupported: boolean;
+  torchState: string;
+  wakeLock: boolean;
+  motion: boolean;
+  capabilities: Record<string, unknown>;
+}
+
+export interface MonitorOptions extends MonitorCallbacks {
+  ui: { enabled: boolean };
+  /** Engine (signal-processing) options. Legacy `windowLength`/`sampleRate` keys are ignored. */
+  signal: Partial<EngineOptions> & { windowLength?: number; sampleRate?: number };
+  camera: CameraOptions;
+  roi: RoiOptions;
+  debug: DebugOptions;
+  /** Keep the screen awake while measuring (navigator.wakeLock). */
+  wakeLock: boolean;
+  /** Feed device motion into the quality gate (asks permission on iOS). */
+  motion: boolean;
+  /** Caller-supplied <video> element for the capture stream. */
+  video: HTMLVideoElement | null;
+}
+
+export type MonitorUserOptions = {
+  [K in keyof MonitorOptions]?: MonitorOptions[K] extends object | null
+    ? (MonitorOptions[K] extends null ? MonitorOptions[K] : Partial<NonNullable<MonitorOptions[K]>> | null)
+    : MonitorOptions[K];
+};
+
+export function createDefaultOptions(userOptions: Record<string, unknown> = {}): MonitorOptions {
+  const u = userOptions as MonitorUserOptions;
+  const defaults: MonitorOptions = {
+    ui: { enabled: false },
+    signal: {},
     camera: {
       width: { ideal: 640 },
       height: { ideal: 480 },
       frameRate: { ideal: 60 },
-      facingMode: 'environment'
+      facingMode: 'environment',
+      zoom: null,
+      lockExposure: 'measuring',
+      torch: true
     },
-    // Center-crop fraction of frame width/height sampled for channel means -
-    // avoids averaging in the unlit frame edges outside the fingertip pad,
-    // which is most of a 640x480 frame when only the lens is covered.
-    roi: {
-      widthFraction: 0.3,
-      heightFraction: 0.3
-    },
+    roi: { widthFraction: 0.3, heightFraction: 0.3 },
+    debug: { persistLastSession: false, includeUserAgent: false, sampleCap: 10 * 60 * 60 },
+    wakeLock: true,
+    motion: false,
+    video: null,
     onFrame: null,
     onQualityUpdate: null,
     onSignalUpdate: null,
+    onState: null,
     onError: null,
     onReady: null
   };
-
-  // Deep merge
+  const fn = <T>(v: T | undefined | null, d: T): T => (typeof v === 'function' ? v : d);
   return {
-    ui: { ...defaults.ui, ...(userOptions.ui || {}) },
-    signal: { ...defaults.signal, ...(userOptions.signal || {}) },
-    camera: { ...defaults.camera, ...(userOptions.camera || {}) },
-    roi: { ...defaults.roi, ...(userOptions.roi || {}) },
-    onFrame: userOptions.onFrame || defaults.onFrame,
-    onQualityUpdate: userOptions.onQualityUpdate || defaults.onQualityUpdate,
-    onSignalUpdate: userOptions.onSignalUpdate || defaults.onSignalUpdate,
-    onError: userOptions.onError || defaults.onError,
-    onReady: userOptions.onReady || defaults.onReady
+    ui: { ...defaults.ui, ...(u.ui || {}) },
+    signal: { ...defaults.signal, ...(u.signal || {}) },
+    camera: { ...defaults.camera, ...(u.camera || {}) } as CameraOptions,
+    roi: { ...defaults.roi, ...(u.roi || {}) },
+    debug: { ...defaults.debug, ...(u.debug || {}) },
+    wakeLock: u.wakeLock ?? defaults.wakeLock,
+    motion: u.motion ?? defaults.motion,
+    video: (u.video as HTMLVideoElement | null | undefined) ?? null,
+    onFrame: fn(u.onFrame as MonitorCallbacks['onFrame'], null),
+    onQualityUpdate: fn(u.onQualityUpdate as MonitorCallbacks['onQualityUpdate'], null),
+    onSignalUpdate: fn(u.onSignalUpdate as MonitorCallbacks['onSignalUpdate'], null),
+    onState: fn(u.onState as MonitorCallbacks['onState'], null),
+    onError: fn(u.onError as MonitorCallbacks['onError'], null),
+    onReady: fn(u.onReady as MonitorCallbacks['onReady'], null)
   };
 }
 
-/**
- * Get container element from selector or element
- *
- * @param {string|HTMLElement|null} container - Container selector or element
- * @returns {HTMLElement|null} Container element
- */
-export function getContainerElement(container) {
+/** Resolve a container selector/element (kept for API compatibility; the core renders no UI). */
+export function getContainerElement(container: string | HTMLElement | null | undefined): HTMLElement | null {
   if (!container) return null;
-
-  if (typeof container === 'string') {
-    return document.querySelector(container);
-  }
-
-  if (container instanceof HTMLElement) {
-    return container;
-  }
-
+  if (typeof container === 'string') return typeof document !== 'undefined' ? document.querySelector<HTMLElement>(container) : null;
+  if (typeof HTMLElement !== 'undefined' && container instanceof HTMLElement) return container;
   return null;
 }

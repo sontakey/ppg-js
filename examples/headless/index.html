@@ -112,7 +112,8 @@
         </div>
     </div>
 
-    <script src="../../dist/ppg-monitor.min.js"></script>
+    <script src="../demo/dist/ppg.global.js"></script>
+    <script>const PPGMonitor = PPG.PPGMonitor;</script>
     <script>
         let ppg = null;
 
@@ -126,12 +127,13 @@
                 ui: { enabled: false },
 
                 onQualityUpdate: (metrics) => {
-                    // Update custom UI with metrics
-                    document.getElementById('hr-display').textContent = metrics.heartRate;
+                    // Update custom UI with metrics. heartRate is 0 unless
+                    // metrics.quality.good - show the gate's reason instead.
+                    document.getElementById('hr-display').textContent = metrics.quality.good ? metrics.heartRate : '--';
                     document.getElementById('snr-display').textContent = metrics.snr_dB.toFixed(1);
                     document.getElementById('pi-display').textContent = metrics.perfusionIndex.toFixed(1);
                     document.getElementById('ibi-display').textContent = metrics.ibi;
-                    document.getElementById('guidance').textContent = metrics.guidanceMessage;
+                    document.getElementById('guidance').textContent = metrics.quality.good ? metrics.guidanceMessage : metrics.quality.reason;
 
                     // Color code based on status
                     const statusClass = 'status-' + metrics.qualityStatus.toLowerCase();
@@ -144,7 +146,7 @@
                 },
 
                 onError: (error) => {
-                    alert('Error: ' + error.message);
+                    alert(error.guidance || error.message);
                     btn.disabled = false;
                     btn.textContent = 'Start Monitoring';
                 },

@@ -27,5 +27,7 @@
         }
       ]
     }
-  ]
+  ],
+  "buildCommand": "npm run build:site",
+  "installCommand": "npm install --no-audit --no-fund"
 }

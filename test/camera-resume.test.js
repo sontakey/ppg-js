@@ -1,4 +1,5 @@
 // Unit tests for _resumeCamera()/_forceReapplyTorch() (src/core/PPGMonitor.ts):
+// (drives the real monitor against stubbed navigator/document; no browser needed)
 // survive iOS backgrounding (screenshot, app switch) that ends or mutes the
 // live MediaStreamTrack without ever telling the app cleanly. Drives the
 // real PPGMonitor against a stubbed navigator.mediaDevices/document so no
@@ -111,7 +112,7 @@ function makeFakeMediaDevices(trackFactory) {
   const secondTrack = fake.tracks[1];
   assert.ok(secondTrack.applyConstraintsCalls.some(c => c.advanced && c.advanced[0] && c.advanced[0].torch === true),
     'torch re-applied on the new track after resume');
-  assert.equal(m.fingerState.state, STATE.NO_FINGER, 'state machine reset to NO_FINGER after resume');
+  assert.equal(m.engine.state, STATE.NO_FINGER, 'state machine reset to NO_FINGER after resume');
 
   const events = m.getDebugLog().events;
   assert.ok(events.some(e => e.type === 'camera_resumed' && e.ok === true), 'camera_resumed logged with ok:true');

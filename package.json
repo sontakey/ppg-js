@@ -1,22 +1,67 @@
 {
   "name": "@sontakey/ppg-js",
-  "version": "0.2.0",
-  "description": "Camera-based PPG in the browser: heart rate, IBI and HRV from a fingertip on a phone camera. Zero dependencies.",
+  "version": "0.3.0",
+  "description": "Camera PPG in the browser: heart rate, pulse-rate variability, respiration and signal quality from a fingertip on a phone camera. Zero dependencies, typed, no UI.",
   "type": "module",
   "main": "dist/index.cjs",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
-  "browser": "dist/index.global.js",
   "sideEffects": false,
   "engines": {
     "node": ">=20"
   },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./dsp": {
+      "import": {
+        "types": "./dist/dsp.d.ts",
+        "default": "./dist/dsp.js"
+      },
+      "require": {
+        "types": "./dist/dsp.d.cts",
+        "default": "./dist/dsp.cjs"
+      }
+    },
+    "./hrv": {
+      "import": {
+        "types": "./dist/hrv.d.ts",
+        "default": "./dist/hrv.js"
+      },
+      "require": {
+        "types": "./dist/hrv.d.cts",
+        "default": "./dist/hrv.cjs"
+      }
+    },
+    "./sources": {
+      "import": {
+        "types": "./dist/sources.d.ts",
+        "default": "./dist/sources.js"
+      },
+      "require": {
+        "types": "./dist/sources.d.cts",
+        "default": "./dist/sources.cjs"
+      }
+    },
+    "./engine": {
+      "import": {
+        "types": "./dist/engine.d.ts",
+        "default": "./dist/engine.js"
+      },
+      "require": {
+        "types": "./dist/engine.d.cts",
+        "default": "./dist/engine.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
@@ -24,26 +69,35 @@
   "scripts": {
     "build": "tsup",
     "postbuild": "node tools/postbuild.mjs",
+    "build:site": "npm run build && node tools/stamp-examples.mjs",
     "dev": "tsup --watch",
     "serve": "python3 -m http.server 8080",
-    "test": "node test/run-all.js",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "npm run typecheck && node test/run-all.js",
+    "test:unit": "node test/run-all.js",
+    "test:e2e": "node test/e2e/fake-camera.mjs",
     "replay": "tsx tools/replay.js",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build && npm test"
   },
   "keywords": [
-    "ppg",
-    "photoplethysmography",
-    "vitals",
-    "heart-rate",
-    "camera",
-    "signal-processing",
-    "health",
     "biometrics",
+    "camera",
+    "getusermedia",
+    "health",
+    "heart-rate",
     "hrv",
-    "rmssd",
     "ibi",
-    "webrtc",
-    "getusermedia"
+    "photoplethysmography",
+    "ppg",
+    "prv",
+    "pulse-rate-variability",
+    "respiration",
+    "rmssd",
+    "signal-processing",
+    "signal-quality",
+    "typescript",
+    "vitals",
+    "webrtc"
   ],
   "author": "Sameer Sontakey",
   "license": "MIT",
@@ -54,7 +108,8 @@
   "devDependencies": {
     "tsup": "^8.5.1",
     "tsx": "^4.23.13",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "playwright": "^1.56.1"
   },
   "homepage": "https://github.com/sontakey/ppg-js#readme",
   "bugs": {
@@ -63,5 +118,7 @@
   "publishConfig": {
     "access": "public",
     "provenance": true
-  }
+  },
+  "unpkg": "dist/index.global.js",
+  "jsdelivr": "dist/index.global.js"
 }

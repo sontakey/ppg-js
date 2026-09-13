@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -17,4 +17,20 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - run: npm install --no-audit --no-fund
-      - run: npm test
+      - run: npm run typecheck
+      - run: npm run test:unit
+      - run: npm run build
+
+  e2e:
+    # Real Chromium, real getUserMedia, fake camera fed from a recorded
+    # fixture (see test/e2e/fake-camera.mjs).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install --no-audit --no-fund
+      - run: npx playwright install --with-deps chromium
+      - run: npm run build
+      - run: npm run test:e2e

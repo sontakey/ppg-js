@@ -1,135 +1,119 @@
 /**
- * Always-on raw debug recorder. Captures every frame's raw channel means and
- * every derived event (peaks, IBIs, HR/RMSSD updates) so a session recorded
- * on a phone can be replayed offline through the exact same pipeline
- * (see tools/replay.js). No toggle - a bad session should never be lost.
+ * Always-on raw debug recorder: every frame's channel means and every
+ * derived event, so a session recorded on a phone can be replayed offline
+ * through the exact same engine (tools/replay.js).
  */
 
 const DEFAULT_CAP = 10 * 60 * 60; // 10 minutes @ 60fps
 
-/**
- * Fixed-size ring buffer of plain objects, so a long session can't grow
- * memory unbounded. Oldest samples are overwritten once the cap is hit.
- */
-class RingBuffer {
-  // ponytail: index signature matches the other core classes' JS->TS move.
-  [key: string]: any;
+export interface RecordedSample { t: number; r: number; g: number; b: number; clipped?: number; motion?: number; }
+export interface RecordedEvent { t: number; type: string; [key: string]: unknown; }
+export interface TimestampAnomalies { zero: number; nonMonotonic: number; nonFinite: number; }
 
-  constructor(cap) {
+export interface DebugLog {
+  meta: Record<string, unknown> | null;
+  samples: RecordedSample[];
+  events: RecordedEvent[];
+  windows: Record<string, unknown>[];
+  timestampAnomalies: TimestampAnomalies;
+  droppedFrames: number;
+  truncated: boolean;
+}
+
+/** Fixed-size ring buffer; oldest entries are overwritten once full. */
+class RingBuffer<T> {
+  readonly cap: number;
+  private buf: T[];
+  count = 0;
+
+  constructor(cap: number) {
     this.cap = cap;
-    this.buf = new Array(cap);
-    this.count = 0; // total pushed (may exceed cap)
+    this.buf = new Array<T>(cap);
   }
-
-  push(item) {
+  push(item: T): void {
     this.buf[this.count % this.cap] = item;
     this.count++;
   }
-
-  get length() {
-    return Math.min(this.count, this.cap);
-  }
-
-  /** Chronological snapshot. */
-  toArray() {
+  get length(): number { return Math.min(this.count, this.cap); }
+  toArray(): T[] {
     const n = this.length;
     if (this.count <= this.cap) return this.buf.slice(0, n);
     const start = this.count % this.cap;
     return this.buf.slice(start, this.cap).concat(this.buf.slice(0, start));
   }
+  clear(): void { this.buf = new Array<T>(this.cap); this.count = 0; }
 }
 
 export class DebugRecorder {
-  // ponytail: index signature matches the other core classes' JS->TS move.
-  [key: string]: any;
+  samples: RingBuffer<RecordedSample>;
+  events: RecordedEvent[] = [];
+  windows: Record<string, unknown>[] = [];
+  eventsCap = 20000;
+  meta: Record<string, unknown> | null = null;
+  timestampAnomalies: TimestampAnomalies = { zero: 0, nonMonotonic: 0, nonFinite: 0 };
+  droppedFrames = 0;
+  truncated = false;
+  private lastT = -Infinity;
 
-  /** @param {number} [capSamples] - ring buffer size for raw samples */
   constructor(capSamples = DEFAULT_CAP) {
-    this.samples = new RingBuffer(capSamples);
-    // Events are far lower rate than samples (peaks/IBIs/window updates,
-    // not per-frame), so an unbounded array capped generously is enough.
-    this.events = [];
-    this.eventsCap = 20000;
-    this.meta = null;
+    this.samples = new RingBuffer<RecordedSample>(capSamples);
   }
 
-  /**
-   * Capture session metadata once, at start().
-   * @param {Object} meta
-   */
-  start(meta) {
-    this.meta = { startTime: new Date().toISOString(), ...meta };
+  /** Begin a session: clears everything from any previous session. */
+  start(meta: Record<string, unknown>): void {
+    this.samples.clear();
+    this.events = [];
+    this.windows = [];
+    this.droppedFrames = 0;
+    this.truncated = false;
     this.lastT = -Infinity;
     this.timestampAnomalies = { zero: 0, nonMonotonic: 0, nonFinite: 0 };
+    this.meta = { startTime: new Date().toISOString(), ...meta };
   }
 
   /**
-   * @param {{t:number,r:number,g:number,b:number}} sample - t in ms
-   * A sample whose t is non-finite, non-increasing, or (after the first
-   * sample) exactly zero is still stored - a bad session should never be
-   * lost - but its t is repaired with performance.now() so the file stays
-   * replayable, and the anomaly is counted in this.timestampAnomalies.
+   * Store a sample. A non-finite, non-increasing, or (after the first
+   * sample) zero timestamp is repaired with performance.now() so the file
+   * stays replayable, and counted in timestampAnomalies.
    */
-  pushSample(sample) {
-    if (this.lastT === undefined) this.lastT = -Infinity;
-    if (!this.timestampAnomalies) this.timestampAnomalies = { zero: 0, nonMonotonic: 0, nonFinite: 0 };
-
+  pushSample(sample: RecordedSample): void {
     let t = sample.t;
     const isFirst = this.samples.count === 0;
     let bad = false;
-    if (!Number.isFinite(t)) {
-      this.timestampAnomalies.nonFinite++;
-      bad = true;
-    } else if (!isFirst && t === 0) {
-      this.timestampAnomalies.zero++;
-      bad = true;
-    } else if (t <= this.lastT) {
-      this.timestampAnomalies.nonMonotonic++;
-      bad = true;
-    }
+    if (!Number.isFinite(t)) { this.timestampAnomalies.nonFinite++; bad = true; }
+    else if (!isFirst && t === 0) { this.timestampAnomalies.zero++; bad = true; }
+    else if (t <= this.lastT) { this.timestampAnomalies.nonMonotonic++; bad = true; }
     if (bad) {
-      // performance.now() is relative to process/page start, so it can
-      // itself be <= lastT (e.g. lastT came from a large mediaTime-derived
-      // value before this fix). Nudge forward by a nominal frame period so
-      // the repaired stream is always strictly increasing and replayable.
-      t = Math.max(performance.now(), this.lastT + 1);
+      const nowMs = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      t = Math.max(nowMs, this.lastT + 1);
     }
     this.lastT = t;
     this.samples.push(t === sample.t ? sample : { ...sample, t });
   }
 
-  /** @param {Object} event - must include t (ms) and type */
-  pushEvent(event) {
+  pushEvent(event: RecordedEvent): void {
     if (this.events.length >= this.eventsCap) this.events.shift();
     this.events.push(event);
   }
 
-  /**
-   * Per-window quality/instrumentation record (see PPGMonitor.js computeFrame).
-   * Same ring-buffer discipline as events (capped, no unbounded growth).
-   */
-  pushWindow(win) {
-    if (!this.windows) this.windows = [];
+  pushWindow(win: Record<string, unknown>): void {
     if (this.windows.length >= this.eventsCap) this.windows.shift();
     this.windows.push(win);
   }
 
-  /**
-   * Mark the log truncated (e.g. localStorage quota exceeded on persist) -
-   * surfaced in toJSON() so a share/summary never silently looks complete.
-   */
-  markTruncated() {
-    this.truncated = true;
-  }
+  addDroppedFrames(n: number): void { if (n > 0) this.droppedFrames += n; }
 
-  toJSON() {
+  markTruncated(): void { this.truncated = true; }
+
+  toJSON(): DebugLog {
     return {
       meta: this.meta,
       samples: this.samples.toArray(),
       events: this.events,
-      windows: this.windows || [],
-      timestampAnomalies: this.timestampAnomalies || { zero: 0, nonMonotonic: 0, nonFinite: 0 },
-      truncated: !!this.truncated
+      windows: this.windows,
+      timestampAnomalies: { ...this.timestampAnomalies },
+      droppedFrames: this.droppedFrames,
+      truncated: this.truncated
     };
   }
 }

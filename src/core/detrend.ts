@@ -1,44 +1,13 @@
-/**
- * Linear detrending algorithm using least squares regression
- * Removes linear trends from PPG signal to isolate the AC component
- *
- * @param {Array|Float32Array} y - Input signal array
- * @returns {Array} Detrended signal
- */
-export function detrend(y) {
+/** Linear least-squares detrend. Returns a new Float64Array. */
+export function detrend(y: ArrayLike<number>): Float64Array {
   const n = y.length;
-  const x = [];
-
-  for (let i = 0; i <= n; i++) {
-    x.push(i);
-  }
-
-  // Calculate sums for least squares regression
-  let sx = 0;
-  let sy = 0;
-  let sxy = 0;
-  let sxx = 0;
-
-  for (let i = 0; i < n; i++) {
-    sx += x[i];
-    sy += y[i];
-    sxy += x[i] * y[i];
-    sxx += x[i] * x[i];
-  }
-
-  // Calculate slope and intercept
-  const mx = sx / n;
-  const my = sy / n;
-  const xx = n * sxx - sx * sx;
-  const xy = n * sxy - sx * sy;
-  const slope = xy / xx;
-  const intercept = my - slope * mx;
-
-  // Remove linear trend
-  const detrended = [];
-  for (let i = 0; i < n; i++) {
-    detrended.push(y[i] - (intercept + slope * i));
-  }
-
-  return detrended;
+  const out = new Float64Array(n);
+  if (n < 2) return out;
+  let sx = 0, sy = 0, sxy = 0, sxx = 0;
+  for (let i = 0; i < n; i++) { sx += i; sy += y[i]; sxy += i * y[i]; sxx += i * i; }
+  const den = n * sxx - sx * sx;
+  const slope = den ? (n * sxy - sx * sy) / den : 0;
+  const intercept = (sy - slope * sx) / n;
+  for (let i = 0; i < n; i++) out[i] = y[i] - (intercept + slope * i);
+  return out;
 }

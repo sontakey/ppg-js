@@ -1,5 +1,6 @@
 // examples/app/app.js — dogfoods ppg-js's public API as a third-party dev would.
-// PPGMonitor (deprecated alias of PPG) is exposed by ../demo/dist/ppg.global.js (IIFE build).
+// PPGMonitor and the hrv module are exposed by ../demo/dist/ppg.global.js (IIFE build)
+// as window.PPG.PPGMonitor and window.PPG.hrv.
 
 const screens = {
   ready: document.getElementById('screen-ready'),
@@ -16,12 +17,17 @@ let monitor = null;
 // Exposed for headless QA only (test/manual/headless-camera-resume.mjs) -
 // harmless in production, never read by app logic itself.
 Object.defineProperty(window, 'monitor', { get: () => monitor });
-const SETTLE_SEC = 6; // must match FingerStateMachine default (library doesn't expose it)
+const SETTLE_SEC = 6; // default; replaced by the engine's own value once a monitor exists (see settleSec())
 const SESSION_SEC = 180; // fixed 3-minute measuring protocol
 const waveBuf = new Array(180).fill(0); // ~3s at ~60Hz, matches the demo's live strip
 const placementWaveBuf = new Array(180).fill(0); // raw trace shown on the Placement screen too
 let measuringStartedAt = null; // Date.now() ms when MEASURING was first reached this session
 let sessionTimerId = null;
+let lastMetrics = null; // last per-window metrics object (for the report's floor/respiration)
+
+function settleSec() {
+  return monitor && monitor.engine && monitor.engine.fingerState ? monitor.engine.fingerState.settleSec : SETTLE_SEC;
+}
 
 function resetWaveBuffer() {
   waveBuf.fill(0);
@@ -99,7 +105,7 @@ function updatePlacementScreen(metrics) {
     ring.style.strokeDashoffset = String(circumference);
   } else if (metrics.fingerState === 'SETTLING') {
     coachEl.textContent = `Hold still... ${Math.ceil(remaining)}s`;
-    const frac = 1 - Math.min(1, remaining / SETTLE_SEC);
+    const frac = 1 - Math.min(1, remaining / settleSec());
     ring.style.strokeDashoffset = String(circumference * (1 - frac));
   } else {
     coachEl.textContent = metrics.guidanceMessage || 'Cover the lens and flash with your fingertip pad';
@@ -111,7 +117,7 @@ function updatePlacementScreen(metrics) {
   // screen) can see WHY a SETTLING bounce happened instead of just seeing
   // the ring silently reset (see job 3).
   const stateEl = document.getElementById('state-line');
-  const reason = monitor && monitor.fingerState ? monitor.fingerState.lastReason : null;
+  const reason = monitor && monitor.engine && monitor.engine.fingerState ? monitor.engine.fingerState.lastReason : null;
   stateEl.textContent = STATE_TEXT[metrics.fingerState] ? `${STATE_TEXT[metrics.fingerState]}${REASON_TEXT[reason] ? ' · ' + REASON_TEXT[reason] : ''}` : '';
   drawPlacementWave();
 }
@@ -121,6 +127,13 @@ function updateMeasuringScreen(metrics) {
   document.getElementById('hr-value').textContent = good ? Math.round(metrics.heartRate) : '--';
   document.getElementById('rmssd-value').textContent = good ? Math.round(metrics.rmssd) : '--';
   document.getElementById('sdnn-value').textContent = good ? Math.round(metrics.sdnn) : '--';
+  const floorEl = document.getElementById('rmssd-floor');
+  if (floorEl) floorEl.textContent = good && metrics.rmssdFloorMs ? `±${Math.round(metrics.rmssdFloorMs)} ms noise floor` : '';
+  const respEl = document.getElementById('resp-value');
+  if (respEl) {
+    const r = metrics.respiration;
+    respEl.textContent = r && r.rateBpm != null ? `${r.rateBpm.toFixed(0)} br/min` : '--';
+  }
 
   const pill = document.getElementById('quality-pill');
   pill.classList.toggle('good', !!good);
@@ -163,7 +176,10 @@ function tickSessionCountdown() {
 }
 
 function renderSummary() {
-  renderReport(monitor.getTachogram().filter(p => p.valid).map(p => p.ibiMs));
+  // Only beats from windows that passed the quality gate, with their real
+  // timestamps so gaps between accepted beats are handled correctly.
+  const beats = monitor.getTachogram({ goodOnly: true }).filter(p => p.valid).map(p => ({ t: p.t, ibiMs: p.ibiMs }));
+  renderReport(beats, lastMetrics ? lastMetrics.rmssdFloorMs : undefined, lastMetrics ? lastMetrics.respiration : null);
 }
 
 // ------------------------------------------------------------ HRV report --
@@ -520,13 +536,15 @@ function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
   });
 }
 
-// Builds the full scrollable report from a list of accepted IBIs (ms).
+// Builds the full scrollable report from accepted beats ({t, ibiMs} or plain ms).
 // Exposed via renderSummary() in the real flow and window.__demoReport() for QA.
-function renderReport(acceptedIbiMs) {
+function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const el = document.getElementById('report-content');
   el.innerHTML = '';
 
-  if (!acceptedIbiMs.length) {
+  const beats = acceptedBeats.map(b => (typeof b === 'number' ? { ibiMs: b } : b));
+  const acceptedIbiMs = beats.map(b => b.ibiMs);
+  if (!beats.length) {
     el.innerHTML = `
       <h2>HRV Spot Check report</h2>
       <p class="insufficient">No good-quality windows were captured this session — try again with steadier finger placement.</p>
@@ -534,9 +552,9 @@ function renderReport(acceptedIbiMs) {
     return;
   }
 
-  const result = HRVAnalysis.analyzeHRV(acceptedIbiMs);
-  const td = result.timeDomain, fd = result.frequencyDomain, nl = result.nonlinear, ans = result.ans;
-  const durationSec = result.meta.totalDurationSec;
+  const result = PPG.hrv.analyzeHRV(beats, { rmssdFloorMs });
+  const td = result.timeDomain, fd = result.frequencyDomain, nl = result.nonlinear, ans = result.ans, si = result.stressIndex;
+  const durationSec = result.meta.durationSec;
   const goodPct = Math.round(monitor && monitor.getSessionSummary ? monitor.getSessionSummary().goodFraction * 100 : 100);
 
   const header = document.createElement('div');
@@ -556,7 +574,7 @@ function renderReport(acceptedIbiMs) {
   // ANS balance card
   const ansCard = document.createElement('div');
   ansCard.className = 'report-card';
-  ansCard.innerHTML = '<h3 style="margin-top:0">ANS balance (vs. population reference)</h3>';
+  ansCard.innerHTML = '<h3 style="margin-top:0">ANS balance <span class="experimental">experimental</span></h3><p class="report-note">z-scores of mean RR and RMSSD (PNS) and of mean HR and the square-root stress index (SNS) against published short-term adult references. A population reference, not a diagnosis.</p>';
   if (ans.ok) {
     const pnsWrap = document.createElement('div');
     pnsWrap.className = 'ans-bar-wrap';
@@ -588,10 +606,13 @@ function renderReport(acceptedIbiMs) {
         <tr><td>Mean HR</td><td>${fmt(td.meanHR, 0)} bpm</td></tr>
         <tr><td>Min / Max HR (5-beat avg)</td><td>${fmt(td.minHR, 0)} / ${fmt(td.maxHR, 0)} bpm</td></tr>
         <tr><td>SDNN</td><td>${fmt(td.sdnn, 1)} ms</td></tr>
-        <tr><td>RMSSD</td><td>${fmt(td.rmssd, 1)} ms</td></tr>
+        <tr><td>RMSSD</td><td>${fmt(td.rmssd, 1)} ms${Number.isFinite(rmssdFloorMs) ? ` <span class="floor">(±${fmt(rmssdFloorMs, 0)} ms measurement floor)</span>` : ''}</td></tr>
+        <tr><td>lnRMSSD</td><td>${fmt(td.lnRmssd, 2)}</td></tr>
+        <tr><td>RMSSD, last 60 s</td><td>${fmt(result.ultraShort.rmssd, 1)} ms (${result.ultraShort.n} beats)</td></tr>
         <tr><td>NN50 / pNN50</td><td>${fmt(td.nn50, 0)} / ${fmt(td.pnn50, 1)}%</td></tr>
         <tr><td>HRV triangular index</td><td>${fmt(td.triangularIndex, 1)}</td></tr>
-        <tr><td>TINN</td><td>${fmt(td.tinn, 0)} ms</td></tr>
+        <tr><td>TINN / RR range</td><td>${fmt(td.tinn, 0)} / ${fmt(td.rrRange, 0)} ms</td></tr>
+        <tr><td>Stress index (Baevsky / √)</td><td>${fmt(si.baevsky, 0)} / ${fmt(si.sqrt, 1)}</td></tr>
       </table>`;
   } else {
     tdCard.innerHTML += `<p class="insufficient">${td.reason}</p>`;
@@ -609,13 +630,15 @@ function renderReport(acceptedIbiMs) {
         <div class="psd-legend"><span class="vlf">VLF 0.0033-0.04 Hz</span><span class="lf">LF 0.04-0.15 Hz</span><span class="hf">HF 0.15-0.4 Hz</span></div>
       </div>
       <table class="hrv-table">
-        <tr><td>Total power</td><td>${fmt(fd.totalPower, 0)} ms&sup2;</td></tr>
-        <tr><td>VLF power</td><td>${fmt(fd.vlf.power, 0)} ms&sup2;</td></tr>
+        <tr><td>Total power</td><td>${fmt(fd.totalPower, 0)} ms&sup2;${fd.ultraShort ? ' <span class="floor">(under 2 min: LF/HF are indicative only)</span>' : ''}</td></tr>
+        <tr><td>VLF power</td><td>${fd.vlf ? fmt(fd.vlf.power, 0) + ' ms&sup2;' : 'n/a (needs 5 min)'}</td></tr>
         <tr><td>LF power (peak)</td><td>${fmt(fd.lf.power, 0)} ms&sup2; (${fmt(fd.lf.peakFrequency, 3)} Hz)</td></tr>
         <tr><td>HF power (peak)</td><td>${fmt(fd.hf.power, 0)} ms&sup2; (${fmt(fd.hf.peakFrequency, 3)} Hz)</td></tr>
         <tr><td>LF/HF ratio</td><td>${fmt(fd.lfhf, 2)}</td></tr>
         <tr><td>LF n.u. / HF n.u.</td><td>${fmt(fd.lfnu, 1)} / ${fmt(fd.hfnu, 1)}</td></tr>
-        <tr><td>Respiration rate (estimated)</td><td>${fmt(fd.respirationRateBpm, 1)} breaths/min</td></tr>
+        <tr><td>Respiration rate (HF peak)</td><td>${fmt(fd.respirationRateBpm, 1)} breaths/min</td></tr>
+        <tr><td>Respiration rate (pulse-train fusion)</td><td>${liveRespiration && liveRespiration.rateBpm != null ? `${fmt(liveRespiration.rateBpm, 1)} breaths/min (confidence ${fmt(liveRespiration.confidence, 2)})` : '--'}</td></tr>
+        <tr><td>Coherence (0.04-0.26 Hz peak share)</td><td>${fmt(fd.coherence, 2)}</td></tr>
       </table>`;
   } else {
     fdCard.innerHTML += `<p class="insufficient">${fd.reason}</p>`;
@@ -642,7 +665,7 @@ function renderReport(acceptedIbiMs) {
       </table>
       ${nl.note ? `<p class="insufficient">${nl.note}</p>` : ''}`;
   } else {
-    nlCard.innerHTML += `<p class="insufficient">${nl.reason}</p>`;
+    nlCard.innerHTML += `<p class="insufficient">${nl.note || 'Not enough beats.'}</p>`;
   }
   el.appendChild(nlCard);
   if (nl.ok) drawPoincare(document.getElementById('poincare-canvas'), nl, result.meta.flagged);
@@ -656,17 +679,21 @@ function renderReport(acceptedIbiMs) {
     <p class="report-note">Orange dots mark beats flagged as artifacts (&gt;20% deviation from local median) and corrected for frequency analysis.</p>
   `;
   el.appendChild(tachoCard);
-  drawReportTachogram(document.getElementById('report-tacho-canvas'), acceptedIbiMs, result.meta.flagged, HRVAnalysis.correctArtifacts(acceptedIbiMs).corrected);
+  drawReportTachogram(document.getElementById('report-tacho-canvas'), acceptedIbiMs, result.meta.flagged, PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
 
   // Footer
   const footer = document.createElement('div');
   footer.className = 'report-footer';
   footer.innerHTML = `
-    <p><strong>Method notes:</strong> time/frequency/nonlinear HRV per Task Force of ESC/NASPE (1996, Circulation
-    93:1043-65). Detrending is a 2nd-order polynomial fit (not full Tarvainen 2002 smoothness-priors). PSD via
-    Welch's method, 256-sample Hann segments, 50% overlap, own radix-2 FFT. PNS/SNS indices are z-scores against
-    Nunan, Sandercock &amp; Brodie (2010, PACE 33:1407-17) healthy-adult short-term HRV norms and Baevsky's Stress
-    Index formula — this is a <strong>population reference, not a diagnosis</strong>. Not a medical device.</p>
+    <p><strong>Method notes:</strong> beats come only from windows that passed the signal-quality gate; the
+    measurement floor next to RMSSD is the variability the pipeline's own beat-timing noise would produce on a
+    perfectly regular pulse. A camera measures pulse-rate variability, which tracks heart-rate variability at rest.
+    Time/frequency/nonlinear metrics per Task Force of ESC/NASPE (1996, Circulation 93:1043-65); TINN is the
+    least-squares triangle fit; PSD via Welch's method (Hann, 50% overlap) on the RR series resampled at 4 Hz with
+    real beat times; VLF only for recordings of 5 min or more. Stress index per Baevsky (AMo / 2&middot;Mo&middot;MxDMn) with
+    the square root Kubios reports. PNS/SNS indices are z-scores against Nunan, Sandercock &amp; Brodie (2010, PACE
+    33:1407-17) short-term adult references and the Kubios 7-12 &radic;SI normal range: a
+    <strong>population reference, not a diagnosis</strong>. Not a medical device.</p>
   `;
   el.appendChild(footer);
 }
@@ -684,12 +711,17 @@ function startSession() {
   if (sessionTimerId) clearInterval(sessionTimerId);
   sessionTimerId = setInterval(tickSessionCountdown, 1000);
 
+  lastMetrics = null;
   monitor = new PPGMonitor(null, {
     ui: { enabled: false },
+    debug: { persistLastSession: true }, // powers the debug menu's "share last log"
+    wakeLock: true, // keep the screen on for the 3-minute protocol
+    motion: true, // accelerometer motion gate (asks permission on iOS)
     onReady: ({ torchSupported }) => {
       document.getElementById('torch-note').hidden = torchSupported !== false;
     },
     onQualityUpdate: (metrics) => {
+      lastMetrics = metrics;
       if (metrics.fingerState === 'MEASURING') {
         if (measuringStartedAt == null) measuringStartedAt = Date.now();
         if (screens.measuring.hidden) showScreen('measuring');
@@ -711,7 +743,8 @@ function startSession() {
       if (!screens.placement.hidden) drawPlacementWave();
     },
     onError: (err) => {
-      alert('Camera error: ' + (err && err.message ? err.message : err));
+      // PPGError carries a stable code and user-facing guidance.
+      alert(err && err.guidance ? err.guidance : 'Camera error: ' + (err && err.message ? err.message : err));
       showScreen('ready');
     },
   });
@@ -753,7 +786,7 @@ document.getElementById('btn-again').addEventListener('click', () => {
   showScreen('ready');
 });
 document.getElementById('btn-save-log').addEventListener('click', () => {
-  if (monitor) monitor.downloadDebugLog();
+  if (monitor) monitor.downloadDebugLog('hrv-spot-check');
 });
 document.getElementById('btn-save-report').addEventListener('click', () => {
   window.print();
@@ -860,7 +893,11 @@ document.getElementById('chk-live-stats').addEventListener('change', (e) => {
         `dcR/dcG: ${(m.selectedChannel === 'green' ? 'G' : 'R')}`,
         `fps: ${(m.sampleRate || 0).toFixed(1)}`,
         `torch: ${monitor.torchState || 'n/a'}`,
-        `artifactRatio: ${((m.artifactRatio || 0) * 100).toFixed(1)}%`
+        `artifactRatio: ${((m.artifactRatio || 0) * 100).toFixed(1)}%`,
+        `clipped: ${((m.clippedFraction || 0) * 100).toFixed(1)}%  motion: ${(m.motion || 0).toFixed(2)}`,
+        `templateSqi: ${Number.isFinite(m.templateSqi) ? m.templateSqi.toFixed(2) : '--'}  floor: ${(m.rmssdFloorMs || 0).toFixed(0)}ms`,
+        `resp: ${m.respiration && m.respiration.rateBpm != null ? m.respiration.rateBpm.toFixed(1) + ' br/min' : '--'}`,
+        `dropped frames: ${monitor.getDebugLog().droppedFrames}`
       ].join('\n');
     }, 500);
   } else {
@@ -885,15 +922,15 @@ window.__demoState = function (name) {
     resetWaveBuffer();
     for (let i = 0; i < waveBuf.length; i++) waveBuf[i] = 0.5 + 0.3 * Math.sin(i / 6);
     drawWave();
-    monitor = monitor || { getTachogram: () => Array.from({ length: 40 }, (_, i) => ({ ibiMs: 800 + 40 * Math.sin(i / 3), valid: i % 7 !== 0 })) };
+    monitor = monitor || { getTachogram: () => Array.from({ length: 40 }, (_, i) => ({ ibiMs: 800 + 40 * Math.sin(i / 3), valid: i % 7 !== 0, good: true })) };
     drawTachogram();
-    updateMeasuringScreen({ heartRate: 72, rmssd: 45, sdnn: 52, qualityScore: 88, quality: { good: true, reason: null } });
+    updateMeasuringScreen({ heartRate: 72, rmssd: 45, sdnn: 52, qualityScore: 88, rmssdFloorMs: 9, respiration: { rateBpm: 13.5, confidence: 0.8 }, quality: { good: true, reason: null } });
     return;
   }
   if (name === 'summary') {
     monitor = {
       getSessionSummary: () => ({ goodFraction: 0.83 }),
-      getTachogram: () => Array.from({ length: 40 }, (_, i) => ({ ibiMs: 800 + 40 * Math.sin(i / 3), valid: i % 7 !== 0 })),
+      getTachogram: () => Array.from({ length: 40 }, (_, i) => ({ t: i * 0.82, ibiMs: 800 + 40 * Math.sin(i / 3), valid: i % 7 !== 0, good: true })),
     };
     renderSummary();
     showScreen('summary');
@@ -905,6 +942,6 @@ window.__demoState = function (name) {
 // against the real 200s fixture without a camera session. Not public API.
 window.__demoReport = function (acceptedIbiMs) {
   monitor = monitor || { getSessionSummary: () => ({ goodFraction: 1 }) };
-  renderReport(acceptedIbiMs);
+  renderReport(acceptedIbiMs, 10, null);
   showScreen('summary');
 };

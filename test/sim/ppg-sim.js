@@ -36,13 +36,18 @@ function mulberry32(seed) {
  * @param {boolean} [opts.everyNthMissed=0] - if >0, drop (halve amplitude of) every Nth beat,
  *   simulating a peak the detector would miss
  * @param {number} [opts.seed=1]
+ * @param {boolean} [opts.quantize=true] - round channel means to whole 8-bit counts
+ * @param {number} [opts.rsaAmplitudeModFraction=0] - breathing modulation of pulse amplitude (fraction, RIAV)
+ * @param {number} [opts.rsaBaselineCounts=0] - breathing modulation of the DC baseline (counts, RIIV)
+ * @param {number} [opts.harmonic2=0.1] - relative amplitude of the 2nd harmonic (dicrotic wave); > 1 makes it dominant
  * @returns {{samples: Array<{t:number,r:number,g:number,b:number}>, groundTruth: {beatTimesSec:number[], ibisMs:number[], rmssdMs:number}}}
  */
 export function generatePpgSamples(opts = {}) {
   const {
     durationSec, fps = 30, fpsJitter = 0.1, dc = 195, dcDriftPerSec = 0,
     acAmplitude = 3, noiseSd = 0.5, rsaBpm = 0, rsaAmplitudeBpm = 0,
-    motionBursts = [], fingerLifts = [], everyNthMissed = 0, seed = 1
+    motionBursts = [], fingerLifts = [], everyNthMissed = 0, seed = 1, quantize = true,
+    rsaAmplitudeModFraction = 0, rsaBaselineCounts = 0, harmonic2 = 0.1
   } = opts;
   const hrFn = typeof opts.hr === 'function' ? opts.hr : () => (opts.hr ?? 70);
 
@@ -95,14 +100,16 @@ export function generatePpgSamples(opts = {}) {
       }
     }
 
-    let acNow = acAmplitude;
+    const breathPhase = rsaBpm ? 2 * Math.PI * (rsaBpm / 60) * t : 0;
+    if (rsaBpm && rsaBaselineCounts) dcNow += rsaBaselineCounts * Math.sin(breathPhase + 1.0);
+    let acNow = acAmplitude * (rsaBpm && rsaAmplitudeModFraction ? 1 + rsaAmplitudeModFraction * Math.sin(breathPhase + 0.5) : 1);
     const nthIdx = beatCount; // beat index at/after this sample
     if (everyNthMissed > 0 && nthIdx > 0 && nthIdx % everyNthMissed === 0) {
       acNow *= 0.15; // amplitude drops below the peak detector's threshold
     }
 
     const fundamental = Math.sin(2 * Math.PI * phase);
-    const harmonic2 = 0.1 * Math.sin(2 * Math.PI * 2 * phase + 0.6);
+    const h2 = harmonic2 * Math.sin(2 * Math.PI * 2 * phase + 0.6);
     const noise = (rng() - 0.5) * 2 * noiseSd;
 
     let r, g, b;
@@ -111,15 +118,17 @@ export function generatePpgSamples(opts = {}) {
       // isFingerPresent's redMean>120 && greenMean<60 && blueMean<60 gate).
       r = 60 + noise; g = 90 + noise; b = 90 + noise;
     } else {
-      r = dcNow - acNow * (fundamental + harmonic2) + noise;
+      r = dcNow - acNow * (fundamental + h2) + noise;
       g = 30 + noise * 0.3;
       b = 30 + noise * 0.3;
     }
 
     // 8-bit quantization + clamp, matching a real camera sensor readout.
-    r = Math.max(0, Math.min(255, Math.round(r)));
-    g = Math.max(0, Math.min(255, Math.round(g)));
-    b = Math.max(0, Math.min(255, Math.round(b)));
+    // 8-bit clamp. `quantize: true` rounds to whole counts (pessimistic: a
+    // real ROI mean over ~3000 pixels is fractional, see test/fixtures);
+    // pass false to keep fractional means like a real spatial average.
+    const q = (v) => Math.max(0, Math.min(255, quantize ? Math.round(v) : v));
+    r = q(r); g = q(g); b = q(b);
 
     samples.push({ t: t * 1000, r, g, b });
   }

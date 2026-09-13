@@ -58,7 +58,7 @@ DFA alpha1), and PNS/SNS autonomic-balance indices as z-scores against the Nunan
 et al. (2010) healthy-adult population reference — explicitly labelled a
 population reference, not a diagnosis.
 
-All analysis math lives in `hrv-analysis.js`, a dependency-free plain script
+All analysis math lives in `the library's `PPG.hrv` module`, a dependency-free plain script
 (attaches `window.HRVAnalysis`, no ESM) so it loads via `<script src>` next to
 `app.js`. It's pure functions on an array of IBIs in ms — no DOM, no ppg-js
 dependency — intentionally placed outside `src/` because `src/` is mid-refactor;

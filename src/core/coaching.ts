@@ -1,41 +1,46 @@
 /**
- * User-facing coaching copy + a 0-100 signal quality score, derived purely
- * from state machine state and channel stats. Kept separate from
- * PPGMonitor/UIRenderer so both the library UI and the plain-HTML demo can
- * share the exact same messages.
+ * User-facing coaching copy derived from state-machine state, channel
+ * stats and the quality gate. State is checked first; the torch hint is
+ * only shown while no finger is detected on a device without a torch
+ * (docs/audit finding B8).
  */
+import type { QualityCode } from './quality.js';
 
-/**
- * @param {Object} p
- * @param {string} p.state - STATE.NO_FINGER | SETTLING | MEASURING
- * @param {boolean} [p.torchSupported] - false on iOS Safari (no torch API)
- * @param {number} [p.redMean]
- * @param {number} [p.greenMean]
- * @param {number} [p.blueMean]
- * @param {number} [p.settleRemainingSec]
- * @param {number} [p.acDcRatio] - 0-1
- * @returns {string}
- */
-export function coachingMessage(p) {
-  const { state, torchSupported, redMean, greenMean, blueMean, settleRemainingSec, acDcRatio } = p;
+export interface CoachingInput {
+  state: string;
+  torchSupported?: boolean;
+  redMean?: number;
+  greenMean?: number;
+  blueMean?: number;
+  settleRemainingSec?: number;
+  acDcRatio?: number;
+  /** Quality gate code of the last window (null when good). */
+  qualityCode?: QualityCode | null;
+  clippedFraction?: number;
+}
 
-  if (torchSupported === false) {
-    return 'Turn on your flashlight from Control Center, then cover lens and flashlight';
-  }
+export function coachingMessage(p: CoachingInput): string {
+  const { state, torchSupported, redMean, greenMean, blueMean, settleRemainingSec, qualityCode } = p;
 
   if (state === 'NO_FINGER') {
-    return 'Cover the main rear lens AND the flash with your fingertip pad';
+    if (torchSupported === false) {
+      return 'No flash on this camera: turn on the flashlight (or use a bright lamp), then cover the lens with your fingertip';
+    }
+    return 'Cover the rear camera lens and the flash with your fingertip pad';
   }
 
+  if (typeof p.clippedFraction === 'number' && p.clippedFraction > 0.05) {
+    return 'Too bright: ease off the pressure or move your finger slightly off the flash';
+  }
   if (typeof redMean === 'number' && redMean > 250) {
     return 'Ease off the pressure a little';
   }
-  if (typeof redMean === 'number' && redMean < 150) {
+  if (typeof redMean === 'number' && redMean < 100) {
     return 'Press a little more or cover the flash too';
   }
   if (
     typeof redMean === 'number' && typeof greenMean === 'number' && typeof blueMean === 'number' &&
-    redMean >= 150 && (greenMean > 60 || blueMean > 60)
+    redMean >= 100 && greenMean + blueMean > redMean
   ) {
     return 'Flash is uncovered, slide your finger to cover it';
   }
@@ -45,25 +50,28 @@ export function coachingMessage(p) {
     return `Hold still... ${s}s`;
   }
 
-  if (state === 'MEASURING' && typeof acDcRatio === 'number' && acDcRatio < 0.005) {
-    return 'Weak pulse. Lighten your grip or warm your hand';
+  switch (qualityCode) {
+    case 'weak_pulse': return 'Weak pulse. Lighten your grip or warm your hand';
+    case 'motion': return 'Hold the phone still';
+    case 'saturated': return 'Too bright: ease off the flash';
+    case 'irregular': return 'Irregular beats detected, hold still';
+    case 'morphology': return 'Pulse shape unstable, hold still';
+    case 'double_count': return 'Beats double-counted, adjust pressure slightly';
+    case 'missed_beats': return 'Beats missed, adjust pressure slightly';
+    case 'fft_disagree': return 'Irregular beats detected, hold still';
+    case 'collecting': return 'Collecting beats, hold steady';
+    default: break;
   }
-
   return 'Good signal - hold steady';
 }
 
 /**
  * 0-100 score from pulsatile amplitude (AC/DC ratio) and beat-rejection
- * rate. 0.5% AC/DC is the MEASURING floor -> score 0; 3%+ -> score 100.
- * Rejected/artifact beats subtract, capped so one bad beat isn't fatal.
- * @param {number} acDcRatio - 0-1
- * @param {number} [artifactRatio=0] - 0-1
- * @returns {number} 0-100 integer
+ * rate: the gate floor scores 0, six times the floor scores 100.
  */
-export function qualityScore(acDcRatio, artifactRatio = 0) {
-  const ratioPct = acDcRatio * 100;
-  const ratioScore = ((ratioPct - 0.5) / (3 - 0.5)) * 100;
-  const clampedRatioScore = Math.max(0, Math.min(100, ratioScore));
+export function qualityScore(acDcRatio: number, artifactRatio = 0, floor = 0.002): number {
+  const span = Math.max(1e-6, floor * 5);
+  const ratioScore = Math.max(0, Math.min(100, ((acDcRatio - floor) / span) * 100));
   const penalty = Math.min(50, artifactRatio * 100);
-  return Math.round(Math.max(0, Math.min(100, clampedRatioScore - penalty)));
+  return Math.round(Math.max(0, Math.min(100, ratioScore - penalty)));
 }
