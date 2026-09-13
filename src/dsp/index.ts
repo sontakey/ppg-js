@@ -24,3 +24,5 @@ export { evaluateQuality, DEFAULT_QUALITY } from '../core/quality.js';
 export type { QualityInput, QualityResult, QualityThresholds, QualityCode } from '../core/quality.js';
 export { FingerStateMachine, STATE, isFingerPresent, selectChannel, DEFAULT_FINGER_STATE, DEFAULT_PRESENCE } from '../core/fingerState.js';
 export type { FingerState, FingerStateOptions, PresenceOptions } from '../core/fingerState.js';
+export { skewnessSqi, kurtosisSqi, zeroCrossingRateSqi, relativePowerSqi, detectorAgreementSqi, compositeSqi } from '../core/sqi.js';
+export type { WindowSqi, CompositeInput } from '../core/sqi.js';

@@ -103,3 +103,24 @@ console.log('[dsp filter] passband flat within 2 dB over 45-180 bpm, breathing >
 }
 
 console.log('\nALL DSP TESTS PASSED');
+
+// --- signal-quality indices (appended after the SQI module landed)
+{
+  const { skewnessSqi, kurtosisSqi, zeroCrossingRateSqi, relativePowerSqi, detectorAgreementSqi, compositeSqi } = await import('../src/core/sqi.js');
+  const fs = 60, n = 600;
+  const sine = new Float64Array(n); for (let i = 0; i < n; i++) sine[i] = Math.sin(2 * Math.PI * 1.2 * i / fs);
+  assert.ok(Math.abs(skewnessSqi(sine)) < 0.05, 'a sinusoid has ~0 skewness');
+  assert.ok(Math.abs(kurtosisSqi(sine) + 1.5) < 0.1, `a sinusoid has excess kurtosis -1.5 (got ${kurtosisSqi(sine).toFixed(2)})`);
+  const pulse = new Float64Array(n); for (let i = 0; i < n; i++) { const ph = (i / fs * 1.2) % 1; pulse[i] = Math.exp(-((ph - 0.2) ** 2) / 0.006) - 0.2; }
+  assert.ok(skewnessSqi(pulse) > 0.8, `a sharp systolic pulse is positively skewed (got ${skewnessSqi(pulse).toFixed(2)})`);
+  assert.ok(Math.abs(zeroCrossingRateSqi(sine, fs) - 2.4) < 0.3, `zero-crossing rate of 1.2 Hz sine ~2.4/s (got ${zeroCrossingRateSqi(sine, fs).toFixed(2)})`);
+  const f = computeFFT(sine, 256, fs);
+  assert.ok(relativePowerSqi(f.psd, f.freqResolution, 0.75, 4) > 0.95, 'nearly all power of a 1.2 Hz sine is in the cardiac band');
+  assert.equal(detectorAgreementSqi(70, 70), 1); assert.ok(Math.abs(detectorAgreementSqi(63, 70) - 0.9) < 1e-9); assert.ok(Number.isNaN(detectorAgreementSqi(0, 70)));
+  const good = compositeSqi({ templateCorrelation: 0.98, artifactRatio: 0.02, acDcRatio: 0.01, minAcDc: 0.002, snrDb: 12, clippedFraction: 0, motion: NaN, detectorAgreement: 0.99 });
+  const bad = compositeSqi({ templateCorrelation: 0.6, artifactRatio: 0.25, acDcRatio: 0.002, minAcDc: 0.002, snrDb: -3, clippedFraction: 0.08, motion: 2.5, detectorAgreement: 0.6 });
+  assert.ok(good.score > 0.9 && bad.score < 0.3, `composite separates clean (${good.score}) from poor (${bad.score})`);
+  assert.ok(Number.isNaN(good.components.motion), 'motion component is NaN without a motion source');
+  console.log(`[sqi] skew/kurtosis/zero-crossing/relative power/agreement/composite (good=${good.score}, bad=${bad.score}): PASS`);
+}
+console.log('ALL DSP TESTS PASSED (incl. SQI)');

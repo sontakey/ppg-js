@@ -40,6 +40,8 @@ export interface PPGBeat {
   good: boolean;
   /** Recovered weak beat at either end: use for heart rate, not for variability. */
   lowSnr: boolean;
+  /** Per-beat quality (template correlation, 0-1), null when unknown. */
+  sqi: number | null;
   reason: string | null;
   heartRate: number;
 }
@@ -87,7 +89,7 @@ export class PPG extends EventTarget {
     if (metrics.quality) this.dispatchEvent(new CustomEvent('quality', { detail: metrics.quality }));
     if (Array.isArray(metrics.ibiDetails)) {
       for (const d of metrics.ibiDetails) {
-        const beat: PPGBeat = { time: d.peakTimeSec, ibiMs: d.ibiMs, valid: d.valid, good: d.good, lowSnr: d.lowSnr, reason: d.reason, heartRate: metrics.heartRate };
+        const beat: PPGBeat = { time: d.peakTimeSec, ibiMs: d.ibiMs, valid: d.valid, good: d.good, lowSnr: d.lowSnr, sqi: d.sqi, reason: d.reason, heartRate: metrics.heartRate };
         this.dispatchEvent(new CustomEvent('beat', { detail: beat }));
       }
     }

@@ -30,6 +30,7 @@ export type { DebugLog, RecordedSample, RecordedEvent } from './core/recorder.js
 export type { QualityResult, QualityThresholds, QualityCode } from './core/quality.js';
 export type { FingerState, FingerStateOptions, PresenceOptions } from './core/fingerState.js';
 export type { RespirationEstimate } from './core/respiration.js';
+export type { WindowSqi } from './core/sqi.js';
 
 // Commonly used DSP helpers re-exported at the root for convenience.
 export { computeFFT, calculateSNRFromPSD } from './core/fft.js';

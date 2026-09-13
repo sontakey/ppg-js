@@ -25,6 +25,7 @@ import { evaluateQuality, DEFAULT_QUALITY, type QualityResult, type QualityThres
 import { FingerStateMachine, STATE, selectChannel, DEFAULT_FINGER_STATE, type FingerState, type FingerStateOptions } from './fingerState.js';
 import { estimateRespiration, type RespirationBeat, type RespirationEstimate } from './respiration.js';
 import { getQualityStatus } from './helpers.js';
+import { skewnessSqi, kurtosisSqi, zeroCrossingRateSqi, relativePowerSqi, detectorAgreementSqi, compositeSqi, type WindowSqi } from './sqi.js';
 
 export interface EngineSample {
   /** Seconds, monotonic, any origin (the engine only uses differences). */
@@ -110,6 +111,8 @@ export interface TachogramPoint {
   /** true when either end of the interval is a recovered weak beat: fine for
    *  heart rate and beat counting, too imprecise for variability metrics. */
   lowSnr: boolean;
+  /** Per-beat quality: the lower template correlation of the two peaks (0-1), null when unknown. */
+  sqi: number | null;
 }
 
 export interface EngineWindow {
@@ -156,8 +159,10 @@ export interface EngineWindow {
   quality: QualityResult;
   /** Absolute peak times (seconds) newly accepted in this window. */
   peakTimesSec: number[];
-  /** IBIs newly produced in this window, with the window's good flag. */
-  ibiDetails: Array<IbiDetail & { good: boolean; lowSnr: boolean }>;
+  /** IBIs newly produced in this window, with the window's good flag and per-beat quality. */
+  ibiDetails: Array<IbiDetail & { good: boolean; lowSnr: boolean; sqi: number | null }>;
+  /** Signal-quality indices for the window (see core/sqi.ts). */
+  sqi: WindowSqi | null;
   respiration: RespirationEstimate | null;
   /** Filtered (bandpassed) signal of the window on the grid, oldest first. */
   filtered: Float64Array;
@@ -177,7 +182,7 @@ export interface PushResult {
 
 const TIMING_SIGMA_CALIBRATION = 4.7;
 
-interface StoredPeak { t: number; sigma: number; amplitude: number; baseline: number; valid: boolean; lowSnr?: boolean; }
+interface StoredPeak { t: number; sigma: number; amplitude: number; baseline: number; valid: boolean; lowSnr?: boolean; sqi?: number; }
 
 export class PpgEngine {
   readonly opts: EngineOptions;
@@ -317,7 +322,7 @@ export class PpgEngine {
       heartRateSource: 'none', ibiFftDisagree: false, harmonicCorrected: false, ibi: 0, rmssd: 0, sdnn: 0, artifactRatio: 0,
       templateSqi: NaN, timingUncertaintyMs: 0, rmssdFloorMs: 0, signalStability: 0, qualityStatus: 'Initializing',
       qualityScore: 0, guidanceMessage: q.reason || '', settleRemainingSec, quality: q, peakTimesSec: [], ibiDetails: [],
-      respiration: null, filtered: new Float64Array(0), gap
+      respiration: null, sqi: null, filtered: new Float64Array(0), gap
     };
   }
 
@@ -454,8 +459,13 @@ export class PpgEngine {
     const cont = computeIBIs(this.peaks.map(p => p.t), 300, 2000, 0.3, this.peaks.map(p => p.valid));
     // An interval is low-SNR when either of its peaks was a recovered weak beat.
     const lowSnrAt = new Map<number, boolean>();
-    for (let i = 1; i < this.peaks.length; i++) lowSnrAt.set(this.peaks[i].t, !!(this.peaks[i].lowSnr || this.peaks[i - 1].lowSnr));
-    const withSnr = cont.details.map(d => ({ ...d, lowSnr: lowSnrAt.get(d.peakTimeSec) === true }));
+    const sqiAt = new Map<number, number | null>();
+    for (let i = 1; i < this.peaks.length; i++) {
+      lowSnrAt.set(this.peaks[i].t, !!(this.peaks[i].lowSnr || this.peaks[i - 1].lowSnr));
+      const a = this.peaks[i].sqi, b = this.peaks[i - 1].sqi;
+      sqiAt.set(this.peaks[i].t, typeof a === 'number' && typeof b === 'number' ? Math.min(a, b) : typeof a === 'number' ? a : typeof b === 'number' ? b : null);
+    }
+    const withSnr = cont.details.map(d => ({ ...d, lowSnr: lowSnrAt.get(d.peakTimeSec) === true, sqi: sqiAt.get(d.peakTimeSec) ?? null }));
     const newDetails = withSnr.filter(d => d.peakTimeSec > this.lastReportedPeakT);
     if (newPeaks.length) this.lastReportedPeakT = newPeaks[newPeaks.length - 1].t;
     const last60 = withSnr.filter(d => end - d.peakTimeSec <= 60);
@@ -518,7 +528,29 @@ export class PpgEngine {
     const qualityScore = quality.good ? scoreFrom(acDcRatio, artifactRatio, this.quality.minAcDc) : 0;
 
     const ibiDetails = newDetails.map(d => ({ ...d, good: quality.good }));
-    for (const d of ibiDetails) this.tachogram.push({ t: d.peakTimeSec, ibiMs: d.ibiMs, valid: d.valid, reason: d.reason, good: quality.good, lowSnr: d.lowSnr });
+    for (const d of ibiDetails) this.tachogram.push({ t: d.peakTimeSec, ibiMs: d.ibiMs, valid: d.valid, reason: d.reason, good: quality.good, lowSnr: d.lowSnr, sqi: d.sqi });
+
+    // ---- Signal-quality indices --------------------------------------------
+    const agreement = detectorAgreementSqi(heartRateIBI, heartRateFFT);
+    const composite = compositeSqi({
+      templateCorrelation: tc.median, artifactRatio, acDcRatio, minAcDc: this.quality.minAcDc, snrDb: snr.snr_dB,
+      clippedFraction, motion: this.mo.some(v => v > 0) ? mMax : NaN, detectorAgreement: agreement
+    });
+    const sqi: WindowSqi = {
+      score: composite.score,
+      skewness: skewnessSqi(filteredWin),
+      kurtosis: kurtosisSqi(filteredWin),
+      perfusion: acDcRatio * 100,
+      relativePower: relativePowerSqi(fft.psd, fft.freqResolution, o.cardiacBandLow, o.cardiacBandHigh),
+      snrDb: snr.snr_dB,
+      zeroCrossingRate: zeroCrossingRateSqi(filteredWin, gridHz),
+      templateCorrelation: tc.median,
+      detectorAgreement: agreement,
+      artifactRatio,
+      clippedFraction,
+      motion: this.mo.some(v => v > 0) ? mMax : NaN,
+      components: composite.components
+    };
     const heartRate = quality.good ? Math.round(this.displayedHr) : 0;
     this.windows.push({ t: end, good: quality.good, heartRate, rmssd: quality.good ? rmssdMs : 0, sdnn: quality.good ? sdnnMs : 0 });
 
@@ -531,7 +563,7 @@ export class PpgEngine {
       harmonicCorrected: snr.harmonicCorrected, ibi, rmssd: quality.good ? rmssdMs : 0, sdnn: quality.good ? sdnnMs : 0,
       artifactRatio, templateSqi: tc.median, timingUncertaintyMs, rmssdFloorMs, signalStability, qualityStatus,
       qualityScore, guidanceMessage: quality.reason || '', settleRemainingSec: 0, quality,
-      peakTimesSec: newPeaks.map(p => p.t), ibiDetails, respiration, filtered: Float64Array.from(filteredWin), gap: false
+      peakTimesSec: newPeaks.map(p => p.t), ibiDetails, respiration, sqi, filtered: Float64Array.from(filteredWin), gap: false
     };
   }
 

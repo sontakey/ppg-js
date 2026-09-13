@@ -84,6 +84,7 @@ export function runReplay(log, engineOptions = {}) {
       rmssdFloorMs: w.rmssdFloorMs,
       timingUncertaintyMs: w.timingUncertaintyMs,
       templateSqi: w.templateSqi,
+      sqi: w.sqi,
       selectedChannel: w.selectedChannel,
       acDcRatio: w.acDcRatio,
       sampleRate: w.sampleRate,
@@ -183,7 +184,7 @@ function main() {
   for (const w of result.hrTimeline) {
     const flag = w.ibiFftDisagree ? ' [ibi_fft_disagree]' : '';
     const harm = w.harmonicCorrected ? ' [harmonic_corrected]' : '';
-    console.log(`  t=${w.windowStartSec.toFixed(1)}s  state=${w.state}  good=${w.quality.good}  HR=${w.quality.good ? w.heartRate + 'bpm' : '--'}  (raw=${w.heartRateRaw} fft=${w.heartRateFFT} src=${w.heartRateSource})${flag}${harm}  RMSSD=${w.quality.good ? w.rmssd.toFixed(1) : '--'}ms (floor ${w.rmssdFloorMs.toFixed(1)})  SDNN=${w.quality.good ? w.sdnn.toFixed(1) : '--'}ms  sqi=${Number.isFinite(w.templateSqi) ? w.templateSqi.toFixed(2) : '--'}  ch=${w.selectedChannel}  fps=${w.sampleRate.toFixed(1)}`);
+    console.log(`  t=${w.windowStartSec.toFixed(1)}s  state=${w.state}  good=${w.quality.good}  HR=${w.quality.good ? w.heartRate + 'bpm' : '--'}  (raw=${w.heartRateRaw} fft=${w.heartRateFFT} src=${w.heartRateSource})${flag}${harm}  RMSSD=${w.quality.good ? w.rmssd.toFixed(1) : '--'}ms (floor ${w.rmssdFloorMs.toFixed(1)})  SDNN=${w.quality.good ? w.sdnn.toFixed(1) : '--'}ms  sqi=${w.sqi ? w.sqi.score.toFixed(2) : '--'}  ch=${w.selectedChannel}  fps=${w.sampleRate.toFixed(1)}`);
   }
 
   console.log(`\nIBIs (${result.ibiDetails.length} candidates):`);

@@ -63,6 +63,12 @@ makes the variability numbers trustworthy and the capture layer portable.
   camera fed from a recorded fixture.
 
 ### Added
+- Signal-quality indices: `metrics.sqi` per window (skewness, kurtosis,
+  perfusion, relative cardiac power, SNR, zero-crossing rate, template
+  correlation, detector agreement, artifact ratio, clipping, motion) with a
+  documented 0-1 composite `score` and its components; per-beat `sqi`
+  (template correlation) on `beat` events and tachogram points. Functions
+  exported from `@sontakey/ppg-js/dsp`.
 - Missed-beat recovery: when an interval is about twice the recent median,
   the engine looks for a weaker beat inside the gap (a pulse that dipped
   under the adaptive threshold) before rejecting it. Recovered beats count

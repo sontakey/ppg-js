@@ -108,7 +108,7 @@ console.log(report.timeDomain.rmssd, report.frequencyDomain.lfhf, report.stressI
 | `fingerState`, `settleRemainingSec`, `guidanceMessage` | state machine and coaching copy |
 | `sampleRate`, `selectedChannel`, `redDc`, `greenDc`, `clippedFraction`, `motion` | capture diagnostics |
 
-Every `beat` event carries `{ time, ibiMs, valid, good, lowSnr, reason }`: `valid` is
+Every `beat` event carries `{ time, ibiMs, valid, good, lowSnr, sqi, reason }`: `valid` is
 the interval-level artifact decision, `good` is whether the window it came
 from passed the quality gate, and `lowSnr` marks an interval next to a
 recovered weak beat (counted for heart rate, excluded from variability).
@@ -237,6 +237,28 @@ and `code` name the first that fails:
 
 `heartRate`, `rmssd` and `sdnn` are `0` whenever `good` is `false`;
 `heartRateRaw` is always populated.
+
+## Signal quality indices
+
+Every window carries `metrics.sqi`, the standard indices from the PPG
+quality literature plus one documented composite, so you can build your own
+acceptance rule or compare with other toolkits:
+
+| Field | Definition |
+|---|---|
+| `score` | 0-1 composite: geometric mean of bounded sub-scores for template correlation, artifact ratio, pulse amplitude, SNR, clipping, motion and detector agreement (`components` lists each) |
+| `skewness`, `kurtosis` | of the bandpassed pulse (Elgendi 2016: skewness is the most informative single index; a clean pulse is positively skewed) |
+| `perfusion` | pulsatile amplitude / DC, percent |
+| `relativePower`, `snrDb` | cardiac-band power over total power, linear and in dB |
+| `zeroCrossingRate` | zero crossings per second of the bandpassed pulse (about 2 per beat when clean) |
+| `templateCorrelation` | median per-beat correlation with the window's mean beat (Orphanidou 2015) |
+| `detectorAgreement` | 1 − |HR from intervals − HR from spectrum| / HR from spectrum |
+| `artifactRatio`, `clippedFraction`, `motion` | the gate's inputs |
+
+Each `beat` event and tachogram point also carries `sqi`, that beat's
+template correlation (the lower of its two peaks), so beats can be weighted
+or filtered individually. The composite is for ranking and display; the
+accept/reject decision remains `quality.good`.
 
 ## HRV module
 

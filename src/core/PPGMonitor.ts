@@ -769,6 +769,7 @@ export class PPGMonitor {
       peakTimesSec: w.peakTimesSec,
       ibiDetails: w.ibiDetails,
       respiration: w.respiration,
+      sqi: w.sqi,
       torchState: this.torchState,
       gap: w.gap
     };
@@ -789,14 +790,14 @@ export class PPGMonitor {
       t: w.t, state: w.fingerState, acdc: w.acDcRatio, rawRange: w.rawRangeRatio, dcRed: w.redDc, dcGreen: w.greenDc,
       clipped: w.clippedFraction, motion: w.motion, channel: w.selectedChannel, artifactRatio: w.artifactRatio,
       ibiCount: w.quality.ibiCount, fftHr: w.heartRateFFT, ibiHr: w.heartRateIBI, fftAgree: !w.ibiFftDisagree,
-      harmonicCorrected: w.harmonicCorrected, templateSqi: w.templateSqi, rmssdFloorMs: w.rmssdFloorMs,
+      harmonicCorrected: w.harmonicCorrected, templateSqi: w.templateSqi, rmssdFloorMs: w.rmssdFloorMs, sqiScore: w.sqi ? w.sqi.score : null,
       good: w.quality.good, reason: w.quality.reason, code: w.quality.code, rejectionReasons, sampleRate: w.sampleRate,
       gap: w.gap, torchState: this.torchState
     });
 
     for (const peakSec of w.peakTimesSec) this.recorder.pushEvent({ t: startMs + peakSec * 1000, type: 'peak' });
     for (const d of w.ibiDetails) {
-      this.recorder.pushEvent({ t: startMs + d.peakTimeSec * 1000, type: d.valid ? 'ibi_accepted' : 'ibi_rejected', ibiMs: d.ibiMs, reason: d.reason, good: d.good, lowSnr: d.lowSnr });
+      this.recorder.pushEvent({ t: startMs + d.peakTimeSec * 1000, type: d.valid ? 'ibi_accepted' : 'ibi_rejected', ibiMs: d.ibiMs, reason: d.reason, good: d.good, lowSnr: d.lowSnr, sqi: d.sqi });
     }
     this.recorder.pushEvent({
       t: windowEndMs, type: 'metrics_update', heartRate: w.heartRate, rmssd: w.rmssd, qualityStatus: w.qualityStatus,

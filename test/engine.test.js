@@ -127,3 +127,20 @@ for (const fps of [24, 30, 60]) {
 }
 
 console.log('\nALL ENGINE TESTS PASSED');
+
+// --- 9. Window SQI and per-beat SQI.
+{
+  const { samples } = generatePpgSamples({ durationSec: 90, hr: 70, fps: 30, seed: 31 });
+  const clean = run(samples);
+  const cleanGood = clean.windows.filter(w => w.quality.good);
+  assert.ok(cleanGood.length > 5 && cleanGood.every(w => w.sqi && w.sqi.score >= 0.75), `clean windows score >= 0.75 (${cleanGood.map(w => w.sqi && w.sqi.score.toFixed(2)).join(',')})`);
+  assert.ok(cleanGood.every(w => Number.isFinite(w.sqi.skewness) && Number.isFinite(w.sqi.kurtosis) && w.sqi.relativePower > 0.5), 'indices are finite and cardiac power dominates (the simulator pulse is near-sinusoidal, so skewness is ~0 here)');
+  const clipped = run(samples, {}, s => { if (s.t > 40000 && s.t < 55000) s.clipped = 0.2; });
+  const during = clipped.windows.filter(w => w.t > 45 && w.t <= 55 && w.sqi);
+  assert.ok(during.length && during.every(w => w.sqi.score < 0.5), `clipped windows score low (${during.map(w => w.sqi.score.toFixed(2)).join(',')})`);
+  const beats = clean.engine.getTachogram({ goodOnly: true }).filter(b => b.valid);
+  const withSqi = beats.filter(b => typeof b.sqi === 'number');
+  assert.ok(withSqi.length >= 0.9 * beats.length && withSqi.every(b => b.sqi > 0.8), `per-beat SQI present and high on a clean signal (${withSqi.length}/${beats.length})`);
+  console.log(`[engine sqi] clean score median=${cleanGood.map(w => w.sqi.score).sort()[cleanGood.length >> 1].toFixed(2)}, clipped=${during[0].sqi.score.toFixed(2)}, beats with sqi=${withSqi.length}/${beats.length}: PASS`);
+}
+console.log('ALL ENGINE TESTS PASSED (incl. SQI)');
