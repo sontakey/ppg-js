@@ -11,6 +11,7 @@ export default defineConfig([
     minify: true,
     outDir: 'dist',
     // fft.js is no longer a dependency (own radix-2 FFT); no other runtime deps.
-    treeshake: true
+    treeshake: true,
+    define: { __PPG_VERSION__: JSON.stringify(process.env.npm_package_version || '0.0.0') }
   }
 ]);

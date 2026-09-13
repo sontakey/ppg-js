@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "build": "tsup",
-    "postbuild": "mkdir -p examples/demo/dist && cp dist/index.global.js examples/demo/dist/ppg.global.js",
+    "postbuild": "node tools/postbuild.mjs",
     "dev": "tsup --watch",
     "serve": "python3 -m http.server 8080",
     "test": "node test/run-all.js",

@@ -1,3 +1,4 @@
+declare const __PPG_VERSION__: string;
 import { SignalProcessor } from './SignalProcessor.js';
 import { detrend } from './detrend.js';
 import { windowMean } from './helpers.js';
@@ -226,7 +227,7 @@ export class PPGMonitor {
         frameCallbackMode: usesRVFC ? 'requestVideoFrameCallback' : 'requestAnimationFrame',
         roi: { widthFraction: roiWidthFraction, heightFraction: roiHeightFraction, ...this.roiSourceRect },
         signalOptions: this.options.signal,
-        appVersion: null,
+        appVersion: typeof __PPG_VERSION__ !== 'undefined' ? __PPG_VERSION__ : null,
         videoInputs: videoInputsMeta,
         chosenDeviceId,
         chosenLabel,
@@ -499,7 +500,16 @@ export class PPGMonitor {
       this.recorder.pushEvent({ t: performance.now(), type: 'track_muted' });
     };
     track.onunmute = () => {
+      const mutedMs = this._trackMutedAt != null ? performance.now() - this._trackMutedAt : 0;
       this._trackMutedAt = null;
+      if (mutedMs > 1500) {
+        // Long mute = iOS interruption (screenshot, app switch). Field logs
+        // show the flash stays physically off afterwards while getSettings
+        // still says torch:true, so skip the nudge and re-open the camera.
+        this.recorder.pushEvent({ t: performance.now(), type: 'track_unmuted', mutedMs });
+        this._resumeCamera('track_unmute_long');
+        return;
+      }
       this.recorder.pushEvent({ t: performance.now(), type: 'track_unmuted' });
       // A mute/unmute cycle is exactly the kind of camera-session blip
       // (iOS backgrounding/interruption) that silently drops torch - and
