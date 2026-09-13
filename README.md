@@ -100,7 +100,7 @@ console.log(report.timeDomain.rmssd, report.frequencyDomain.lfhf, report.stressI
 | `heartRate` | bpm, median of the last accepted intervals, cross-checked against a spectral estimate; `0` unless `quality.good` |
 | `ibi`, `rmssd`, `sdnn` | most recent interval and variability over the last 60 s of accepted beats; `0` unless `quality.good` |
 | `rmssdFloorMs`, `timingUncertaintyMs` | the RMSSD the pipeline's own beat-timing noise would produce on a perfectly regular pulse, estimated per window (accurate to roughly ±50%) |
-| `respiration` | `{ rateBpm, confidence }` from breathing-driven modulation of beat timing, pulse amplitude and baseline, only when the estimates agree |
+| `respiration` | `{ rateBpm, confidence, basis }` from breathing-driven modulation of beat timing, pulse amplitude and baseline (5.5-30 breaths/min). Confidence ≥ 0.6 when at least two estimates agree, 0.5 for a pair with one weak source, 0.3 for a single clear source (provisional), 0.4 while a recent firm rate is held. First estimate about 45 s after MEASURING |
 | `quality` | `{ good, reason, code, acdc, artifactRatio, ibiCount, fftAgree, clippedFraction, motion, templateSqi }` |
 | `templateSqi` | median correlation of each pulse with the window's mean pulse shape (0-1) |
 | `acDcRatio`, `perfusionIndex` | pulsatile amplitude over DC of the selected channel (bandpassed per-beat, not raw range) |

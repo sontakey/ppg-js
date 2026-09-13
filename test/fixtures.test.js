@@ -101,6 +101,15 @@ console.log('\nALL FIXTURE TESTS PASSED');
 
   // Slow breathing: the fusion estimate must be steady near 6.7 br/min at
   // the end and the HRV module must flag that RSA sits in the LF band.
+  const firstResp = r.respirationTimeline[0];
+  assert.ok(firstResp && firstResp.t <= 55, `first breathing estimate within 45 s of MEASURING (got t=${firstResp && firstResp.t})`);
+  const measuringWindows = r.hrTimeline.filter(w => w.state === 'MEASURING' && w.windowEndSec >= firstResp.t);
+  // Observed: one window (t=145 s, mid frame-rate dip) where no source was
+  // clear and none tracked the last firm rate. Provisional and held
+  // estimates cover the rest.
+  assert.ok(measuringWindows.length - r.respirationTimeline.length <= 2, `at most 2 windows without a breathing rate after the first estimate (missing ${measuringWindows.length - r.respirationTimeline.length})`);
+  const firm = r.respirationTimeline.filter(x => x.confidence >= 0.5);
+  assert.ok(firm.length >= 0.5 * r.respirationTimeline.length, `observed 17/29: at least half the estimates rest on agreeing sources (${firm.length}/${r.respirationTimeline.length})`);
   const lastResp = r.respirationTimeline[r.respirationTimeline.length - 1];
   assert.ok(lastResp && lastResp.rateBpm > 5.5 && lastResp.rateBpm < 8 && lastResp.confidence >= 0.5, `final respiration ~6.7 br/min, got ${JSON.stringify(lastResp)}`);
   const beats = r.tachogram.filter(p => p.valid && p.good && !p.lowSnr);
@@ -110,5 +119,5 @@ console.log('\nALL FIXTURE TESTS PASSED');
   assert.ok(Math.abs(hrv.frequencyDomain.lf.peakFrequency - lastResp.rateBpm / 60) < 0.02, `LF peak (${hrv.frequencyDomain.lf.peakFrequency} Hz) must coincide with the breathing rate`);
   assert.ok(hrv.timeDomain.rmssd > 55 && hrv.timeDomain.rmssd < 85, `RMSSD ~69 ms, got ${hrv.timeDomain.rmssd}`);
 
-  console.log(`[iphone-195s-slow-breathing] ${r.comparisonToLive.matched}/${r.comparisonToLive.liveEventCount} live peaks reproduced, good=${(r.summary.goodFraction * 100).toFixed(0)}%, ${dipWindows.length} good windows under 50 fps, resp=${lastResp.rateBpm.toFixed(1)}/min, LF peak=${hrv.frequencyDomain.lf.peakFrequency.toFixed(3)} Hz, RMSSD=${hrv.timeDomain.rmssd.toFixed(1)} ms: PASS`);
+  console.log(`[iphone-195s-slow-breathing] ${r.comparisonToLive.matched}/${r.comparisonToLive.liveEventCount} live peaks reproduced, good=${(r.summary.goodFraction * 100).toFixed(0)}%, ${dipWindows.length} good windows under 50 fps, resp first at t=${firstResp.t.toFixed(0)}s, final ${lastResp.rateBpm.toFixed(1)}/min, LF peak=${hrv.frequencyDomain.lf.peakFrequency.toFixed(3)} Hz, RMSSD=${hrv.timeDomain.rmssd.toFixed(1)} ms: PASS`);
 }

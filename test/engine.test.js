@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { PpgEngine } from '../src/core/engine.js';
 import { DebugRecorder } from '../src/core/recorder.js';
 import { generatePpgSamples } from './sim/ppg-sim.js';
+import { estimateRespiration } from '../src/core/respiration.js';
 
 function run(samples, opts = {}, mutate = null) {
   const e = new PpgEngine(opts);
@@ -143,4 +144,56 @@ console.log('\nALL ENGINE TESTS PASSED');
   assert.ok(withSqi.length >= 0.9 * beats.length && withSqi.every(b => b.sqi > 0.8), `per-beat SQI present and high on a clean signal (${withSqi.length}/${beats.length})`);
   console.log(`[engine sqi] clean score median=${cleanGood.map(w => w.sqi.score).sort()[cleanGood.length >> 1].toFixed(2)}, clipped=${during[0].sqi.score.toFixed(2)}, beats with sqi=${withSqi.length}/${beats.length}: PASS`);
 }
-console.log('ALL ENGINE TESTS PASSED (incl. SQI)');
+
+// --- 10. Respiration fusion rules on synthetic beat trains.
+{
+  // 60 s of beats at ~70 bpm. Each modulation series is a sum of sinusoids
+  // (rate in br/min -> amplitude) so a source can be made clear, weak
+  // (two rhythms of equal power) or flat.
+  const beats = (mods) => {
+    const out = [];
+    let t = 0;
+    const wave = (comps, tt) => comps.reduce((a, [bpm, amp]) => a + amp * Math.sin(2 * Math.PI * (bpm / 60) * tt), 0);
+    while (t < 60) {
+      const ibi = 857 + wave(mods.interval || [], t);
+      t += ibi / 1000;
+      out.push({ t, ibiMs: ibi, amplitude: 3 + wave(mods.amplitude || [], t), baseline: 200 + wave(mods.baseline || [], t) });
+    }
+    return out;
+  };
+  const near = (a, b, tol, msg) => assert.ok(a != null && Math.abs(a - b) <= tol, `${msg}: ${a} vs ${b}`);
+
+  // Slow breathing at 5.8 br/min (below the old 6/min floor) on all three sources.
+  const slow = estimateRespiration(beats({ interval: [[5.8, 40]], amplitude: [[5.8, 0.5]], baseline: [[5.8, 1.5]] }));
+  near(slow.rateBpm, 5.8, 0.6, 'slow breathing detected');
+  assert.equal(slow.basis, 'agreement'); assert.ok(slow.confidence >= 0.6, `confidence ${slow.confidence}`);
+
+  // Typical 15 br/min still works.
+  const normal = estimateRespiration(beats({ interval: [[15, 30]], amplitude: [[15, 0.4]], baseline: [[15, 1]] }));
+  near(normal.rateBpm, 15, 0.8, '15 br/min detected'); assert.ok(normal.confidence >= 0.6);
+
+  // Only the interval series carries a rhythm: provisional single-source rate.
+  const single = estimateRespiration(beats({ interval: [[12, 40]] }));
+  near(single.rateBpm, 12, 0.8, 'single clear source publishes'); assert.equal(single.basis, 'single'); assert.equal(single.confidence, 0.3);
+
+  // One rhythm barely leading three others in a single source: weak (peak
+  // share ~25%), so nothing without history...
+  const weak = { interval: [[6.5, 34], [10, 30], [14, 30], [19, 30]] };
+  const cold = estimateRespiration(beats(weak));
+  assert.equal(cold.rateBpm, null, `weak source alone yields nothing (got ${cold.rateBpm}, basis ${cold.basis})`);
+  // ...but a recent firm rate is held when the weak source still tracks it.
+  const held = estimateRespiration(beats(weak), { previousRateBpm: 6.7 });
+  assert.equal(held.basis, 'held'); near(held.rateBpm, 6.6, 0.5, 'held near previous'); assert.equal(held.confidence, 0.4);
+  assert.equal(estimateRespiration(beats(weak), { previousRateBpm: 20 }).rateBpm, null, 'no hold when nothing tracks the previous rate');
+
+  // A clear rate at twice the previous one while a weak source tracks the previous: harmonic, so hold.
+  const harm = estimateRespiration(beats({ interval: [[13.4, 40]], amplitude: [[6.6, 0.34], [10, 0.3], [15, 0.3], [20, 0.3]] }), { previousRateBpm: 6.7 });
+  assert.equal(harm.basis, 'held', `harmonic guard (got ${harm.basis} ${harm.rateBpm})`); near(harm.rateBpm, 6.65, 0.5, 'held at the fundamental');
+  assert.equal(estimateRespiration(beats({ interval: [[13.4, 40]] })).basis, 'single', 'same rate without history is just a single source');
+
+  // Drift alone (one slow ramp per minute) is not a breath.
+  const drift = estimateRespiration(beats({ baseline: [[1, 20]], amplitude: [[1, 2]], interval: [[1, 60]] }));
+  assert.equal(drift.rateBpm, null, `drift must not read as breathing (got ${drift.rateBpm})`);
+  console.log(`[engine respiration rules] slow=${slow.rateBpm.toFixed(1)} normal=${normal.rateBpm.toFixed(1)} single=${single.rateBpm.toFixed(1)} held=${held.rateBpm.toFixed(1)} harmonic->${harm.rateBpm.toFixed(1)}: PASS`);
+}
+console.log('ALL ENGINE TESTS PASSED (incl. SQI, respiration rules)');

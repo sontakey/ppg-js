@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Respiration** reports sooner and stays on. The modulation series are
+  high-passed at 0.06 Hz instead of linearly detrended and searched down to
+  0.067 Hz with the peak required to sit a half-lobe inside the band, so
+  slow breathing near 6/min no longer straddles the band edge (lowest
+  reportable rate about 5.5/min). A single clear source publishes a
+  provisional rate (confidence 0.3), a recent firm rate is held for up to
+  30 s while one source still tracks it (0.4), and a rate at twice the held
+  one is read as its harmonic. `RespirationEstimate.basis` says which rule
+  produced the rate. On the 3 min spot check the first estimate moved from
+  95 s to 40 s after MEASURING, with one empty window instead of nine; the demo shows "estimating"
+  and a ≈ prefix for provisional rates.
+
 ### Added
 - `analyzeHRV` / `frequencyDomain` accept `respirationRateBpm` and report
   `respirationInLf`: when an independent breathing estimate is under

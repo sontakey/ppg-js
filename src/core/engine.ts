@@ -24,6 +24,9 @@ import { sdnn } from './hrv.js';
 import { evaluateQuality, DEFAULT_QUALITY, type QualityResult, type QualityThresholds } from './quality.js';
 import { FingerStateMachine, STATE, selectChannel, DEFAULT_FINGER_STATE, type FingerState, type FingerStateOptions } from './fingerState.js';
 import { estimateRespiration, type RespirationBeat, type RespirationEstimate } from './respiration.js';
+
+/** How long a firm respiration rate may be held on one tracking estimate. */
+const RESPIRATION_HOLD_SEC = 30;
 import { getQualityStatus } from './helpers.js';
 import { skewnessSqi, kurtosisSqi, zeroCrossingRateSqi, relativePowerSqi, detectorAgreementSqi, compositeSqi, type WindowSqi } from './sqi.js';
 
@@ -63,7 +66,7 @@ export interface EngineOptions {
   fftSize: number;
   /** Compute the per-beat template SQI (cheap, on by default). */
   templateSqi: boolean;
-  /** Estimate respiration from the pulse train (needs >= 40 s of accepted beats). */
+  /** Estimate respiration from the pulse train (needs >= 30 beats over >= 40 s; the first estimate is usually provisional). */
   respiration: boolean;
   /** When an interval is ~2x the recent median, look for a weaker beat inside the gap
    *  (a beat whose amplitude dipped under the adaptive threshold) before rejecting it. */
@@ -203,6 +206,8 @@ export class PpgEngine {
   private selectedChannel: 'red' | 'green' = 'red';
   private lastAcDcRatio = 0;
   private peaks: StoredPeak[] = [];
+  /** Last respiration rate obtained by agreement or a single clear estimate, for short holds. */
+  private lastFirmRespiration: { rateBpm: number; t: number } | null = null;
   private lastPeakT = -Infinity;
   private lastReportedPeakT = -Infinity;
   private displayedHr = 0;
@@ -244,7 +249,7 @@ export class PpgEngine {
   reset(): void {
     this.ts = []; this.rs = []; this.gs = []; this.bs = []; this.cl = []; this.mo = [];
     this.firstT = null; this.nextWindowEnd = null; this.analysisResetAt = -Infinity;
-    this.peaks = []; this.lastPeakT = -Infinity; this.lastReportedPeakT = -Infinity;
+    this.peaks = []; this.lastPeakT = -Infinity; this.lastReportedPeakT = -Infinity; this.lastFirmRespiration = null;
     this.displayedHr = 0; this.previousVariance = 0; this.wfBaseline = null; this.wfLastT = null;
     this.lastAcDcRatio = 0; this.lastWindowValue = null;
     (this as { fingerState: FingerStateMachine }).fingerState = new FingerStateMachine({ minAcDcRatio: this.quality.minAcDc, ...this.opts.fingerState });
@@ -253,7 +258,7 @@ export class PpgEngine {
   /** Reset only the analysis (peaks/filter state) - used on a SETTLING entry. */
   private resetAnalysis(t: number): void {
     this.analysisResetAt = t;
-    this.peaks = []; this.lastPeakT = -Infinity; this.lastReportedPeakT = -Infinity;
+    this.peaks = []; this.lastPeakT = -Infinity; this.lastReportedPeakT = -Infinity; this.lastFirmRespiration = null;
     this.displayedHr = 0; this.previousVariance = 0;
     this.nextWindowEnd = t + this.opts.windowSec;
     this.lastAcDcRatio = 0;
@@ -513,7 +518,10 @@ export class PpgEngine {
           if (ibiMs < 300 || ibiMs > 2000) continue;
           beats.push({ t: validPeaks[i].t, ibiMs, amplitude: validPeaks[i].amplitude, baseline: validPeaks[i].baseline });
         }
-        respiration = estimateRespiration(beats);
+        const firm = this.lastFirmRespiration;
+        const previousRateBpm = firm && end - firm.t <= RESPIRATION_HOLD_SEC ? firm.rateBpm : null;
+        respiration = estimateRespiration(beats, { previousRateBpm });
+        if (respiration.rateBpm != null && respiration.basis !== 'held') this.lastFirmRespiration = { rateBpm: respiration.rateBpm, t: end };
       }
     }
 

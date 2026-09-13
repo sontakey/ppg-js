@@ -132,7 +132,14 @@ function updateMeasuringScreen(metrics) {
   const respEl = document.getElementById('resp-value');
   if (respEl) {
     const r = metrics.respiration;
-    respEl.textContent = r && r.rateBpm != null ? `${r.rateBpm.toFixed(0)} br/min` : '--';
+    if (r && r.rateBpm != null) {
+      // Below 0.5 the rate rests on one modulation source or a recent hold.
+      respEl.textContent = `${r.confidence < 0.5 ? '≈' : ''}${r.rateBpm.toFixed(0)} br/min`;
+    } else if (metrics.fingerState === 'MEASURING') {
+      respEl.textContent = 'estimating (~45 s)';
+    } else {
+      respEl.textContent = '--';
+    }
   }
 
   const pill = document.getElementById('quality-pill');
