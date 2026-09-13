@@ -72,6 +72,29 @@ console.log('[dsp filter] passband flat within 2 dB over 45-180 bpm, breathing >
   console.log('[dsp ibi] cross-check kinds + morphology rejection: PASS');
 }
 
+// --- computeIBIs must not deadlock on a reference seeded by a noisy onset,
+// and must follow a real sustained rate change, while still rejecting a
+// lone ectopic-looking jump.
+{
+  const times = (ibis) => ibis.reduce((acc, ibi) => (acc.push(acc[acc.length - 1] + ibi / 1000), acc), [0]);
+  // Three junk intervals from the onset, then a steady 780 ms rhythm.
+  const onset = computeIBIs(times([1480, 1590, 650, 780, 790, 770, 785, 775, 780, 790, 780]));
+  const tail = onset.details.slice(3);
+  assert.ok(tail.every(x => x.valid), `steady rhythm accepted after a bad seed (${tail.map(x => x.reason).join(',')})`);
+  assert.ok(onset.details.slice(0, 2).every(x => !x.valid && x.reason === 'jump_vs_median'), 'cold-start seeds that disagree with the rhythm are dropped');
+  assert.ok(onset.details[2].valid, 'a seed within the jump limit of the real rhythm (650 vs 780 ms) is kept');
+  // A real change from 1000 ms to 650 ms (60 -> 92 bpm) is followed after
+  // four consistent beats, and the earlier beats stay accepted.
+  const change = computeIBIs(times([1000, 990, 1010, 1000, 995, 1005, 1000, 990, 650, 660, 640, 655, 650, 645]));
+  assert.ok(change.details.slice(0, 8).every(x => x.valid), 'earlier beats at the old rate stay valid');
+  assert.ok(change.details.slice(8).every(x => x.valid), `new rate accepted (${change.details.slice(8).map(x => x.reason).join(',')})`);
+  // One premature beat plus its compensatory pause is still rejected.
+  const ectopic = computeIBIs(times([800, 810, 790, 800, 500, 1100, 805, 795, 800]));
+  assert.equal(ectopic.details[4].reason, 'jump_vs_median'); assert.equal(ectopic.details[5].reason, 'jump_vs_median');
+  assert.ok(ectopic.details.slice(6).every(x => x.valid), 'rhythm resumes after the ectopic pair');
+  console.log('[dsp ibi] re-seed after bad onset, follow real rate change, reject lone ectopic: PASS');
+}
+
 // --- resampleToGrid edge handling
 {
   const out = resampleToGrid([1, 2, 3], [10, 20, 30], 0, 0.5, 9);

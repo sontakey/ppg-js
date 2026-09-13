@@ -31,6 +31,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the LF peak.
 
 ### Fixed
+- **Beat acceptance could deadlock.** The jump-versus-median rule compared
+  each interval with the median of accepted intervals only, so a reference
+  seeded by two or three junk intervals from the moments after finger
+  placement rejected every real beat for the rest of the session (no heart
+  rate at all, "irregular beats" forever). Four consecutive mutually
+  consistent rejects now re-seed the reference and are accepted
+  retroactively; on a cold start the disagreeing seeds are dropped. The same
+  rule follows a real sustained rate change. Fixture
+  `iphone-63s-noisy-onset.json` reproduces the failure.
 - Demo report: the "population mean" caption under the PNS/SNS bars was
   absolutely positioned without a positioned parent, so it anchored to the
   page and floated over other cards while the report scrolled.

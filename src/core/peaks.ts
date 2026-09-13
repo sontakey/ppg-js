@@ -166,12 +166,21 @@ export function computeIBIs(
   const ibisMs: number[] = [];
   const details: IbiDetail[] = [];
   let artifactCount = 0;
-  const recent: number[] = [];
+  let recent: number[] = [];
+  // Consecutive in-range intervals rejected only for jumping against the
+  // reference. If the reference was seeded by a noisy onset (or the heart
+  // rate really did change by more than the jump limit), the true rhythm
+  // would otherwise be rejected forever: nothing is accepted, so the
+  // reference never moves. RESEED_RUN mutually consistent rejects re-seed it
+  // and are accepted retroactively.
+  const RESEED_RUN = 4;
+  let jumpRun: number[] = [];
 
   for (let i = 1; i < peakTimes.length; i++) {
     const ibi = (peakTimes[i] - peakTimes[i - 1]) * 1000;
     let valid = ibi >= minIbiMs && ibi <= maxIbiMs;
     let reason: IbiRejectReason = valid ? null : 'out_of_range';
+    let reseeded = false;
 
     if (valid && peakValid && (peakValid[i] === false || peakValid[i - 1] === false)) {
       valid = false;
@@ -191,9 +200,40 @@ export function computeIBIs(
       }
     }
 
+    if (reason === 'jump_vs_median') {
+      jumpRun.push(ibi);
+      if (jumpRun.length >= RESEED_RUN) {
+        const run = jumpRun.slice(-RESEED_RUN);
+        const runMedian = medianOf(run);
+        if (run.every(v => Math.abs(v - runMedian) / runMedian <= maxJumpFraction)) {
+          // A reference built from only a handful of intervals was seeded by
+          // the noisy onset: drop those that disagree with the real rhythm.
+          // Later in a session the old intervals were real beats at an
+          // earlier rate, so they stay.
+          if (ibisMs.length < 2 * RESEED_RUN) {
+            for (const d of details) {
+              if (d.valid && Math.abs(d.ibiMs - runMedian) / runMedian > maxJumpFraction) {
+                d.valid = false; d.reason = 'jump_vs_median'; artifactCount++;
+                ibisMs.splice(ibisMs.indexOf(d.ibiMs), 1);
+              }
+            }
+          }
+          // Accept the run retroactively and continue from its rhythm.
+          for (let k = details.length - (RESEED_RUN - 1); k < details.length; k++) {
+            details[k].valid = true; details[k].reason = null; artifactCount--; ibisMs.push(details[k].ibiMs);
+          }
+          valid = true; reason = null; reseeded = true;
+          recent = run.slice(); // already includes this interval
+          jumpRun = [];
+        }
+      }
+    } else {
+      jumpRun = [];
+    }
+
     if (valid) {
       ibisMs.push(ibi);
-      recent.push(ibi);
+      if (!reseeded) recent.push(ibi);
     } else {
       artifactCount++;
     }
