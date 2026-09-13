@@ -448,7 +448,7 @@ export class PpgEngine {
       const sigmaSamples = p.curvature < 0 && p.sxx > 0
         ? TIMING_SIGMA_CALIBRATION * filteredNoise / (2 * Math.abs(p.curvature) * Math.sqrt(p.sxx))
         : p.sigmaSec * gridHz;
-      newPeaks.push({ t, sigma: Math.min(0.1, sigmaSamples * dt), amplitude: p.amplitude - trough, baseline: rawGrid[gi], valid });
+      newPeaks.push({ t, sigma: Math.min(0.1, sigmaSamples * dt), amplitude: p.amplitude - trough, baseline: rawGrid[gi], valid, sqi: typeof corr === 'number' && !Number.isNaN(corr) ? corr : undefined });
     });
     if (o.recoverMissedBeats) this.recoverMissedBeats(newPeaks, filtered, gridStart, dt, rawGrid, acceptFrom, acceptUntil);
     for (const p of newPeaks) { this.peaks.push(p); this.lastPeakT = p.t; }

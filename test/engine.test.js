@@ -135,7 +135,7 @@ console.log('\nALL ENGINE TESTS PASSED');
   const cleanGood = clean.windows.filter(w => w.quality.good);
   assert.ok(cleanGood.length > 5 && cleanGood.every(w => w.sqi && w.sqi.score >= 0.75), `clean windows score >= 0.75 (${cleanGood.map(w => w.sqi && w.sqi.score.toFixed(2)).join(',')})`);
   assert.ok(cleanGood.every(w => Number.isFinite(w.sqi.skewness) && Number.isFinite(w.sqi.kurtosis) && w.sqi.relativePower > 0.5), 'indices are finite and cardiac power dominates (the simulator pulse is near-sinusoidal, so skewness is ~0 here)');
-  const clipped = run(samples, {}, s => { if (s.t > 40000 && s.t < 55000) s.clipped = 0.2; });
+  const clipped = run(samples, {}, s => { if (s.t > 40 && s.t < 55) s.clipped = 0.2; });
   const during = clipped.windows.filter(w => w.t > 45 && w.t <= 55 && w.sqi);
   assert.ok(during.length && during.every(w => w.sqi.score < 0.5), `clipped windows score low (${during.map(w => w.sqi.score.toFixed(2)).join(',')})`);
   const beats = clean.engine.getTachogram({ goodOnly: true }).filter(b => b.valid);
