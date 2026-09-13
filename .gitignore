@@ -32,3 +32,7 @@ npm-debug.log*
 
 # e2e scratch
 test/e2e/.tmp/
+
+# benchmark scratch outputs
+bench/out/
+bench/*-results.json

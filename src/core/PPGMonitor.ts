@@ -796,7 +796,7 @@ export class PPGMonitor {
 
     for (const peakSec of w.peakTimesSec) this.recorder.pushEvent({ t: startMs + peakSec * 1000, type: 'peak' });
     for (const d of w.ibiDetails) {
-      this.recorder.pushEvent({ t: startMs + d.peakTimeSec * 1000, type: d.valid ? 'ibi_accepted' : 'ibi_rejected', ibiMs: d.ibiMs, reason: d.reason, good: d.good });
+      this.recorder.pushEvent({ t: startMs + d.peakTimeSec * 1000, type: d.valid ? 'ibi_accepted' : 'ibi_rejected', ibiMs: d.ibiMs, reason: d.reason, good: d.good, lowSnr: d.lowSnr });
     }
     this.recorder.pushEvent({
       t: windowEndMs, type: 'metrics_update', heartRate: w.heartRate, rmssd: w.rmssd, qualityStatus: w.qualityStatus,
@@ -862,7 +862,7 @@ export class PPGMonitor {
   }
 
   /** Session tachogram; pass { goodOnly: true } for beats from windows that passed the gate. */
-  getTachogram(opts: { goodOnly?: boolean } = {}): TachogramPoint[] { return this.engine.getTachogram(opts); }
+  getTachogram(opts: { goodOnly?: boolean; hrvOnly?: boolean } = {}): TachogramPoint[] { return this.engine.getTachogram(opts); }
 
   getSessionSummary(): SessionSummary { return this.engine.getSessionSummary(); }
 

@@ -38,6 +38,8 @@ export interface PPGBeat {
   valid: boolean;
   /** Produced by a window that passed the quality gate. */
   good: boolean;
+  /** Recovered weak beat at either end: use for heart rate, not for variability. */
+  lowSnr: boolean;
   reason: string | null;
   heartRate: number;
 }
@@ -85,7 +87,7 @@ export class PPG extends EventTarget {
     if (metrics.quality) this.dispatchEvent(new CustomEvent('quality', { detail: metrics.quality }));
     if (Array.isArray(metrics.ibiDetails)) {
       for (const d of metrics.ibiDetails) {
-        const beat: PPGBeat = { time: d.peakTimeSec, ibiMs: d.ibiMs, valid: d.valid, good: d.good, reason: d.reason, heartRate: metrics.heartRate };
+        const beat: PPGBeat = { time: d.peakTimeSec, ibiMs: d.ibiMs, valid: d.valid, good: d.good, lowSnr: d.lowSnr, reason: d.reason, heartRate: metrics.heartRate };
         this.dispatchEvent(new CustomEvent('beat', { detail: beat }));
       }
     }
@@ -117,7 +119,7 @@ export class PPG extends EventTarget {
 
   getMetrics(): PPGMetrics { return this._monitor.getMetrics() as unknown as PPGMetrics; }
 
-  getTachogram(opts: { goodOnly?: boolean } = {}): TachogramPoint[] { return this._monitor.getTachogram(opts); }
+  getTachogram(opts: { goodOnly?: boolean; hrvOnly?: boolean } = {}): TachogramPoint[] { return this._monitor.getTachogram(opts); }
 
   getSessionSummary(): SessionSummary { return this._monitor.getSessionSummary(); }
 

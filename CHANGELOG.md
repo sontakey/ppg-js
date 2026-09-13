@@ -63,6 +63,12 @@ makes the variability numbers trustworthy and the capture layer portable.
   camera fed from a recorded fixture.
 
 ### Added
+- Missed-beat recovery: when an interval is about twice the recent median,
+  the engine looks for a weaker beat inside the gap (a pulse that dipped
+  under the adaptive threshold) before rejecting it. Recovered beats count
+  for heart rate and the beat count but are flagged `lowSnr` and excluded
+  from RMSSD/SDNN; `getTachogram({ hrvOnly: true })` drops them. Found by
+  benchmarking against HeartPy (`docs/audit/BENCHMARK-2026-09.md`).
 - `@sontakey/ppg-js/hrv`: the HRV analysis ported from the demo with the
   formula errors fixed (Baevsky stress index, linear RR resampling on real
   beat times with gap handling, least-squares TINN, sample-standard

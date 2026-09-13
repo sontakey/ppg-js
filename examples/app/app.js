@@ -178,7 +178,7 @@ function tickSessionCountdown() {
 function renderSummary() {
   // Only beats from windows that passed the quality gate, with their real
   // timestamps so gaps between accepted beats are handled correctly.
-  const beats = monitor.getTachogram({ goodOnly: true }).filter(p => p.valid).map(p => ({ t: p.t, ibiMs: p.ibiMs }));
+  const beats = monitor.getTachogram({ goodOnly: true, hrvOnly: true }).filter(p => p.valid).map(p => ({ t: p.t, ibiMs: p.ibiMs }));
   renderReport(beats, lastMetrics ? lastMetrics.rmssdFloorMs : undefined, lastMetrics ? lastMetrics.respiration : null);
 }
 

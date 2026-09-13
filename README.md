@@ -88,7 +88,7 @@ After a session:
 ```ts
 import { hrv } from '@sontakey/ppg-js';
 
-const beats = ppg.getTachogram({ goodOnly: true }).filter(b => b.valid);
+const beats = ppg.getTachogram({ goodOnly: true, hrvOnly: true }).filter(b => b.valid);
 const report = hrv.analyzeHRV(beats, { rmssdFloorMs: ppg.getMetrics().rmssdFloorMs });
 console.log(report.timeDomain.rmssd, report.frequencyDomain.lfhf, report.stressIndex.sqrt);
 ```
@@ -108,9 +108,10 @@ console.log(report.timeDomain.rmssd, report.frequencyDomain.lfhf, report.stressI
 | `fingerState`, `settleRemainingSec`, `guidanceMessage` | state machine and coaching copy |
 | `sampleRate`, `selectedChannel`, `redDc`, `greenDc`, `clippedFraction`, `motion` | capture diagnostics |
 
-Every `beat` event carries `{ time, ibiMs, valid, good, reason }`: `valid` is
+Every `beat` event carries `{ time, ibiMs, valid, good, lowSnr, reason }`: `valid` is
 the interval-level artifact decision, `good` is whether the window it came
-from passed the quality gate.
+from passed the quality gate, and `lowSnr` marks an interval next to a
+recovered weak beat (counted for heart rate, excluded from variability).
 
 ## How it works
 
@@ -125,6 +126,7 @@ camera frame (requestVideoFrameCallback, captureTime when available)
             channel selection by pulsatile amplitude
             spectral HR (Hann, zero-padded, sub-harmonic guard) -> refractory prior
             peaks (adaptive threshold + 0.3 s vertex fit) -> absolute beat times
+            missed-beat recovery (weak pulse inside a 2x gap, flagged lowSnr)
             template correlation per beat -> interval validation over the continuous stream
             RMSSD / SDNN over 60 s, respiration from beat modulation
             quality gate -> good / reason / code
@@ -154,7 +156,7 @@ the finger lifts.
 Typed-event facade, always headless. Events: `ready`, `state`, `beat`,
 `metrics`, `quality`, `waveform` (every frame), `respiration`, `error`.
 Methods: `start(abortSignal?)`, `stop()`, `destroy()`, `getMetrics()`,
-`getTachogram({ goodOnly })`, `getSessionSummary()`, `exportDebugLog()`,
+`getTachogram({ goodOnly, hrvOnly })`, `getSessionSummary()`, `exportDebugLog()`,
 `downloadDebugLog(prefix?)`, `getConfig()`; getters `state`, `capabilities`,
 `engine`.
 
@@ -279,7 +281,8 @@ is used when available; `requestAnimationFrame` otherwise.
 
 Tested against real recordings from one iPhone (iOS 26, 60 fps) and against
 a simulator at 24/30/60 fps with dropped frames, saturation, motion,
-respiratory modulation and dominant dicrotic waves. Android recordings are
+respiratory modulation and dominant dicrotic waves, and benchmarked against
+HeartPy and vital_sqi (`docs/audit/BENCHMARK-2026-09.md`). Android recordings are
 the most valuable thing you can contribute right now; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 

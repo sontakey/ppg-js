@@ -64,6 +64,9 @@ export interface EngineOptions {
   templateSqi: boolean;
   /** Estimate respiration from the pulse train (needs >= 40 s of accepted beats). */
   respiration: boolean;
+  /** When an interval is ~2x the recent median, look for a weaker beat inside the gap
+   *  (a beat whose amplitude dipped under the adaptive threshold) before rejecting it. */
+  recoverMissedBeats: boolean;
   /** Optional hook receiving per-window internals (detections, acceptance bounds) for tooling. */
   onDebug?: (info: EngineDebugInfo) => void;
 }
@@ -92,7 +95,8 @@ export const DEFAULT_ENGINE_OPTIONS: EngineOptions = {
   quality: {},
   fftSize: 256,
   templateSqi: true,
-  respiration: true
+  respiration: true,
+  recoverMissedBeats: true
 };
 
 export interface TachogramPoint {
@@ -103,6 +107,9 @@ export interface TachogramPoint {
   reason: string | null;
   /** true when the window that produced this point passed the quality gate. */
   good: boolean;
+  /** true when either end of the interval is a recovered weak beat: fine for
+   *  heart rate and beat counting, too imprecise for variability metrics. */
+  lowSnr: boolean;
 }
 
 export interface EngineWindow {
@@ -150,7 +157,7 @@ export interface EngineWindow {
   /** Absolute peak times (seconds) newly accepted in this window. */
   peakTimesSec: number[];
   /** IBIs newly produced in this window, with the window's good flag. */
-  ibiDetails: Array<IbiDetail & { good: boolean }>;
+  ibiDetails: Array<IbiDetail & { good: boolean; lowSnr: boolean }>;
   respiration: RespirationEstimate | null;
   /** Filtered (bandpassed) signal of the window on the grid, oldest first. */
   filtered: Float64Array;
@@ -170,7 +177,7 @@ export interface PushResult {
 
 const TIMING_SIGMA_CALIBRATION = 4.7;
 
-interface StoredPeak { t: number; sigma: number; amplitude: number; baseline: number; valid: boolean; }
+interface StoredPeak { t: number; sigma: number; amplitude: number; baseline: number; valid: boolean; lowSnr?: boolean; }
 
 export class PpgEngine {
   readonly opts: EngineOptions;
@@ -438,16 +445,24 @@ export class PpgEngine {
         : p.sigmaSec * gridHz;
       newPeaks.push({ t, sigma: Math.min(0.1, sigmaSamples * dt), amplitude: p.amplitude - trough, baseline: rawGrid[gi], valid });
     });
+    if (o.recoverMissedBeats) this.recoverMissedBeats(newPeaks, filtered, gridStart, dt, rawGrid, acceptFrom, acceptUntil);
     for (const p of newPeaks) { this.peaks.push(p); this.lastPeakT = p.t; }
     if (o.onDebug) o.onDebug({ windowEnd: end, segStart, gridStart, detectedSec: detected.map(p => gridStart + p.refined * dt), acceptFrom, acceptUntil, acceptedSec: newPeaks.map(p => p.t) });
     this.peaks = this.peaks.filter(p => end - p.t <= 70);
 
     // ---- IBIs over the continuous peak stream -----------------------------
     const cont = computeIBIs(this.peaks.map(p => p.t), 300, 2000, 0.3, this.peaks.map(p => p.valid));
-    const newDetails = cont.details.filter(d => d.peakTimeSec > this.lastReportedPeakT);
+    // An interval is low-SNR when either of its peaks was a recovered weak beat.
+    const lowSnrAt = new Map<number, boolean>();
+    for (let i = 1; i < this.peaks.length; i++) lowSnrAt.set(this.peaks[i].t, !!(this.peaks[i].lowSnr || this.peaks[i - 1].lowSnr));
+    const withSnr = cont.details.map(d => ({ ...d, lowSnr: lowSnrAt.get(d.peakTimeSec) === true }));
+    const newDetails = withSnr.filter(d => d.peakTimeSec > this.lastReportedPeakT);
     if (newPeaks.length) this.lastReportedPeakT = newPeaks[newPeaks.length - 1].t;
-    const last60 = cont.details.filter(d => end - d.peakTimeSec <= 60);
+    const last60 = withSnr.filter(d => end - d.peakTimeSec <= 60);
+    // Heart rate and the beat count use every accepted interval; variability
+    // metrics use only intervals between confidently timed beats.
     const accepted60 = last60.filter(d => d.valid).map(d => d.ibiMs);
+    const hrv60 = last60.filter(d => d.valid && !d.lowSnr).map(d => d.ibiMs);
     const artifactRatio = last60.length ? last60.filter(d => !d.valid).length / last60.length : 0;
 
     // Pulsatile amplitude from accepted beats in the window (median per-beat), fall back to the spread.
@@ -473,8 +488,8 @@ export class PpgEngine {
       disagreeKind: xc.disagreeKind, clippedFraction, motion: mMax, templateSqi: tc.median
     }, this.quality);
 
-    const rmssdMs = rmssd(accepted60);
-    const sdnnMs = sdnn(accepted60);
+    const rmssdMs = rmssd(hrv60);
+    const sdnnMs = sdnn(hrv60);
     const ibi = cont.ibisMs.length ? Math.round(cont.ibisMs[cont.ibisMs.length - 1]) : 0;
 
     // ---- Respiration ------------------------------------------------------
@@ -503,7 +518,7 @@ export class PpgEngine {
     const qualityScore = quality.good ? scoreFrom(acDcRatio, artifactRatio, this.quality.minAcDc) : 0;
 
     const ibiDetails = newDetails.map(d => ({ ...d, good: quality.good }));
-    for (const d of ibiDetails) this.tachogram.push({ t: d.peakTimeSec, ibiMs: d.ibiMs, valid: d.valid, reason: d.reason, good: quality.good });
+    for (const d of ibiDetails) this.tachogram.push({ t: d.peakTimeSec, ibiMs: d.ibiMs, valid: d.valid, reason: d.reason, good: quality.good, lowSnr: d.lowSnr });
     const heartRate = quality.good ? Math.round(this.displayedHr) : 0;
     this.windows.push({ t: end, good: quality.good, heartRate, rmssd: quality.good ? rmssdMs : 0, sdnn: quality.good ? sdnnMs : 0 });
 
@@ -518,6 +533,52 @@ export class PpgEngine {
       qualityScore, guidanceMessage: quality.reason || '', settleRemainingSec: 0, quality,
       peakTimesSec: newPeaks.map(p => p.t), ibiDetails, respiration, filtered: Float64Array.from(filteredWin), gap: false
     };
+  }
+
+  /**
+   * Missed-beat recovery: when the interval between two candidate peaks is
+   * 1.6-2.4x the recent interval, a beat whose amplitude fell under the
+   * 0.4 x envelope threshold probably sits in the middle. Accept the
+   * largest local maximum in the middle 30-70% of the gap if it is at least
+   * 12% of the neighbouring peaks' amplitude and clearly above the local
+   * noise. HeartPy's adaptive threshold recovers these; without this step a
+   * signal with one weak beat in five loses whole windows to the artifact
+   * ratio. Mutates `newPeaks` in place (kept sorted).
+   */
+  private recoverMissedBeats(newPeaks: StoredPeak[], filtered: Float64Array, gridStart: number, dt: number, rawGrid: Float64Array, acceptFrom: number, acceptUntil: number): void {
+    const prevTail = this.peaks.slice(-6).map(p => p.t);
+    const seq = [...prevTail, ...newPeaks.map(p => p.t)].sort((a, b) => a - b);
+    const ibis: number[] = [];
+    for (let i = 1; i < seq.length; i++) ibis.push(seq[i] - seq[i - 1]);
+    if (ibis.length < 3) return;
+    const medIbi = medianOf(ibis.filter(v => v > 0.3 && v < 2.0));
+    if (!(medIbi > 0.3)) return;
+    const inserted: StoredPeak[] = [];
+    for (let i = 1; i < seq.length; i++) {
+      const a = seq[i - 1], b = seq[i];
+      const ratio = (b - a) / medIbi;
+      if (ratio < 1.6 || ratio > 2.4) continue;
+      const lo = Math.round((a + 0.3 * (b - a) - gridStart) / dt), hi = Math.round((a + 0.7 * (b - a) - gridStart) / dt);
+      if (lo < 2 || hi > filtered.length - 3) continue;
+      let best = -1, bestV = -Infinity;
+      for (let k = lo; k <= hi; k++) {
+        if (filtered[k] > filtered[k - 1] && filtered[k] >= filtered[k + 1] && filtered[k] > bestV) { bestV = filtered[k]; best = k; }
+      }
+      if (best < 0) continue;
+      const ia = Math.round((a - gridStart) / dt), ib = Math.round((b - gridStart) / dt);
+      const neighbourAmp = Math.max(ia >= 0 && ia < filtered.length ? filtered[ia] : 0, ib >= 0 && ib < filtered.length ? filtered[ib] : 0);
+      if (!(neighbourAmp > 0) || bestV < 0.12 * neighbourAmp) continue;
+      // Local prominence: the candidate must rise above the trough before it.
+      let trough = bestV;
+      for (let k = Math.max(0, best - Math.round(0.3 * medIbi / dt)); k < best; k++) if (filtered[k] < trough) trough = filtered[k];
+      if (bestV - trough < 0.08 * neighbourAmp) continue;
+      const t = gridStart + best * dt;
+      if (t <= acceptFrom || t > acceptUntil) continue;
+      inserted.push({ t, sigma: 0.02, amplitude: bestV - trough, baseline: rawGrid[best], valid: true, lowSnr: true });
+    }
+    if (!inserted.length) return;
+    newPeaks.push(...inserted);
+    newPeaks.sort((x, y) => x.t - y.t);
   }
 
   /** Channel pulsatile amplitude while not MEASURING (drives the settle gate). */
@@ -572,9 +633,9 @@ export class PpgEngine {
     };
   }
 
-  /** Tachogram, optionally restricted to beats from good windows. */
-  getTachogram(opts: { goodOnly?: boolean } = {}): TachogramPoint[] {
-    return opts.goodOnly ? this.tachogram.filter(p => p.good) : this.tachogram;
+  /** Tachogram; `goodOnly` keeps beats from good windows, `hrvOnly` also drops low-SNR (recovered) intervals. */
+  getTachogram(opts: { goodOnly?: boolean; hrvOnly?: boolean } = {}): TachogramPoint[] {
+    return this.tachogram.filter(p => (!opts.goodOnly || p.good) && (!opts.hrvOnly || !p.lowSnr));
   }
 }
 

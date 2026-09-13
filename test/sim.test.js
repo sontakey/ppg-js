@@ -121,19 +121,26 @@ for (const hr of [60, 70, 90]) {
   console.log(`[sim low amplitude] shown HRs: [${shownHrs.join(',')}], all within truth+-3 or hidden: PASS`);
 }
 
-// --- 6. Dropped beats (every 5th beat's amplitude nulled) -> missed_beat
-// rejections occur and HR stays within +-5 of truth.
+// --- 6. Weak beats (every 5th beat's amplitude cut to 15%): with recovery on,
+// the engine finds the weak beat inside the 2x gap and keeps the window; with
+// recovery off, the gap is rejected as missed_beat and HR still never collapses.
 {
   const truthHr = 70;
-  const { samples } = generatePpgSamples({ durationSec: 60, hr: truthHr, fps: 30, everyNthMissed: 5, seed: 15 });
+  const { samples, groundTruth } = generatePpgSamples({ durationSec: 60, hr: truthHr, fps: 30, everyNthMissed: 5, seed: 15 });
   const r = runReplay(toLog(samples));
-  const missed = r.ibiDetails.filter(d => d.reason === 'missed_beat');
-  assert.ok(missed.length > 0, 'dropped-beat case must produce missed_beat rejections');
+  const accepted = r.tachogram.filter(d => d.valid && d.good);
   const good = r.hrTimeline.filter(w => w.quality.good);
-  for (const w of good) {
-    assert.ok(Math.abs(w.heartRate - truthHr) <= 5, `HR with dropped beats must stay within truth+-5, got ${w.heartRate} at t=${w.windowStartSec}`);
-  }
-  console.log(`[sim dropped beats] ${missed.length} missed_beat rejections, HR stayed within +-5 of ${truthHr}bpm: PASS`);
+  assert.ok(good.length >= 5, `weak-beat case must keep most windows good (got ${good.length})`);
+  assert.ok(accepted.length >= 0.6 * groundTruth.ibisMs.length, `weak beats must be recovered (${accepted.length} of ${groundTruth.ibisMs.length}; the first ~15 s are settling)`);
+  const lowSnr = accepted.filter(d => d.lowSnr).length;
+  assert.ok(lowSnr > 0, 'recovered beats must be flagged lowSnr');
+  for (const w of good) assert.ok(w.rmssd <= 25, `RMSSD must exclude low-SNR intervals (got ${w.rmssd.toFixed(1)} at t=${w.windowStartSec})`);
+  for (const w of good) assert.ok(Math.abs(w.heartRate - truthHr) <= 5, `HR with weak beats must stay within truth+-5, got ${w.heartRate} at t=${w.windowStartSec}`);
+  const rOff = runReplay(toLog(samples), { recoverMissedBeats: false });
+  const missed = rOff.ibiDetails.filter(d => d.reason === 'missed_beat');
+  assert.ok(missed.length > 0, 'without recovery the gaps must be rejected as missed_beat');
+  for (const w of rOff.hrTimeline.filter(w => w.quality.good)) assert.ok(Math.abs(w.heartRate - truthHr) <= 5, `HR without recovery must stay within truth+-5, got ${w.heartRate}`);
+  console.log(`[sim weak beats] recovery on: ${good.length} good windows, ${accepted.length}/${groundTruth.ibisMs.length} beats (${lowSnr} low-SNR); recovery off: ${missed.length} missed_beat rejections, HR within +-5: PASS`);
 }
 
 console.log('\nALL SIM TESTS PASSED');
