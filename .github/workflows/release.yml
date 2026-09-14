@@ -1,8 +1,10 @@
 name: release
 
-# Publishes a GitHub Release when a version tag is pushed, or on manual
-# dispatch (which creates the tag on the chosen commit). Release notes are
-# the matching section of CHANGELOG.md.
+# Publishes to npm (with provenance, when NPM_TOKEN is set and the version is
+# not on the registry yet) and creates a GitHub Release when a version tag is
+# pushed, or on manual dispatch (which creates the tag on the chosen commit).
+# Release notes are the matching section of CHANGELOG.md. Every step is
+# idempotent, so re-running for an existing tag only fills in what is missing.
 on:
   push:
     tags: ['v*.*.*']
@@ -15,6 +17,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   release:
@@ -24,6 +27,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          registry-url: https://registry.npmjs.org
       - run: npm install --no-audit --no-fund  # no lockfile is committed; matches test.yml
       - run: npm test
       - run: npm run build
@@ -38,12 +42,25 @@ jobs:
             on { print }
           ' CHANGELOG.md > RELEASE_NOTES.md
           test -s RELEASE_NOTES.md || echo "See CHANGELOG.md." > RELEASE_NOTES.md
+      - name: Check package.json matches the tag
+        run: |
+          V=$(node -p "require('./package.json').version")
+          test "v$V" = "$TAG" || { echo "package.json is $V but the tag is $TAG"; exit 1; }
+      - name: Publish to npm (skipped when the version is already published or NPM_TOKEN is unset)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          N=$(node -p "require('./package.json').name"); V="${TAG#v}"
+          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "NPM_TOKEN not set; skipping npm publish"; exit 0; fi
+          if npm view "$N@$V" version >/dev/null 2>&1; then echo "$N@$V already on npm; skipping"; exit 0; fi
+          npm publish --provenance --access public
       - name: Pack tarball
         run: npm pack && mv sontakey-ppg-js-*.tgz "ppg-js-${TAG}.tgz"
-      - name: Create GitHub Release
+      - name: Create GitHub Release (skipped when it already exists)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "release $TAG exists; skipping"; exit 0; fi
           gh release create "$TAG" \
             --target "$GITHUB_SHA" \
             --title "$TAG" \
