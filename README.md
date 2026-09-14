@@ -101,14 +101,14 @@ console.log(report.timeDomain.rmssd, report.frequencyDomain.lfhf, report.stressI
 | `ibi`, `rmssd`, `sdnn` | most recent interval and variability over the last 60 s of accepted beats; `0` unless `quality.good` |
 | `rmssdFloorMs`, `timingUncertaintyMs` | the RMSSD the pipeline's own beat-timing noise would produce on a perfectly regular pulse, estimated per window (accurate to roughly ±50%) |
 | `respiration` | `{ rateBpm, confidence, basis }` from breathing-driven modulation of beat timing, pulse amplitude and baseline (5.5-30 breaths/min). Confidence ≥ 0.6 when at least two estimates agree, 0.5 for a pair with one weak source, 0.3 for a single clear source (provisional), 0.4 while a recent firm rate is held. First estimate about 45 s after MEASURING |
-| `quality` | `{ good, reason, code, acdc, artifactRatio, ibiCount, fftAgree, clippedFraction, motion, templateSqi }` |
+| `quality` | `{ good, reason, code }`: the gate verdict, why, and a stable code (see the contract below). Its inputs sit beside it: `acDcRatio`, `artifactRatio`, `ibiFftDisagree`, `clippedFraction`, `motion`, `templateSqi` |
 | `templateSqi` | median correlation of each pulse with the window's mean pulse shape (0-1) |
 | `acDcRatio`, `perfusionIndex` | pulsatile amplitude over DC of the selected channel (bandpassed per-beat, not raw range) |
 | `heartRateFFT`, `heartRateIBI`, `heartRateSource`, `harmonicCorrected` | the two independent estimates and which one won |
 | `fingerState`, `settleRemainingSec`, `guidanceMessage` | state machine and coaching copy |
 | `sampleRate`, `selectedChannel`, `redDc`, `greenDc`, `clippedFraction`, `motion` | capture diagnostics |
 
-Every `beat` event carries `{ time, ibiMs, valid, good, lowSnr, sqi, reason }`: `valid` is
+Every `beat` event carries `{ time, ibiMs, valid, good, lowSnr, sqi, reason, heartRate }`: `valid` is
 the interval-level artifact decision, `good` is whether the window it came
 from passed the quality gate, and `lowSnr` marks an interval next to a
 recovered weak beat (counted for heart rate, excluded from variability).
@@ -128,6 +128,8 @@ camera frame (requestVideoFrameCallback, captureTime when available)
             peaks (adaptive threshold + 0.3 s vertex fit) -> absolute beat times
             missed-beat recovery (weak pulse inside a 2x gap, flagged lowSnr)
             template correlation per beat -> interval validation over the continuous stream
+            (range, missed-beat multiples, jump vs the recent median; four consistent
+             rejects re-seed the median so a noisy start or a real rate change is followed)
             RMSSD / SDNN over 60 s, respiration from beat modulation
             quality gate -> good / reason / code
 ```
@@ -173,10 +175,13 @@ property for previews.
 
 ```ts
 {
-  signal: {                     // PpgEngine options
+  signal: {                     // PpgEngine options (the common ones; see EngineOptions for all)
     windowSec: 5,               // analysis window, seconds of signal time
     hopSec: 5,                  // interval between windows
+    contextSec: 3,              // extra history filtered with each window
     gridHz: 60,                 // uniform analysis grid
+    hrSlewPerWindow: 8,         // max displayed HR change between consecutive good windows
+    recoverMissedBeats: true,   // look for a weak beat inside a 2x gap (flagged lowSnr)
     cardiacBandLow: 0.75,       // Hz, heart-rate search band (45 bpm)
     cardiacBandHigh: 4.0,       // Hz (240 bpm)
     quality: { minAcDc: 0.002, maxArtifactRatio: 0.2, minIbiCount60s: 8,
@@ -210,7 +215,7 @@ is a sentence you can show to the user.
 ### `PpgEngine` (`@sontakey/ppg-js/engine`)
 
 Feed it your own samples: `engine.push({ t, r, g, b, clipped?, motion? })`
-returns `{ state, stateChanged, waveform, window }`. Use it for other
+returns `{ state, stateChanged, stateReason, present, waveform, window }` (`window` is null except every `hopSec`). Use it for other
 capture paths (a WebView bridge, a wearable's raw PPG, a file).
 
 ### DSP (`@sontakey/ppg-js/dsp`)
@@ -229,7 +234,7 @@ and `code` name the first that fails:
 2. clipped-pixel fraction ≤ 5% (`saturated`)
 3. device motion ≤ threshold, when a motion source is attached (`motion`)
 4. pulsatile AC/DC ≥ 0.2% (`weak_pulse`)
-5. ≤ 20% of candidate intervals rejected in the last 60 s (`irregular`)
+5. ≤ 20% of candidate intervals rejected in the last 60 s (`irregular`); intervals from before the beat reference settled after a rough start count as settling, not rejects
 6. ≥ 8 accepted intervals in the last 60 s (`collecting`)
 7. median template correlation ≥ 0.6 (`morphology`)
 8. interval-based and spectral heart rate agree within 25%
@@ -304,10 +309,12 @@ validate this library on your own device.
 Requirements: HTTPS (or localhost), `getUserMedia`. `requestVideoFrameCallback`
 is used when available; `requestAnimationFrame` otherwise.
 
-Tested against real recordings from one iPhone (iOS 26, 60 fps) and against
-a simulator at 24/30/60 fps with dropped frames, saturation, motion,
-respiratory modulation and dominant dicrotic waves, and benchmarked against
-HeartPy and vital_sqi (`docs/audit/BENCHMARK-2026-09.md`). Android recordings are
+Tested against six real recordings from one iPhone (iOS 26, Safari and
+Chrome, 60 fps, in `test/fixtures/`: clean, muted, slow breathing, periodic
+30 fps dips, a noisy onset) and against a simulator at 24/30/60 fps with
+dropped frames, saturation, motion, respiratory modulation and dominant
+dicrotic waves, and benchmarked against HeartPy and vital_sqi
+(`docs/audit/BENCHMARK-2026-09.md`). Android recordings are
 the most valuable thing you can contribute right now; see
 [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -334,11 +341,21 @@ Measured on the simulator (what the tests enforce):
 
 | Case | Result |
 |---|---|
-| Heart rate, 48-110 bpm, 24/30/60 fps | within 1 bpm |
+| Heart rate, 60-90 bpm, 24/30/60 fps | within 1 bpm |
 | RMSSD floor on a zero-variability pulse, fractional ROI means | 9-13 ms (bound 15 ms) |
 | Same with whole-count quantised means | 11-16 ms (bound 22 ms) |
-| 10% dropped frames | raises RMSSD by < 2 ms |
+| 10% dropped frames | raises RMSSD by < 2 ms (bound 5 ms) |
 | Respiration at 6 breaths/min | 6.0 ± 1 |
+
+And on the real recordings (what `test/fixtures.test.js` enforces):
+
+| Case | Result |
+|---|---|
+| Live vs replay, 3 min session | 212 of 212 beats reproduced |
+| Time to first heart rate, clean start | 10 s after MEASURING (20 s after finger placement: 6 s settle, then 8 accepted beats) |
+| Time to first heart rate, noisy onset (junk intervals seeded the reference) | 15 s after MEASURING (25 s after placement); before 0.3.0 the session never recovered |
+| Periodic 30 fps dips (every other frame dropped for 20 s) | HR unchanged, RMSSD floor 7 -> 14 ms during the dip |
+| Breathing at 6.7/min | first estimate 40 s after MEASURING, then available in every window but one |
 
 Not validated: no ECG or chest-strap comparison across a population, no
 claim across skin tones or ambient light beyond the recordings in

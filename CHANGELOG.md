@@ -26,37 +26,6 @@ makes the variability numbers trustworthy and the capture layer portable.
   95 s to 40 s after MEASURING, with one empty window instead of nine; the demo shows a ≈ prefix
   for provisional rates.
 
-### Added
-- `analyzeHRV` / `frequencyDomain` accept `respirationRateBpm` and report
-  `respirationInLf`: when an independent breathing estimate is under
-  9 breaths/min, respiratory sinus arrhythmia sits in the LF band and LF/HF
-  is breathing-driven. The demo report prints a note in that case.
-- Fixture `iphone-195s-slow-breathing.json`: a 3 min v0.3.0 spot check with
-  periodic 30 fps dips and ~6.7 breaths/min breathing, with regression
-  bounds on live/replay parity, gate rate, HR through the dips, respiration
-  and the LF peak.
-
-### Fixed
-- **Beat acceptance could deadlock.** The jump-versus-median rule compared
-  each interval with the median of accepted intervals only, so a reference
-  seeded by two or three junk intervals from the moments after finger
-  placement rejected every real beat for the rest of the session (no heart
-  rate at all, "irregular beats" forever). Four consecutive mutually
-  consistent rejects now re-seed the reference and are accepted
-  retroactively; on a cold start the disagreeing seeds are dropped. The same
-  rule follows a real sustained rate change. Intervals from before the
-  re-seed count as settling, not irregularity, so they no longer hold the
-  quality gate for a minute, and the displayed heart rate snaps rather than
-  slews after a bad stretch. Fixture `iphone-63s-noisy-onset.json`
-  reproduces the failure (heart rate now at 20 s instead of never).
-- Demo report: the "population mean" caption under the PNS/SNS bars was
-  absolutely positioned without a positioned parent, so it anchored to the
-  page and floated over other cards while the report scrolled.
-- `tools/anonymize-log.js` now redacts device and group ids inside recorded
-  events too, not only in `meta`; the two `iphone-cros-*` fixtures were
-  re-anonymized.
-
-### Changed
 - **One streaming engine** (`PpgEngine`) drives both the live camera path and
   `tools/replay.js`. Windows are 5 s of signal time, every window is
   interpolated onto one absolute time grid from the frame timestamps, and
@@ -106,6 +75,15 @@ makes the variability numbers trustworthy and the capture layer portable.
   camera fed from a recorded fixture.
 
 ### Added
+- `analyzeHRV` / `frequencyDomain` accept `respirationRateBpm` and report
+  `respirationInLf`: when an independent breathing estimate is under
+  9 breaths/min, respiratory sinus arrhythmia sits in the LF band and LF/HF
+  is breathing-driven. The demo report prints a note in that case.
+- Fixture `iphone-195s-slow-breathing.json`: a 3 min v0.3.0 spot check with
+  periodic 30 fps dips and ~6.7 breaths/min breathing, with regression
+  bounds on live/replay parity, gate rate, HR through the dips, respiration
+  and the LF peak.
+
 - Signal-quality indices: `metrics.sqi` per window (skewness, kurtosis,
   perfusion, relative cardiac power, SNR, zero-crossing rate, template
   correlation, detector agreement, artifact ratio, clipping, motion) with a
@@ -133,6 +111,25 @@ makes the variability numbers trustworthy and the capture layer portable.
   `timingUncertaintyMs` in metrics.
 
 ### Fixed
+- **Beat acceptance could deadlock.** The jump-versus-median rule compared
+  each interval with the median of accepted intervals only, so a reference
+  seeded by two or three junk intervals from the moments after finger
+  placement rejected every real beat for the rest of the session (no heart
+  rate at all, "irregular beats" forever). Four consecutive mutually
+  consistent rejects now re-seed the reference and are accepted
+  retroactively; on a cold start the disagreeing seeds are dropped. The same
+  rule follows a real sustained rate change. Intervals from before the
+  re-seed count as settling, not irregularity, so they no longer hold the
+  quality gate for a minute, and the displayed heart rate snaps rather than
+  slews after a bad stretch. Fixture `iphone-63s-noisy-onset.json`
+  reproduces the failure (heart rate now at 20 s instead of never).
+- Demo report: the "population mean" caption under the PNS/SNS bars was
+  absolutely positioned without a positioned parent, so it anchored to the
+  page and floated over other cards while the report scrolled.
+- `tools/anonymize-log.js` now redacts device and group ids inside recorded
+  events too, not only in `meta`; the two `iphone-cros-*` fixtures were
+  re-anonymized.
+
 - Recorder leaked samples across `start()` calls.
 - A beat inside the filter's edge region was lost at every window boundary.
 - Coaching showed the flashlight hint on torch-less devices even with a good
