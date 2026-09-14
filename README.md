@@ -17,6 +17,18 @@ exact same engine.
 
 **Live demo:** <https://ppg-js.vercel.app> (needs a phone and HTTPS)
 
+<p align="center">
+  <img src="docs/media/start.png" width="230" alt="HRV Spot Check start screen: cover the camera and flash, hold still for 3 minutes, wait for the ring">
+  <img src="docs/media/measuring.gif" width="230" alt="Measuring screen: 69 bpm, good signal, RMSSD and SDNN with the noise floor, live pulse waveform">
+  <img src="docs/media/report.png" width="230" alt="Report: ANS balance, time-domain HRV with the measurement floor next to RMSSD">
+</p>
+
+The demo app in `examples/app` is the three-minute HRV Spot Check shown
+above: [start](docs/media/start.png), [measuring](docs/media/measuring.mp4)
+(screen recording from an iPhone), and the report
+([frequency domain](docs/media/report-frequency.png), [full page](docs/media/report-full.png))
+rendered from a real recording in `test/fixtures/`.
+
 ## Contents
 
 - [Install](#install)
