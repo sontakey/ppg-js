@@ -34,29 +34,19 @@ for (const hr of [60, 70, 90]) {
     assert.ok(Math.abs(meanIbiMeasured - meanIbiTruth) < 10, `clean ${hr}bpm@${fps}fps: mean IBI error ${(meanIbiMeasured - meanIbiTruth).toFixed(1)}ms >= 10ms`);
 
     const finalRmssd = good[good.length - 1].rmssd;
-    // rmssd() in production is a sliding 8-IBI window (see utils/peaks.js),
-    // not a whole-session average - compare against the same windowing of
-    // ground truth, not the full-session RMSSD.
-    //
-    // NOTE ON THE BOUND: real 8-bit camera PPG amplitude here is only 3
-    // counts on top of noise/quantization (matches the real iPhone logs
-    // this pipeline is built from - see fingerState.js doc comment), so
-    // the peak detector's parabolic-interpolation timing has real jitter
-    // on the order of several ms per beat; RMSSD (a difference-of-differences
-    // metric) amplifies that jitter more than raw IBI accuracy does.
-    // Measured error against ground truth was 5-100ms depending on
-    // hr/fps/seed - a flat +-10ms bound the task suggested does not hold
-    // for this generator's amplitude; +-60ms does, consistently, across
-    // all six hr/fps combinations tested. This is a signal/detector-noise
-    // reality, not a loosened-to-pass hack: the raw mean-IBI-error check
-    // above (<10ms) already verifies HR accuracy is real and tight.
-    const truthTail = groundTruth.ibisMs.slice(-8);
-    let sumSq = 0;
-    for (let i = 1; i < truthTail.length; i++) sumSq += (truthTail[i] - truthTail[i - 1]) ** 2;
-    const truthTailRmssd = Math.sqrt(sumSq / (truthTail.length - 1));
-    assert.ok(Math.abs(finalRmssd - truthTailRmssd) <= 60, `clean ${hr}bpm@${fps}fps: RMSSD ${finalRmssd.toFixed(1)} vs truth (last 8 IBIs) ${truthTailRmssd.toFixed(1)} not within +-60ms`);
+    // The engine reports RMSSD over the last 60 s of accepted beats. This
+    // generator quantises to whole 8-bit counts with a 3-count pulse, which
+    // is harsher than a real camera (ROI means are fractional), so the
+    // detector's timing jitter alone produces some RMSSD on a signal with
+    // none. The measured floor is 12-17 ms; the bound is 20 ms and the
+    // engine's own floor estimate must agree with it to within a factor of two.
+    // (Before the timestamp-native engine this bound had to be +-60 ms.)
+    const truthRmssd = groundTruth.rmssdMs; // 0 for a constant-rate signal
+    assert.ok(Math.abs(finalRmssd - truthRmssd) <= 20, `clean ${hr}bpm@${fps}fps: RMSSD ${finalRmssd.toFixed(1)} vs truth ${truthRmssd.toFixed(1)} not within +-20ms`);
+    const floor = good[good.length - 1].rmssdFloorMs;
+    assert.ok(floor > 0 && floor < 40, `clean ${hr}bpm@${fps}fps: rmssdFloorMs ${floor} out of range`);
 
-    console.log(`[sim clean ${hr}bpm@${fps}fps] HR=${finalHr} (truth ${hr}), meanIBI err=${(meanIbiMeasured - meanIbiTruth).toFixed(1)}ms, RMSSD=${finalRmssd.toFixed(1)} (truth ${truthTailRmssd.toFixed(1)}): PASS`);
+    console.log(`[sim clean ${hr}bpm@${fps}fps] HR=${finalHr} (truth ${hr}), meanIBI err=${(meanIbiMeasured - meanIbiTruth).toFixed(1)}ms, RMSSD=${finalRmssd.toFixed(1)} (truth ${truthRmssd.toFixed(1)}, floor est ${floor.toFixed(1)}): PASS`);
   }
 }
 
@@ -68,15 +58,10 @@ for (const hr of [60, 70, 90]) {
   assert.ok(good.length > 0, 'RSA case must reach a good window');
   const finalRmssd = good[good.length - 1].rmssd;
   const pctErr = Math.abs(finalRmssd - groundTruth.rmssdMs) / groundTruth.rmssdMs;
-  // NOTE ON THE BOUND: a +-15% relative bound on a ~20ms truth RMSSD is
-  // fragile against the same detector noise floor documented above in the
-  // clean-signal case (~24-38ms RMSSD purely from parabolic-fit jitter on
-  // real 8-bit amplitude, with ZERO true HRV) - a relative % of a small
-  // number is dominated by noise, not signal. Use the same absolute-ms
-  // noise floor established there (+-60ms) instead of a relative bound;
-  // measured error here (~28ms) is well inside it.
+  // Timing noise adds in quadrature with real variability, so a ~23 ms
+  // true RMSSD plus a ~13 ms floor reads ~26 ms; allow 15 ms absolute.
   const absErr = Math.abs(finalRmssd - groundTruth.rmssdMs);
-  assert.ok(absErr <= 60, `RSA RMSSD ${finalRmssd.toFixed(1)} vs truth ${groundTruth.rmssdMs.toFixed(1)} not within +-60ms (${absErr.toFixed(1)}ms, ${(pctErr * 100).toFixed(1)}%)`);
+  assert.ok(absErr <= 15, `RSA RMSSD ${finalRmssd.toFixed(1)} vs truth ${groundTruth.rmssdMs.toFixed(1)} not within +-15ms (${absErr.toFixed(1)}ms, ${(pctErr * 100).toFixed(1)}%)`);
   console.log(`[sim RSA 6bpm swing] RMSSD=${finalRmssd.toFixed(1)} truth=${groundTruth.rmssdMs.toFixed(1)} err=${absErr.toFixed(1)}ms (${(pctErr * 100).toFixed(1)}%): PASS`);
 }
 
@@ -136,19 +121,26 @@ for (const hr of [60, 70, 90]) {
   console.log(`[sim low amplitude] shown HRs: [${shownHrs.join(',')}], all within truth+-3 or hidden: PASS`);
 }
 
-// --- 6. Dropped beats (every 5th beat's amplitude nulled) -> missed_beat
-// rejections occur and HR stays within +-5 of truth.
+// --- 6. Weak beats (every 5th beat's amplitude cut to 15%): with recovery on,
+// the engine finds the weak beat inside the 2x gap and keeps the window; with
+// recovery off, the gap is rejected as missed_beat and HR still never collapses.
 {
   const truthHr = 70;
-  const { samples } = generatePpgSamples({ durationSec: 60, hr: truthHr, fps: 30, everyNthMissed: 5, seed: 15 });
+  const { samples, groundTruth } = generatePpgSamples({ durationSec: 60, hr: truthHr, fps: 30, everyNthMissed: 5, seed: 15 });
   const r = runReplay(toLog(samples));
-  const missed = r.ibiDetails.filter(d => d.reason === 'missed_beat');
-  assert.ok(missed.length > 0, 'dropped-beat case must produce missed_beat rejections');
+  const accepted = r.tachogram.filter(d => d.valid && d.good);
   const good = r.hrTimeline.filter(w => w.quality.good);
-  for (const w of good) {
-    assert.ok(Math.abs(w.heartRate - truthHr) <= 5, `HR with dropped beats must stay within truth+-5, got ${w.heartRate} at t=${w.windowStartSec}`);
-  }
-  console.log(`[sim dropped beats] ${missed.length} missed_beat rejections, HR stayed within +-5 of ${truthHr}bpm: PASS`);
+  assert.ok(good.length >= 5, `weak-beat case must keep most windows good (got ${good.length})`);
+  assert.ok(accepted.length >= 0.6 * groundTruth.ibisMs.length, `weak beats must be recovered (${accepted.length} of ${groundTruth.ibisMs.length}; the first ~15 s are settling)`);
+  const lowSnr = accepted.filter(d => d.lowSnr).length;
+  assert.ok(lowSnr > 0, 'recovered beats must be flagged lowSnr');
+  for (const w of good) assert.ok(w.rmssd <= 25, `RMSSD must exclude low-SNR intervals (got ${w.rmssd.toFixed(1)} at t=${w.windowStartSec})`);
+  for (const w of good) assert.ok(Math.abs(w.heartRate - truthHr) <= 5, `HR with weak beats must stay within truth+-5, got ${w.heartRate} at t=${w.windowStartSec}`);
+  const rOff = runReplay(toLog(samples), { recoverMissedBeats: false });
+  const missed = rOff.ibiDetails.filter(d => d.reason === 'missed_beat');
+  assert.ok(missed.length > 0, 'without recovery the gaps must be rejected as missed_beat');
+  for (const w of rOff.hrTimeline.filter(w => w.quality.good)) assert.ok(Math.abs(w.heartRate - truthHr) <= 5, `HR without recovery must stay within truth+-5, got ${w.heartRate}`);
+  console.log(`[sim weak beats] recovery on: ${good.length} good windows, ${accepted.length}/${groundTruth.ibisMs.length} beats (${lowSnr} low-SNR); recovery off: ${missed.length} missed_beat rejections, HR within +-5: PASS`);
 }
 
 console.log('\nALL SIM TESTS PASSED');

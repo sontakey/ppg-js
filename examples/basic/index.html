@@ -1,71 +1,54 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PPG Vitals - Basic Example</title>
-    <link rel="stylesheet" href="../../dist/ppg-monitor.css">
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        h1 {
-            text-align: center;
-            color: #333;
-        }
-        .info {
-            background-color: #f0f0f0;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ppg-js basic example</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 0; padding: 24px 16px; background: #0e1015; color: #f2f4f7; }
+    h1 { font-size: 20px; margin: 0 0 12px; }
+    .big { font-size: 56px; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .muted { color: #a7adba; }
+    button { font: inherit; padding: 12px 20px; border-radius: 8px; border: 0; background: #4fd1c5; color: #0e1015; font-weight: 600; }
+    dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; }
+  </style>
 </head>
 <body>
-    <h1>PPG Vitals - Basic Usage Example</h1>
+  <h1>ppg-js: heart rate from the rear camera</h1>
+  <p class="muted">Cover the rear camera and flash with a fingertip, hold still. Phone + HTTPS required.</p>
+  <button id="start">Start</button>
+  <p><span id="hr" class="big">--</span> <span class="muted">bpm</span></p>
+  <p id="msg" class="muted">Not started</p>
+  <dl>
+    <dt>State</dt><dd id="state">-</dd>
+    <dt>RMSSD</dt><dd id="rmssd">-</dd>
+    <dt>Breathing</dt><dd id="resp">-</dd>
+    <dt>Quality</dt><dd id="q">-</dd>
+  </dl>
 
-    <div class="info">
-        <h3>Instructions:</h3>
-        <ul>
-            <li>Click the "Measure" button below</li>
-            <li>Allow camera access when prompted</li>
-            <li>Cover both the camera and flashlight with your finger</li>
-            <li>Wait for the signal quality to improve (green circle = good signal)</li>
-            <li>Follow the on-screen guidance for best results</li>
-        </ul>
-    </div>
+  <script src="../demo/dist/ppg.global.js"></script>
+  <script>
+    // The browser bundle exposes window.PPG with PPG.PPG (typed events),
+    // PPG.PPGMonitor (callbacks), PPG.hrv, PPG.dsp and PPG.sources.
+    const ppg = new PPG.PPG();
+    const $ = (id) => document.getElementById(id);
 
-    <div id="ppg-container"></div>
+    ppg.addEventListener('state', (e) => { $('state').textContent = e.detail.state; });
+    ppg.addEventListener('metrics', (e) => {
+      const m = e.detail;
+      $('hr').textContent = m.quality.good ? m.heartRate : '--';
+      $('rmssd').textContent = m.quality.good ? `${m.rmssd.toFixed(0)} ms (±${m.rmssdFloorMs.toFixed(0)} ms floor)` : '-';
+      $('q').textContent = m.quality.good ? `good (${m.qualityScore}/100)` : m.quality.reason;
+      $('msg').textContent = m.guidanceMessage;
+    });
+    ppg.addEventListener('respiration', (e) => { $('resp').textContent = `${e.detail.rateBpm.toFixed(0)} breaths/min`; });
+    ppg.addEventListener('error', (e) => { $('msg').textContent = e.detail.error.guidance || e.detail.error.message; });
 
-    <script src="../../dist/ppg-monitor.min.js"></script>
-    <script>
-        // Basic usage with default UI
-        const ppg = new PPGMonitor('#ppg-container', {
-            ui: {
-                enabled: true,
-                showVideo: true,
-                showMetrics: true,
-                showChart: true
-            },
-            onReady: () => {
-                console.log('PPG Monitor ready!');
-            },
-            onQualityUpdate: (metrics) => {
-                console.log('Quality update:', metrics);
-            },
-            onError: (error) => {
-                console.error('PPG Error:', error);
-                alert('Error: ' + error.message);
-            }
-        });
-
-        // Start monitoring when page loads
-        ppg.start().catch(err => {
-            console.error('Failed to start:', err);
-        });
-    </script>
+    $('start').addEventListener('click', async () => {
+      $('start').disabled = true;
+      try { await ppg.start(); $('msg').textContent = 'Camera running'; }
+      catch (err) { $('start').disabled = false; }
+    });
+  </script>
 </body>
 </html>

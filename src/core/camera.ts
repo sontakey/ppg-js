@@ -11,12 +11,12 @@
  * so a match there is coincidental; callers should keep the
  * `facingMode: 'environment'` constraint as a fallback regardless of what
  * this returns.
- *
- * @param {Array<{deviceId:string,label:string,kind:string}>} devices - enumerateDevices() output
- * @returns {{deviceId:string,label:string}|null} chosen device, or null to fall back to facingMode
  */
-export function pickBackCamera(devices) {
-  const videoInputs = devices.filter(d => d.kind === 'videoinput' && d.label);
+
+export interface DeviceLike { deviceId: string; label: string; kind: string; }
+
+export function pickBackCamera(devices: ArrayLike<DeviceLike> | DeviceLike[]): DeviceLike | null {
+  const videoInputs = Array.from(devices as ArrayLike<DeviceLike>).filter(d => d.kind === 'videoinput' && d.label);
   const EXCLUDE = /ultra|wide|tele|dual|triple|virtual/i;
 
   // 1. Exact iPhone main-lens label.

@@ -1,374 +1,341 @@
-declare const __PPG_VERSION__: string;
-import { SignalProcessor } from './SignalProcessor.js';
-import { detrend } from './detrend.js';
-import { windowMean } from './helpers.js';
-import { createDefaultOptions, getContainerElement } from './helpers.js';
-import { DebugRecorder } from './recorder.js';
+declare const __PPG_VERSION__: string | undefined;
+import { createDefaultOptions, getContainerElement, type MonitorOptions, type ReadyInfo } from './helpers.js';
+import { DebugRecorder, type DebugLog } from './recorder.js';
 import { pickBackCamera } from './camera.js';
-import { FingerStateMachine, STATE, selectChannel } from './fingerState.js';
-import { coachingMessage, qualityScore } from './coaching.js';
+import { STATE, type FingerState } from './fingerState.js';
+import { coachingMessage } from './coaching.js';
+import { PpgEngine, type EngineWindow, type TachogramPoint, type SessionSummary } from './engine.js';
+import { PPGError } from './errors.js';
 
-// Small offscreen canvas the frame is downscaled into before getImageData -
-// 64x48 is plenty for a channel-mean ROI and is far cheaper per frame than
-// reading a full 640x480 buffer every tick.
+// Small offscreen canvas the ROI is downscaled into before getImageData.
 const ROI_CANVAS_WIDTH = 64;
 const ROI_CANVAS_HEIGHT = 48;
-// Minimum DC (mean channel value) for a channel to be eligible for AC/DC-
-// ratio channel selection - a near-dark channel (e.g. green under a well-
-// covered lens, DC ~13-19/255) inflates its AC/DC ratio via quantization
-// noise, not real pulsatile signal (see real-log evidence).
+// Red values at or above this count as clipped (sensor saturation).
+const CLIP_LEVEL = 250;
+// Minimum red DC used by the physical torch check.
 const MIN_CHANNEL_DC = 40;
+// Frames skipped right after the camera starts (exposure ramp).
+const WARMUP_FRAMES = 30;
 
-/** Peak-to-peak (max - min) of a typed array - cheap proxy for AC amplitude. */
-function peakToPeak(arr) {
-  let min = Infinity, max = -Infinity;
-  for (let i = 0; i < arr.length; i++) {
-    if (arr[i] < min) min = arr[i];
-    if (arr[i] > max) max = arr[i];
-  }
-  return max - min;
+type VideoFrameMetadata = {
+  expectedDisplayTime?: number;
+  captureTime?: number;
+  presentedFrames?: number;
+  mediaTime?: number;
+};
+
+type VideoWithRvfc = HTMLVideoElement & {
+  requestVideoFrameCallback?: (cb: (now: number, metadata: VideoFrameMetadata) => void) => number;
+  cancelVideoFrameCallback?: (handle: number) => void;
+};
+
+interface OpenedCamera {
+  stream: MediaStream;
+  track: MediaStreamTrack;
+  chosenDeviceId: string | null;
+  chosenLabel: string | null;
+  chosenBy: string;
+  videoInputsMeta: Array<{ deviceId: string; label: string; kind: string }>;
+  capabilities: Record<string, unknown>;
+  applied: Record<string, unknown>;
+  constraintErrors: Record<string, string>;
+  torchSupported: boolean;
+  torchState: string;
 }
 
-/**
- * `redBuf`/`greenBuf`/`acdc`/`frameTimestamps` are ring buffers written at
- * `slot = nFrame % windowLength` - reading them slot-by-slot (buf[0..N-1])
- * is NOT chronological order once the ring has wrapped: buf[newestSlot] is
- * the most recent sample and buf[newestSlot+1] is the OLDEST, so a raw
- * linear read has a one-sample discontinuity right at the wrap seam (always
- * between slot 0 and slot 1, since processing only ever happens when
- * nFrame % windowLength === 0, i.e. newestSlot is always 0).
- *
- * Every consumer downstream assumes a time-ordered window: detrend() fits a
- * linear regression against sample INDEX, and the bandpass filter is fed
- * the raw buffer directly for peak detection - both treat that manufactured
- * jump as real signal, and filtfilt turns a single hard discontinuity into
- * a broadband transient that the peak detector reads as several extra
- * beats (or drowns real ones), which is exactly the "artifactRatio
- * 0.25-0.42, HR 0, ibi_rejected out_of_range" signature seen live while
- * offline replay (which slices a genuinely linear array) is clean on the
- * identical samples. Rotate to oldest-first before handing a ring buffer to
- * anything that cares about sample order.
- * @param {Float32Array|Float64Array} buf
- * @param {number} newestSlot - index last written (this.nFrame % windowLength)
- * @returns {Float32Array} same type/length, oldest sample first
- */
-function toChronological(buf, newestSlot) {
-  const n = buf.length;
-  const out = new buf.constructor(n);
-  out.set(buf.subarray(newestSlot + 1, n), 0);
-  out.set(buf.subarray(0, newestSlot + 1), n - newestSlot - 1);
-  return out;
-}
+type WakeLockSentinelLike = { release(): Promise<void>; addEventListener?: (t: string, cb: () => void) => void };
 
 /**
- * PPG Monitor - Real-time photoplethysmography signal monitoring
- * @class
+ * Camera adapter: acquires the rear camera, reads ROI channel means once
+ * per real camera frame and feeds them to a PpgEngine. Records everything
+ * for offline replay. Renders no UI.
  */
 export class PPGMonitor {
-  // ponytail: index signature instead of per-field declarations - straight
-  // JS->TS move, tightening the surface is Phase 2 hygiene work.
-  [key: string]: any;
+  readonly options: MonitorOptions;
+  containerElement: HTMLElement | null;
+  engine: PpgEngine;
+  recorder: DebugRecorder;
+  video: VideoWithRvfc | null = null;
+  stream: MediaStream | null = null;
+  currentMetrics: Record<string, unknown>;
+  torchSupported = false;
+  torchState = 'unknown';
+  running = false;
+  frameCount = 0;
 
-  /**
-   * Create a PPG Monitor instance
-   * @param {string|HTMLElement|null} container - Container element or selector (null for headless mode)
-   * @param {Object} options - Configuration options
-   */
-  constructor(container, options = {}) {
-    // Merge options with defaults
+  // Test seams (the parity test stubs these).
+  roiCtx: CanvasRenderingContext2D | { drawImage: (...a: unknown[]) => void; getImageData: (...a: unknown[]) => ImageData } | null = null;
+  roiSourceRect: { sx: number; sy: number; sw: number; sh: number } | null = null;
+  startTimestampSec: number | null = null;
+
+  private roiCanvas: HTMLCanvasElement | null = null;
+  private ownsVideo = true;
+  private rvfcHandle: number | null = null;
+  private animationId: number | null = null;
+  private lastPresentedFrames: number | null = null;
+  private _torchCapable = false;
+  private _chosenDeviceId: string | null = null;
+  private _resuming = false;
+  private _lastRedMean: number | null = null;
+  private _preHiddenRedMean: number | null = null;
+  private _trackMutedAt: number | null = null;
+  private _exposureLocked = false;
+  private _lastTrackSettings: Record<string, unknown> | null = null;
+  private _lastLoggedCoachMessage: string | null = null;
+  private _lastState: FingerState = STATE.NO_FINGER;
+  private _torchWatchInterval: ReturnType<typeof setInterval> | null = null;
+  private _settingsSnapshotInterval: ReturnType<typeof setInterval> | null = null;
+  private _onVisibilityChange: (() => void) | null = null;
+  private _onPageHide: (() => void) | null = null;
+  private _onMotion: ((e: DeviceMotionEvent) => void) | null = null;
+  private wakeLockSentinel: WakeLockSentinelLike | null = null;
+  private wakeLockActive = false;
+  private motionActive = false;
+  private motionValue = 0;
+
+  constructor(container: string | HTMLElement | null = null, options: Record<string, unknown> = {}) {
     this.options = createDefaultOptions(options);
-
-    // Get container element
     this.containerElement = getContainerElement(container);
-
-    // Initialize components
-    this.signalProcessor = new SignalProcessor(this.options.signal);
-    // UI rendering (chart, video preview, technical info) lives in the demo
-    // app now - the core bundle never touches the DOM beyond the video/
-    // canvas elements it creates for capture, and never injects CSS.
-    this.uiRenderer = null;
-
-    // State
-    this.video = null;
-    this.canvas = null;
-    this.ctx = null;
-    // Small downscaled ROI canvas - reused every frame instead of the
-    // full-resolution `canvas` (still used to feed the video frame in).
-    this.roiCanvas = null;
-    this.roiCtx = null;
-    this.stream = null;
-    this.animationId = null;
-
-    // Signal buffers
-    this.acdc = new Float32Array(this.options.signal.windowLength).fill(0.5);
-    this.ac = new Float32Array(this.options.signal.windowLength).fill(0.5);
-    // Per-window red/green raw means, for AC/DC-based channel selection.
-    this.redBuf = new Float32Array(this.options.signal.windowLength).fill(128);
-    this.greenBuf = new Float32Array(this.options.signal.windowLength).fill(128);
-    // Wall-clock timestamp (seconds) per sample, used to compute the real
-    // capture rate instead of assuming a fixed FPS.
-    this.frameTimestamps = new Float64Array(this.options.signal.windowLength);
-
-    // Counters and timing
-    this.frameCount = 0;
-    this.nFrame = 0;
-    this.initTime = null;
-    this.isSignal = 0;
-    this.acFrame = 0.008;
-    this.acWindow = 0.008;
-
-    // NO_FINGER/SETTLING/MEASURING gate - see utils/fingerState.js. HR/IBI/
-    // RMSSD are only trustworthy (and only computed) while MEASURING.
-    this.fingerState = new FingerStateMachine();
-    this.selectedChannel = 'red';
-    this.lastAcDcRatio = 0;
-
-    // Session-long IBI tachogram (all candidates, valid + rejected - see
-    // utils/peaks.js computeIBIs) and per-window good/HR/RMSSD/SDNN log,
-    // for the demo's live plot and the Stop-time session summary.
-    this.tachogram = [];
-    this.sessionWindows = [];
-
-    // Current metrics
-    this.currentMetrics = {
-      snr_dB: 0,
-      perfusionIndex: 0,
-      heartRate: 0,
-      ibi: 0,
-      qualityStatus: "Initializing",
-      guidanceMessage: this.options.ui.enabled ? "Press Measure to start" : "Call start() to begin",
-      fingerState: STATE.NO_FINGER,
-      qualityScore: 0,
-      selectedChannel: 'red'
-    };
-
-    // Bind methods
+    this.engine = new PpgEngine(this.options.signal);
+    this.recorder = new DebugRecorder(this.options.debug.sampleCap);
+    this.currentMetrics = this._initialMetrics();
     this.computeFrame = this.computeFrame.bind(this);
-    this.handleResize = this.handleResize.bind(this);
-
-    // Always-on raw debug recorder (see utils/recorder.js). No toggle: a
-    // bad/unrepeatable session must never be lost. Exported on demand via
-    // getDebugLog()/downloadDebugLog().
-    this.recorder = new DebugRecorder();
   }
 
-  /**
-   * Start PPG monitoring
-   * @returns {Promise<void>}
-   */
-  async start() {
+  private _initialMetrics(): Record<string, unknown> {
+    return {
+      snr_dB: 0, perfusionIndex: 0, heartRate: 0, heartRateRaw: 0, ibi: 0, rmssd: 0, sdnn: 0,
+      qualityStatus: 'Initializing', guidanceMessage: 'Call start() to begin',
+      fingerState: STATE.NO_FINGER, qualityScore: 0, selectedChannel: 'red', acDcRatio: 0,
+      quality: { state: STATE.NO_FINGER, good: false, reason: 'No finger detected', code: 'no_finger' },
+      settleRemainingSec: 0, peakTimesSec: [], ibiDetails: []
+    };
+  }
+
+  // ------------------------------------------------------------ lifecycle
+
+  /** Request the camera and begin measuring. Rejects with a PPGError. */
+  async start(): Promise<void> {
+    if (this.running) this.stop();
     try {
-      // Create video and canvas elements
-      this.video = document.createElement('video');
-      // iOS Safari refuses inline playback (and stops delivering frames)
-      // unless these are set before the stream is attached.
+      this._preflight();
+      // Fresh session state (docs/audit finding B10).
+      this.engine = new PpgEngine(this.options.signal);
+      this.frameCount = 0;
+      this.startTimestampSec = null;
+      this.lastPresentedFrames = null;
+      this._exposureLocked = false;
+      this._lastState = STATE.NO_FINGER;
+      this._lastLoggedCoachMessage = null;
+      this.currentMetrics = this._initialMetrics();
+
+      if (this.options.video) {
+        this.video = this.options.video as VideoWithRvfc;
+        this.ownsVideo = false;
+      } else {
+        this.video = document.createElement('video') as VideoWithRvfc;
+        this.ownsVideo = true;
+      }
       this.video.setAttribute('playsinline', '');
       this.video.playsInline = true;
       this.video.muted = true;
       this.video.autoplay = true;
-      this.canvas = document.createElement('canvas');
-      this.ctx = this.canvas.getContext('2d');
-
-      // Render UI if enabled
-      if (this.uiRenderer) {
-        this.uiRenderer.render(this.video, this.canvas, null);
-      }
 
       const opened = await this._openCamera();
-      this.stream = opened.stream;
-      this._chosenDeviceId = opened.chosenDeviceId;
-      this.torchSupported = opened.torchSupported;
-      this.torchState = opened.torchState;
-      this._torchCapable = !!opened.capabilities.torch;
-      const { track, chosenDeviceId, chosenLabel, chosenBy, videoInputsMeta,
-        capabilities, advanced, constraintsApplied, constraintsError,
-        zoomApplied, zoomError, exposureModeAvailable } = opened;
+      this._adoptCamera(opened);
+      this._setupRoi();
 
-      // Set canvas dimensions
-      this.canvas.width = this.video.videoWidth;
-      this.canvas.height = this.video.videoHeight;
+      const usesRVFC = typeof this.video.requestVideoFrameCallback === 'function';
+      const wakeLock = this.options.wakeLock ? await this._acquireWakeLock() : false;
+      const motion = this.options.motion ? await this._startMotion() : false;
 
-      // Downscaled ROI canvas: a center crop of the video is drawn scaled
-      // down into this small canvas, so getImageData reads ROI_CANVAS_WIDTH
-      // x ROI_CANVAS_HEIGHT pixels instead of the full frame - both a
-      // tighter fingertip-only region and far less per-frame work.
+      this.recorder.start({
+        userAgent: this.options.debug.includeUserAgent && typeof navigator !== 'undefined' ? navigator.userAgent : null,
+        screen: typeof screen !== 'undefined' ? { width: screen.width, height: screen.height } : null,
+        devicePixelRatio: typeof window !== 'undefined' ? window.devicePixelRatio : null,
+        trackSettings: opened.track.getSettings ? opened.track.getSettings() : null,
+        trackCapabilities: opened.capabilities,
+        constraintsApplied: opened.applied,
+        constraintErrors: opened.constraintErrors,
+        torchSupported: this.torchSupported,
+        frameCallbackMode: usesRVFC ? 'requestVideoFrameCallback' : 'requestAnimationFrame',
+        roi: { ...this.options.roi, ...(this.roiSourceRect || {}) },
+        engineConfig: this.engine.config,
+        cameraOptions: this.options.camera,
+        wakeLock,
+        motion,
+        appVersion: typeof __PPG_VERSION__ !== 'undefined' ? __PPG_VERSION__ : null,
+        videoInputs: opened.videoInputsMeta,
+        chosenDeviceId: opened.chosenDeviceId,
+        chosenLabel: opened.chosenLabel,
+        chosenBy: opened.chosenBy
+      });
+
+      this._bindTrackHandlers(opened.track);
+      this._installWatchers();
+
+      this.running = true;
+      this._scheduleNextFrame();
+
+      if (this.options.onReady) {
+        const info: ReadyInfo = { torchSupported: this.torchSupported, torchState: this.torchState, wakeLock, motion, capabilities: opened.capabilities };
+        this.options.onReady(info);
+      }
+    } catch (error) {
+      const err = PPGError.from(error);
+      this.running = false;
+      if (this.options.onError) this.options.onError(err);
+      throw err;
+    }
+  }
+
+  private _preflight(): void {
+    if (typeof navigator === 'undefined' || typeof document === 'undefined') throw new PPGError('unsupported');
+    if (typeof window !== 'undefined' && 'isSecureContext' in window && !window.isSecureContext) throw new PPGError('insecure_context');
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') throw new PPGError('unsupported');
+  }
+
+  private _adoptCamera(opened: OpenedCamera): void {
+    this.stream = opened.stream;
+    this._chosenDeviceId = opened.chosenDeviceId;
+    this.torchSupported = opened.torchSupported;
+    this.torchState = opened.torchState;
+    this._torchCapable = !!opened.capabilities.torch;
+  }
+
+  private _setupRoi(): void {
+    if (!this.video) return;
+    if (!this.roiCanvas) {
       this.roiCanvas = document.createElement('canvas');
       this.roiCanvas.width = ROI_CANVAS_WIDTH;
       this.roiCanvas.height = ROI_CANVAS_HEIGHT;
       this.roiCtx = this.roiCanvas.getContext('2d', { willReadFrequently: true });
+    }
+    const w = this.video.videoWidth || 640, h = this.video.videoHeight || 480;
+    const { widthFraction, heightFraction } = this.options.roi;
+    this.roiSourceRect = {
+      sx: w * (1 - widthFraction) / 2,
+      sy: h * (1 - heightFraction) / 2,
+      sw: Math.max(1, w * widthFraction),
+      sh: Math.max(1, h * heightFraction)
+    };
+  }
 
-      const roiWidthFraction = this.options.roi.widthFraction;
-      const roiHeightFraction = this.options.roi.heightFraction;
-      this.roiSourceRect = {
-        sx: this.video.videoWidth * (1 - roiWidthFraction) / 2,
-        sy: this.video.videoHeight * (1 - roiHeightFraction) / 2,
-        sw: this.video.videoWidth * roiWidthFraction,
-        sh: this.video.videoHeight * roiHeightFraction
-      };
+  private _installWatchers(): void {
+    // Torch can be dropped silently on any camera-session interruption;
+    // poll every 2 s and eagerly on visibility return.
+    this._torchWatchInterval = setInterval(() => {
+      const liveTrack = this.stream && this.stream.getVideoTracks()[0];
+      if (liveTrack && liveTrack.readyState === 'ended') { void this._resumeCamera('watchdog_ended'); return; }
+      void this._reapplyTorchIfNeeded('interval');
+    }, 2000);
 
-      // Initialize timing
-      this.initTime = new Date();
-
-      // Capture session metadata once, for debug replay parity checks.
-      const usesRVFC = typeof this.video.requestVideoFrameCallback === 'function';
-      this.recorder.start({
-        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : null,
-        screen: typeof screen !== 'undefined' ? { width: screen.width, height: screen.height } : null,
-        devicePixelRatio: typeof window !== 'undefined' ? window.devicePixelRatio : null,
-        trackSettings: track.getSettings ? track.getSettings() : null,
-        trackCapabilities: capabilities,
-        constraintsRequested: advanced,
-        constraintsApplied,
-        constraintsError,
-        exposureModeAvailable,
-        zoomApplied,
-        zoomError,
-        torchSupported: this.torchSupported,
-        frameCallbackMode: usesRVFC ? 'requestVideoFrameCallback' : 'requestAnimationFrame',
-        roi: { widthFraction: roiWidthFraction, heightFraction: roiHeightFraction, ...this.roiSourceRect },
-        signalOptions: this.options.signal,
-        appVersion: typeof __PPG_VERSION__ !== 'undefined' ? __PPG_VERSION__ : null,
-        videoInputs: videoInputsMeta,
-        chosenDeviceId,
-        chosenLabel,
-        chosenBy
-      });
-
-
-      // Watch for the browser silently switching lens/track mid-session
-      // (the exact iOS multi-cam behavior this whole change works around).
-      // Checked once per window alongside metrics rather than every frame -
-      // settings don't change fast enough to need per-frame polling, and
-      // this keeps the hot path untouched.
-      this._bindTrackHandlers(track);
-
-      // Torch can be silently dropped by the OS on any camera-session
-      // interruption (background/foreground, another app grabbing the
-      // camera, an iOS re-exposure event) with no track-level event fired
-      // for it specifically - poll every 2s while running, and eagerly on
-      // page visibility return, so the flash is never left off for long
-      // once the page can see the finger again. If the track itself has
-      // died (readyState 'ended') by the time the watchdog fires, no
-      // constraint re-apply can help - go straight to a full camera resume.
-      this._torchWatchInterval = setInterval(() => {
+    this._onVisibilityChange = () => {
+      this.recorder.pushEvent({ t: nowMs(), type: 'visibilitychange', visibilityState: document.visibilityState });
+      if (document.visibilityState === 'visible') {
+        if (this.options.wakeLock && !this.wakeLockActive) void this._acquireWakeLock();
         const liveTrack = this.stream && this.stream.getVideoTracks()[0];
-        if (liveTrack && liveTrack.readyState === 'ended') { this._resumeCamera('watchdog_ended'); return; }
-        this._reapplyTorchIfNeeded('interval');
-      }, 2000);
-      this._onVisibilityChange = () => {
-        this.recorder.pushEvent({ t: performance.now(), type: 'visibilitychange', visibilityState: document.visibilityState });
-        if (document.visibilityState === 'visible') {
-          // iOS can end or (more often) mute the track while the page was
-          // hidden (screenshot, app switch) without ever firing onended -
-          // a track that's ended, or has been muted for >1s, needs a full
-          // re-acquire, not just a torch nudge.
-          const liveTrack = this.stream && this.stream.getVideoTracks()[0];
-          const mutedTooLong = this._trackMutedAt != null && (performance.now() - this._trackMutedAt) > 1000;
-          if (!liveTrack || liveTrack.readyState === 'ended' || mutedTooLong) {
-            this._resumeCamera('visibilitychange');
-          } else {
-            this._forceReapplyTorch('visibilitychange');
-          }
+        const mutedTooLong = this._trackMutedAt != null && (nowMs() - this._trackMutedAt) > 1000;
+        if (!liveTrack || liveTrack.readyState === 'ended' || mutedTooLong) {
+          void this._resumeCamera('visibilitychange');
         } else {
-          // Snapshot the last good red DC before the page goes hidden, as
-          // the baseline for the post-return physical torch check.
-          this._preHiddenRedMean = this._lastRedMean;
+          void this._forceReapplyTorch('visibilitychange');
         }
-      };
-      document.addEventListener('visibilitychange', this._onVisibilityChange);
-      this._onPageHide = () => {
-        this.recorder.pushEvent({ t: performance.now(), type: 'pagehide' });
-        this._persistLastSessionLog();
-      };
-      window.addEventListener('pagehide', this._onPageHide);
-
-      // Periodic full track-settings snapshot (every 10s), independent of
-      // state transitions - see job 5: a session with zero state changes
-      // (e.g. stuck NO_FINGER the whole time) must still show settings drift.
-      this._settingsSnapshotInterval = setInterval(() => {
-        const liveTrack = this.stream && this.stream.getVideoTracks()[0];
-        if (!liveTrack || !liveTrack.getSettings) return;
-        this.recorder.pushEvent({ t: performance.now(), type: 'track_settings_snapshot', settings: liveTrack.getSettings() });
-      }, 10000);
-
-
-      // Initialize chart if UI is enabled
-      if (this.uiRenderer) {
-        this.uiRenderer.initializeChart();
-        this.uiRenderer.updateTechnicalInfo({
-          resolution: `${this.video.videoWidth} x ${this.video.videoHeight}`,
-          delay: 0
-        });
-
-        // Handle window resize
-        window.addEventListener('resize', this.handleResize);
+      } else {
+        this._preHiddenRedMean = this._lastRedMean;
       }
+    };
+    document.addEventListener('visibilitychange', this._onVisibilityChange);
 
-      // Start frame processing
-      this.computeFrame();
+    this._onPageHide = () => {
+      this.recorder.pushEvent({ t: nowMs(), type: 'pagehide' });
+      if (this.options.debug.persistLastSession) this._persistLastSessionLog();
+    };
+    window.addEventListener('pagehide', this._onPageHide);
 
-      // Emit ready callback
-      if (this.options.onReady) {
-        this.options.onReady({ torchSupported: this.torchSupported });
+    this._settingsSnapshotInterval = setInterval(() => {
+      const liveTrack = this.stream && this.stream.getVideoTracks()[0];
+      if (!liveTrack || !liveTrack.getSettings) return;
+      this.recorder.pushEvent({ t: nowMs(), type: 'track_settings_snapshot', settings: liveTrack.getSettings() });
+    }, 10000);
+  }
+
+  stop(): void {
+    this.running = false;
+    if (this.animationId != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.animationId);
+    this.animationId = null;
+    if (this.rvfcHandle != null && this.video && this.video.cancelVideoFrameCallback) this.video.cancelVideoFrameCallback(this.rvfcHandle);
+    this.rvfcHandle = null;
+
+    if (this._torchWatchInterval) { clearInterval(this._torchWatchInterval); this._torchWatchInterval = null; }
+    if (this._settingsSnapshotInterval) { clearInterval(this._settingsSnapshotInterval); this._settingsSnapshotInterval = null; }
+    if (this._onVisibilityChange) { document.removeEventListener('visibilitychange', this._onVisibilityChange); this._onVisibilityChange = null; }
+    if (this._onPageHide) { window.removeEventListener('pagehide', this._onPageHide); this._onPageHide = null; }
+    this._stopMotion();
+    void this._releaseWakeLock();
+
+    if (this.stream) {
+      this.stream.getTracks().forEach(track => track.stop());
+      this.stream = null;
+    }
+    if (this.video) {
+      try { this.video.pause(); } catch { /* no-op */ }
+      this.video.srcObject = null;
+    }
+    if (this.options.debug.persistLastSession) this._persistLastSessionLog();
+  }
+
+  destroy(): void {
+    this.stop();
+    if (this.video && this.ownsVideo && this.video.parentNode) this.video.parentNode.removeChild(this.video);
+    this.video = null;
+    this.roiCanvas = null;
+    this.roiCtx = null;
+    this.stream = null;
+  }
+
+  // -------------------------------------------------------------- camera
+
+  private async _getUserMediaWithRetry(constraints: MediaStreamConstraints): Promise<MediaStream> {
+    try {
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (err) {
+      const name = err && typeof err === 'object' && 'name' in err ? String((err as { name: unknown }).name) : '';
+      // Android Chrome can report the camera busy for a moment right after
+      // a previous stream was stopped; one short retry clears it.
+      if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
+        await new Promise(r => setTimeout(r, 300));
+        return navigator.mediaDevices.getUserMedia(constraints);
       }
-
-    } catch (error) {
-      console.error('Failed to start PPG monitor:', error);
-      if (this.options.onError) {
-        this.options.onError(error);
-      }
-      throw error;
+      throw err;
     }
   }
 
+  private _baseVideoConstraints(): MediaTrackConstraints {
+    const c = this.options.camera;
+    return { width: c.width, height: c.height, frameRate: c.frameRate };
+  }
+
   /**
-   * Acquire the camera stream: two-pass getUserMedia (facingMode first to
-   * unlock device labels, then a targeted re-open by chosen deviceId),
-   * lock exposure/WB/focus/torch, apply zoom, attach to this.video and
-   * wait for loadedmetadata. Pulled out of start() so _resumeCamera() can
-   * redo exactly this after an iOS backgrounding kills/mutes the track,
-   * without duplicating the two-pass device-selection dance.
-   * @param {string} [deviceId] - re-acquire this exact device (resume path)
-   *   instead of re-running facingMode + label selection from scratch.
-   * @returns {Promise<Object>} everything start()/_resumeCamera() need to
-   *   populate this.stream/this.torchSupported/the recorder meta.
+   * Acquire the camera stream: facingMode first (unlocks labels), then a
+   * targeted re-open of the physical wide rear lens by label, then torch
+   * as its own constraint set. Exposure/white-balance/focus locks are
+   * applied later, once the finger has settled (see _setLocks).
    */
-  async _openCamera(deviceId?: string) {
-    let stream;
-    let chosenDeviceId = deviceId || null;
-    let chosenLabel = null;
+  private async _openCamera(deviceId?: string): Promise<OpenedCamera> {
+    let stream: MediaStream;
+    let chosenDeviceId: string | null = deviceId || null;
+    let chosenLabel: string | null = null;
     let chosenBy = deviceId ? 'resume-same-device' : 'facingMode-fallback';
-    let videoInputsMeta = [];
+    let videoInputsMeta: OpenedCamera['videoInputsMeta'] = [];
 
     if (deviceId) {
-      // Resume: go straight for the device we already know, no relabeling
-      // pass needed (labels are unlocked for the life of the permission).
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          deviceId: { exact: deviceId },
-          width: this.options.camera.width,
-          height: this.options.camera.height,
-          frameRate: this.options.camera.frameRate
-        }
-      });
+      stream = await this._getUserMediaWithRetry({ audio: false, video: { deviceId: { exact: deviceId }, ...this._baseVideoConstraints() } });
     } else {
-      // Request camera access. First pass unlocks device labels (Safari/
-      // Chrome hide them until a permission grant exists) so we can pick
-      // the physical main/wide rear lens by label below - without this,
-      // iOS may hand out a virtual multi-camera device that silently
-      // switches lenses (wide -> ultra-wide macro) once the finger gets
-      // close, causing baseline jumps and torch loss mid-session.
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: this.options.camera
-      });
-
+      stream = await this._getUserMediaWithRetry({ audio: false, video: { ...this._baseVideoConstraints(), facingMode: this.options.camera.facingMode } });
       try {
         const devices = await navigator.mediaDevices.enumerateDevices();
-        videoInputsMeta = devices
-          .filter(d => d.kind === 'videoinput')
-          .map(d => ({ deviceId: d.deviceId.slice(0, 8), label: d.label, kind: d.kind }));
+        videoInputsMeta = devices.filter(d => d.kind === 'videoinput').map(d => ({ deviceId: d.deviceId.slice(0, 8), label: d.label, kind: d.kind }));
         const picked = pickBackCamera(devices);
         if (picked) {
           chosenDeviceId = picked.deviceId;
@@ -377,836 +344,507 @@ export class PPGMonitor {
           const initialTrack = stream.getVideoTracks()[0];
           if (initialTrack.getSettings && initialTrack.getSettings().deviceId !== picked.deviceId) {
             stream.getTracks().forEach(t => t.stop());
-            stream = await navigator.mediaDevices.getUserMedia({
-              audio: false,
-              video: {
-                deviceId: { exact: picked.deviceId },
-                width: this.options.camera.width,
-                height: this.options.camera.height,
-                frameRate: this.options.camera.frameRate
-              }
-            });
+            stream = await this._getUserMediaWithRetry({ audio: false, video: { deviceId: { exact: picked.deviceId }, ...this._baseVideoConstraints() } });
           }
         }
       } catch (err) {
-        // enumerateDevices/getUserMedia retry failed - keep the original
-        // facingMode stream rather than aborting the whole session.
         console.warn('Camera lens selection skipped:', err);
       }
     }
 
-    // Lock exposure/WB/focus and enable torch where the device supports
-    // it. Auto-exposure fighting the finger is the #1 cause of drifting
-    // signal, so we lock everything the browser will let us lock, and
-    // never assume torch exists (iOS Safari has none).
     const track = stream.getVideoTracks()[0];
+    const capabilities: Record<string, unknown> = (track.getCapabilities ? (track.getCapabilities() as Record<string, unknown>) : {}) || {};
+    const applied: Record<string, unknown> = {};
+    const constraintErrors: Record<string, string> = {};
     let torchSupported = false;
-    // Exposed for the app's debug overlay / getDebugLog() readers -
-    // 'on' | 'off' | 'unsupported' | 'unknown' (unknown before the first
-    // read succeeds).
     let torchState = 'unknown';
-    let capabilities: any = {};
-    const advanced: any = {};
-    let constraintsApplied = false;
-    let constraintsError = null;
-    let zoomApplied = false;
-    let zoomError = null;
-    let exposureModeAvailable = false;
-    try {
-      capabilities = track.getCapabilities ? track.getCapabilities() : {};
-      if (capabilities.torch) {
-        advanced.torch = true;
-        torchSupported = true;
-      } else {
-        torchState = 'unsupported';
+
+    // Each capability goes in its own `advanced` set: the spec applies a
+    // set only if ALL its members can be satisfied, so bundling torch with
+    // focus/exposure lets one unsupported combination silently drop the
+    // torch (docs/audit finding B1).
+    if (capabilities.torch && this.options.camera.torch) {
+      torchSupported = true;
+      try {
+        await track.applyConstraints({ advanced: [{ torch: true } as MediaTrackConstraintSet] });
+        applied.torch = true;
+      } catch (err) {
+        constraintErrors.torch = String((err as Error)?.message || err);
       }
-      // Real devices vary: iPhone rear cameras expose no exposureMode at
-      // all (confirmed on the phone this fix targets) - log that
-      // explicitly rather than silently no-op'ing, so a future debug log
-      // makes clear this device gives us no exposure lock, not that the
-      // lock attempt was skipped/broken.
-      exposureModeAvailable = !!(capabilities.exposureMode && capabilities.exposureMode.includes('manual'));
-      if (exposureModeAvailable) {
-        advanced.exposureMode = 'manual';
+    } else {
+      torchState = 'unsupported';
+    }
+    if (this.options.camera.lockExposure === 'start') {
+      Object.assign(applied, await this._setLocks(track, capabilities, true, constraintErrors));
+      this._exposureLocked = true;
+    }
+    const zoom = this.options.camera.zoom;
+    const zoomCap = capabilities.zoom as { min?: number; max?: number } | undefined;
+    if (zoom && zoomCap && typeof zoomCap.max === 'number' && zoomCap.max >= zoom) {
+      try {
+        await track.applyConstraints({ advanced: [{ zoom } as MediaTrackConstraintSet] });
+        applied.zoom = zoom;
+      } catch (err) {
+        constraintErrors.zoom = String((err as Error)?.message || err);
       }
-      if (capabilities.whiteBalanceMode && capabilities.whiteBalanceMode.includes('manual')) {
-        advanced.whiteBalanceMode = 'manual';
-      }
-      if (capabilities.focusMode && capabilities.focusMode.includes('manual')) {
-        advanced.focusMode = 'manual';
-      }
-      if (Object.keys(advanced).length > 0) {
-        await track.applyConstraints({ advanced: [advanced] });
-        constraintsApplied = true;
-      }
-    } catch (err) {
-      console.warn('Could not apply camera capability constraints:', err);
-      constraintsError = String(err && err.message || err);
     }
 
-    // Zoom in on the lens: a moderate optical/digital zoom fills more of
-    // the frame with fingertip (vs. lens + surrounding bezel), improving
-    // per-pixel signal. Applied as its own constraint call so a failure
-    // here doesn't roll back the exposure/WB/focus locks above.
-    try {
-      if (capabilities.zoom && capabilities.zoom.max >= 2) {
-        const targetZoom = Math.min(2, capabilities.zoom.max);
-        await track.applyConstraints({ advanced: [{ zoom: targetZoom }] });
-        zoomApplied = true;
-      }
-    } catch (err) {
-      console.warn('Could not apply zoom constraint:', err);
-      zoomError = String(err && err.message || err);
-    }
-
-    // Assign stream to video
-    this.video.srcObject = stream;
-
-    // Wait for video to be ready
+    if (!this.video) throw new PPGError('unknown', 'video element missing');
+    const video = this.video;
+    video.srcObject = stream;
     await new Promise<void>((resolve) => {
-      this.video.onloadedmetadata = () => {
-        const p = this.video.play();
-        if (p && p.catch) p.catch((e) => this.recorder.pushEvent({ t: performance.now(), type: 'video_play_rejected', error: String(e) }));
-        resolve();
+      let done = false;
+      // Some WebViews never fire loadedmetadata for a live stream.
+      const timer = setTimeout(() => finish(), 3000);
+      const finish = () => { if (done) return; done = true; clearTimeout(timer); resolve(); };
+      video.onloadedmetadata = () => {
+        const p = video.play();
+        if (p && typeof p.catch === 'function') p.catch((e: unknown) => this.recorder.pushEvent({ t: nowMs(), type: 'video_play_rejected', error: String(e) }));
+        finish();
       };
     });
 
     if (torchSupported) {
-      const after = track.getSettings ? track.getSettings() : {};
+      const after = track.getSettings ? (track.getSettings() as Record<string, unknown>) : {};
       torchState = after.torch === true ? 'on' : 'off';
+      applied.torchSetting = after.torch;
     }
 
-    return {
-      stream, track, chosenDeviceId, chosenLabel, chosenBy, videoInputsMeta,
-      capabilities, advanced, constraintsApplied, constraintsError,
-      zoomApplied, zoomError, exposureModeAvailable, torchSupported, torchState
-    };
+    return { stream, track, chosenDeviceId, chosenLabel, chosenBy, videoInputsMeta, capabilities, applied, constraintErrors, torchSupported, torchState };
   }
 
   /**
-   * Wire the per-track lifecycle handlers (onended/onmute/onunmute) used
-   * by both start() and _resumeCamera() - kept in one place so a resume
-   * rebinds exactly the same behavior onto the new track.
-   * @param {MediaStreamTrack} track
+   * Lock (or release) exposure, white balance and focus, one advanced set
+   * per capability, reading back what actually took effect.
    */
-  _bindTrackHandlers(track) {
+  private async _setLocks(track: MediaStreamTrack, capabilities: Record<string, unknown>, lock: boolean, errors: Record<string, string> = {}): Promise<Record<string, unknown>> {
+    const applied: Record<string, unknown> = {};
+    const modes: Array<'exposureMode' | 'whiteBalanceMode' | 'focusMode'> = ['exposureMode', 'whiteBalanceMode', 'focusMode'];
+    const want = lock ? 'manual' : 'continuous';
+    for (const key of modes) {
+      const supported = capabilities[key] as string[] | undefined;
+      if (!Array.isArray(supported) || !supported.includes(want)) continue;
+      try {
+        await track.applyConstraints({ advanced: [{ [key]: want } as MediaTrackConstraintSet] });
+        const settings = track.getSettings ? (track.getSettings() as Record<string, unknown>) : {};
+        applied[key] = settings[key] ?? want;
+      } catch (err) {
+        errors[key] = String((err as Error)?.message || err);
+      }
+    }
+    return applied;
+  }
+
+  private async _lockExposureNow(trigger: string): Promise<void> {
+    if (this._exposureLocked || this.options.camera.lockExposure !== 'measuring') return;
+    const track = this.stream && this.stream.getVideoTracks()[0];
+    if (!track || track.readyState !== 'live') return;
+    this._exposureLocked = true;
+    const capabilities = (track.getCapabilities ? (track.getCapabilities() as Record<string, unknown>) : {}) || {};
+    const errors: Record<string, string> = {};
+    const applied = await this._setLocks(track, capabilities, true, errors);
+    this.recorder.pushEvent({ t: nowMs(), type: 'exposure_locked', trigger, applied, errors });
+  }
+
+  private async _unlockExposure(trigger: string): Promise<void> {
+    if (!this._exposureLocked || this.options.camera.lockExposure !== 'measuring') return;
+    const track = this.stream && this.stream.getVideoTracks()[0];
+    this._exposureLocked = false;
+    if (!track || track.readyState !== 'live') return;
+    const capabilities = (track.getCapabilities ? (track.getCapabilities() as Record<string, unknown>) : {}) || {};
+    const applied = await this._setLocks(track, capabilities, false);
+    this.recorder.pushEvent({ t: nowMs(), type: 'exposure_unlocked', trigger, applied });
+  }
+
+  private _bindTrackHandlers(track: MediaStreamTrack): void {
     this._trackMutedAt = null;
     track.onended = () => {
-      this.recorder.pushEvent({ t: performance.now(), type: 'track_ended' });
-      this._resumeCamera('track_onended');
+      this.recorder.pushEvent({ t: nowMs(), type: 'track_ended' });
+      void this._resumeCamera('track_onended');
     };
     track.onmute = () => {
-      this._trackMutedAt = performance.now();
-      this.recorder.pushEvent({ t: performance.now(), type: 'track_muted' });
+      this._trackMutedAt = nowMs();
+      this.recorder.pushEvent({ t: nowMs(), type: 'track_muted' });
     };
     track.onunmute = () => {
-      const mutedMs = this._trackMutedAt != null ? performance.now() - this._trackMutedAt : 0;
+      const mutedMs = this._trackMutedAt != null ? nowMs() - this._trackMutedAt : 0;
       this._trackMutedAt = null;
       if (mutedMs > 1500) {
-        // Long mute = iOS interruption (screenshot, app switch). Field logs
-        // show the flash stays physically off afterwards while getSettings
-        // still says torch:true, so skip the nudge and re-open the camera.
-        this.recorder.pushEvent({ t: performance.now(), type: 'track_unmuted', mutedMs });
-        this._resumeCamera('track_unmute_long');
+        this.recorder.pushEvent({ t: nowMs(), type: 'track_unmuted', mutedMs });
+        void this._resumeCamera('track_unmute_long');
         return;
       }
-      this.recorder.pushEvent({ t: performance.now(), type: 'track_unmuted' });
-      // A mute/unmute cycle is exactly the kind of camera-session blip
-      // (iOS backgrounding/interruption) that silently drops torch - and
-      // iOS 26/Chrome has been observed lying in getSettings().torch (it
-      // reports true while the flash is physically off) right after an
-      // unmute, so force the re-apply unconditionally rather than trusting
-      // the settings read - see _forceReapplyTorch.
-      this._forceReapplyTorch('track_unmute');
+      this.recorder.pushEvent({ t: nowMs(), type: 'track_unmuted' });
+      void this._forceReapplyTorch('track_unmute');
     };
   }
 
-  /**
-   * Unconditionally re-assert {advanced:[{torch:true}]} without first
-   * checking track.getSettings().torch - unlike _reapplyTorchIfNeeded,
-   * which trusts that read. Needed because iOS 26 Chrome has been observed
-   * reporting torch:true in getSettings() for seconds after an unmute/
-   * visibility-return while the flash is physically off (real-log
-   * evidence: red DC dropped ~86 -> ~22-37 and stayed there with
-   * getSettings().torch===true on every 10s snapshot). Idempotent when
-   * torch is already lit, so calling it on every unmute/visible event is
-   * safe. Falls through to _resumeCamera() if DC doesn't recover.
-   * @param {string} trigger
-   */
-  async _forceReapplyTorch(trigger) {
-    if (!this._torchCapable || !this.stream) return;
+  /** Re-assert torch unconditionally (iOS can report torch:true while dark). */
+  async _forceReapplyTorch(trigger: string): Promise<void> {
+    if (!this._torchCapable || !this.stream || !this.options.camera.torch) return;
     const track = this.stream.getVideoTracks()[0];
     if (!track || track.readyState !== 'live') return;
     try {
-      await track.applyConstraints({ advanced: [{ torch: true }] });
-      const after = track.getSettings ? track.getSettings() : {};
+      await track.applyConstraints({ advanced: [{ torch: true } as MediaTrackConstraintSet] });
+      const after = track.getSettings ? (track.getSettings() as Record<string, unknown>) : {};
       this.torchState = after.torch === true ? 'on' : 'off';
-      this.recorder.pushEvent({ t: performance.now(), type: 'torch_reapplied', trigger, ok: this.torchState === 'on', forced: true });
+      this.recorder.pushEvent({ t: nowMs(), type: 'torch_reapplied', trigger, ok: this.torchState === 'on', forced: true });
     } catch (err) {
-      this.recorder.pushEvent({ t: performance.now(), type: 'torch_reapplied', trigger, ok: false, forced: true, error: String(err && err.message || err) });
+      this.recorder.pushEvent({ t: nowMs(), type: 'torch_reapplied', trigger, ok: false, forced: true, error: String((err as Error)?.message || err) });
     }
-    // The re-apply call succeeding tells us nothing about whether the
-    // flash is physically lit (see doc comment) - schedule a physical
-    // check against measured red DC 2s out, same window the field bug's
-    // fixture showed the lie persisting through.
     this._schedulePhysicalTorchCheck(trigger);
   }
 
-  /**
-   * 2s after a forced torch re-apply, compare the currently measured red
-   * DC against the pre-event baseline: if it hasn't recovered (still down
-   * >50% or below MIN_CHANNEL_DC) while the state machine expects a lit
-   * flash (SETTLING/MEASURING), no constraint call is fixing this - the
-   * camera session itself is broken and needs a full re-open.
-   * @param {string} trigger
-   */
-  _schedulePhysicalTorchCheck(trigger) {
+  private _schedulePhysicalTorchCheck(trigger: string): void {
     const baseline = this._preHiddenRedMean;
     if (!this._torchCapable || !baseline) return;
     setTimeout(() => {
       if (!this.stream || this._resuming) return;
-      const state = this.fingerState.state;
+      const state = this.engine.state;
       if (state !== STATE.MEASURING && state !== STATE.SETTLING) return;
       const dc = this._lastRedMean;
       const droppedHalf = typeof dc === 'number' && dc < baseline * 0.5;
       const belowFloor = typeof dc === 'number' && dc < MIN_CHANNEL_DC;
       if (droppedHalf || belowFloor) {
-        this.recorder.pushEvent({ t: performance.now(), type: 'torch_physically_dark', trigger, baseline, dc });
-        this._resumeCamera('torch_physically_dark');
+        this.recorder.pushEvent({ t: nowMs(), type: 'torch_physically_dark', trigger, baseline, dc });
+        void this._resumeCamera('torch_physically_dark');
       }
     }, 2000);
   }
 
-  /**
-   * Re-acquire the camera after an iOS backgrounding event kills or mutes
-   * the track (screenshot, app switch - see field bug this was built
-   * from): stop the dead tracks, re-open the SAME chosen device, rebind
-   * track handlers, re-apply torch, and reset the finger state machine to
-   * NO_FINGER (a resume is a new placement - stale pre-resume samples must
-   * never leak into the next MEASURING window). Debounced so overlapping
-   * triggers (e.g. watchdog + visibilitychange firing close together)
-   * only run one resume at a time.
-   * @param {string} trigger - why this resume ran, for the debug log
-   */
-  async _resumeCamera(trigger) {
+  /** Re-acquire the same camera after an interruption ended or muted the track. */
+  async _resumeCamera(trigger: string): Promise<void> {
     if (this._resuming || !this.stream) return;
     this._resuming = true;
-    this.recorder.pushEvent({ t: performance.now(), type: 'camera_resuming', trigger });
-    // "Resuming camera" surfaces through the normal onQualityUpdate/
-    // guidanceMessage path the app already reads for coaching copy.
+    this.recorder.pushEvent({ t: nowMs(), type: 'camera_resuming', trigger });
     this.currentMetrics.guidanceMessage = 'Resuming camera';
     if (this.options.onQualityUpdate) this.options.onQualityUpdate(this.currentMetrics);
 
     let ok = false;
-    let error = null;
+    let error: string | null = null;
     try {
       this.stream.getTracks().forEach(t => t.stop());
-      const opened = await this._openCamera(this._chosenDeviceId);
-      this.stream = opened.stream;
-      this.torchSupported = opened.torchSupported;
-      this.torchState = opened.torchState;
-      this._torchCapable = !!opened.capabilities.torch;
+      const opened = await this._openCamera(this._chosenDeviceId || undefined);
+      this._adoptCamera(opened);
       this._bindTrackHandlers(opened.track);
-
-      // Canvas/ROI dims can legitimately change across a re-open (a
-      // different concrete resolution granted) - recompute rather than
-      // assume the old geometry still matches.
-      this.canvas.width = this.video.videoWidth;
-      this.canvas.height = this.video.videoHeight;
-      const roiWidthFraction = this.options.roi.widthFraction;
-      const roiHeightFraction = this.options.roi.heightFraction;
-      this.roiSourceRect = {
-        sx: this.video.videoWidth * (1 - roiWidthFraction) / 2,
-        sy: this.video.videoHeight * (1 - roiHeightFraction) / 2,
-        sw: this.video.videoWidth * roiWidthFraction,
-        sh: this.video.videoHeight * roiHeightFraction
-      };
-
-      // A resume is a new placement: reset the finger state machine to
-      // NO_FINGER and drop the signal processor's internal state so no
-      // sample from before the interruption pollutes the next window.
-      this.fingerState = new FingerStateMachine();
-      this.signalProcessor.reset();
-      this.nFrame = 0;
-
-      if (!this.recorder.meta.resumes) this.recorder.meta.resumes = [];
-      this.recorder.meta.resumes.push({ t: performance.now(), trigger, trackSettings: opened.track.getSettings ? opened.track.getSettings() : null });
-
-      // rVFC/rAF handle is per-video-element: replacing srcObject on the
-      // same <video> (done inside _openCamera) keeps a pending
-      // requestVideoFrameCallback alive, so the frame loop does NOT need
-      // restarting here. Only the rAF fallback path can go stale (a
-      // torn-down track stalls rAF frames indefinitely) - kick it back on
-      // explicitly so browsers without rVFC don't hang silently.
-      if (!this.video.requestVideoFrameCallback && !this.animationId) {
-        this.animationId = requestAnimationFrame(() => this.computeFrame(performance.now()));
-      }
-
+      this._setupRoi();
+      // A resume is a new placement: drop signal state, keep the tachogram and clock.
+      this.engine.reset();
+      this._exposureLocked = false;
+      if (!this.recorder.meta) this.recorder.meta = {};
+      const resumes = (this.recorder.meta.resumes as unknown[]) || [];
+      resumes.push({ t: nowMs(), trigger, trackSettings: opened.track.getSettings ? opened.track.getSettings() : null });
+      this.recorder.meta.resumes = resumes;
+      // The rAF fallback can stall on a torn-down track; re-arm it.
+      if (this.running && this.video && !this.video.requestVideoFrameCallback && this.animationId == null) this._scheduleNextFrame();
       ok = true;
     } catch (err) {
-      error = String(err && err.message || err);
+      error = String((err as Error)?.message || err);
       console.error('Camera resume failed:', err);
-      if (this.options.onError) this.options.onError(err);
+      if (this.options.onError) this.options.onError(PPGError.from(err));
     } finally {
       this._resuming = false;
-      this.recorder.pushEvent({ t: performance.now(), type: 'camera_resumed', trigger, ok, ...(error ? { error } : {}) });
+      this.recorder.pushEvent({ t: nowMs(), type: 'camera_resumed', trigger, ok, ...(error ? { error } : {}) });
     }
   }
 
-  /**
-   * Stop PPG monitoring
-   */
-  stop() {
-    // Cancel animation frame
-    if (this.animationId) {
-      cancelAnimationFrame(this.animationId);
-      this.animationId = null;
-    }
-    // Cancel pending video frame callback (requestVideoFrameCallback path)
-    if (this.rvfcHandle && this.video && this.video.cancelVideoFrameCallback) {
-      this.video.cancelVideoFrameCallback(this.rvfcHandle);
-      this.rvfcHandle = null;
-    }
-    this.nFrame = 0; // stop processing frames still in flight after this call
-
-    // Stop torch/settings watchers and page-lifecycle listeners started in start().
-    if (this._torchWatchInterval) { clearInterval(this._torchWatchInterval); this._torchWatchInterval = null; }
-    if (this._settingsSnapshotInterval) { clearInterval(this._settingsSnapshotInterval); this._settingsSnapshotInterval = null; }
-    if (this._onVisibilityChange) { document.removeEventListener('visibilitychange', this._onVisibilityChange); this._onVisibilityChange = null; }
-    if (this._onPageHide) { window.removeEventListener('pagehide', this._onPageHide); this._onPageHide = null; }
-
-    // Stop video stream
-    if (this.stream) {
-      this.stream.getTracks().forEach(track => track.stop());
-      this.stream = null;
-    }
-
-    // Pause video
-    if (this.video) {
-      this.video.pause();
-      this.video.srcObject = null;
-    }
-
-    // Remove resize listener
-    if (this.uiRenderer) {
-      window.removeEventListener('resize', this.handleResize);
-    }
-
-    // Persist the log for the debug menu's "Share last session log" -
-    // covers explicit Stop and Cancel, both of which call stop().
-    this._persistLastSessionLog();
-  }
-
-  /**
-   * Process a single video frame
-   * @param {number} [now] - performance.now()-relative timestamp (seconds)
-   *   when using requestVideoFrameCallback; falls back to Date.now() under rAF.
-   */
-  computeFrame(now?: number) {
-    const DURATION = 100; // Initial frames to skip
-    const timestampSec = now !== undefined ? now / 1000 : Date.now() / 1000;
-
-    if (this.nFrame > DURATION) {
-      // Draw a center-cropped, downscaled ROI instead of the whole frame:
-      // most of a 640x480 frame is unlit bezel once only the lens+flash are
-      // covered, and averaging it in dilutes the real fingertip signal.
-      const { sx, sy, sw, sh } = this.roiSourceRect;
-      this.roiCtx.drawImage(this.video, sx, sy, sw, sh, 0, 0, ROI_CANVAS_WIDTH, ROI_CANVAS_HEIGHT);
-      const frame = this.roiCtx.getImageData(0, 0, ROI_CANVAS_WIDTH, ROI_CANVAS_HEIGHT);
-
-      const count = frame.data.length / 4;
-      let rSum = 0, gSum = 0, bSum = 0;
-      for (let i = 0; i < count; i++) {
-        rSum += frame.data[i * 4];
-        gSum += frame.data[i * 4 + 1];
-        bSum += frame.data[i * 4 + 2];
-      }
-      const rMean = rSum / count;
-      const gMean = gSum / count;
-      const bMean = bSum / count;
-      // Latest raw red DC, read by _schedulePhysicalTorchCheck to detect a
-      // torch that iOS claims is on (getSettings().torch===true) but is
-      // physically dark - see field-log evidence in that method's doc.
-      this._lastRedMean = rMean;
-
-      // Invert and normalize. Camera PPG: more blood under the finger means
-      // more light absorption, so raw red intensity DROPS at systole -
-      // inverting here makes systolic peaks maxima, matching a pulse oximeter.
-      const xMean = 1 - rMean / 255;
-      // Same inversion for green, used when selectChannel picks it.
-      const gxMean = 1 - gMean / 255;
-
-      // Raw debug sample - always recorded, no toggle.
-      this.recorder.pushSample({ t: timestampSec * 1000, r: rMean, g: gMean, b: bMean });
-
-      // NO_FINGER/SETTLING/MEASURING gate. Runs every frame (cheap: a few
-      // comparisons + a short rolling-drift array), not just at window
-      // boundaries, so a lift is caught immediately rather than up to 5s late.
-      const sessionSec = this.initTime ? (Date.now() - Number(this.initTime)) / 1000 : timestampSec;
-      const acDcForGate = this.lastAcDcRatio;
-      const { state: fingerState, changed: stateChanged, reason: stateReason } =
-        this.fingerState.update({ tSec: sessionSec, redMean: rMean, greenMean: gMean, blueMean: bMean, acDcRatio: acDcForGate });
-
-      if (stateChanged) {
-        this.recorder.pushEvent({ t: timestampSec * 1000, type: 'state_transition', state: fingerState, reason: stateReason });
-        const liveTrackForSnapshot = this.stream && this.stream.getVideoTracks()[0];
-        if (liveTrackForSnapshot && liveTrackForSnapshot.getSettings) {
-          this.recorder.pushEvent({ t: timestampSec * 1000, type: 'track_settings_snapshot', settings: liveTrackForSnapshot.getSettings(), trigger: 'state_transition' });
-        }
-        if (fingerState === STATE.SETTLING) {
-          // A lift, a large drift, or a fresh placement all invalidate the
-          // sample buffer - reset it so stale pre-transition samples can
-          // never pollute the next MEASURING window (buffer is a ring, so
-          // without this a lift mid-window would leave old good samples
-          // mixed with new noise until the ring fully cycles).
-          this.nFrame = DURATION; // next tick starts a fresh window at slot 0 post-increment semantics below
-          this.acdc.fill(0.5);
-          this.redBuf.fill(rMean);
-          this.greenBuf.fill(gMean);
-          this.signalProcessor.reset();
-          // The finger returning is exactly when torch is most likely to
-          // have been dropped (backgrounded while lifted, OS reclaimed the
-          // camera session, etc.) - re-assert it right away rather than
-          // waiting up to 2s for the interval check.
-          this._reapplyTorchIfNeeded('state_transition_settling');
-        }
-      }
-
-      // Store in buffer
-      const slot = this.nFrame % this.options.signal.windowLength;
-      this.acdc[slot] = this.selectedChannel === 'green' ? gxMean : xMean;
-      this.redBuf[slot] = rMean;
-      this.greenBuf[slot] = gMean;
-      this.frameTimestamps[slot] = timestampSec;
-
-      // Process window every WINDOW_LENGTH frames. Always process - the
-      // previous version alternated between processing and freezing the UI
-      // for 100 windows (~8 minutes) at a time, which made most short
-      // measurements look completely dead.
-      if (this.nFrame % this.options.signal.windowLength === 0) {
-        const windowNum = this.nFrame / this.options.signal.windowLength;
-        this.isSignal = 1;
-
-        // Per-window AC/DC ratio for red and green, to pick the better
-        // channel for peak detection (hysteresis avoids flipping every
-        // window on a marginal difference). A channel whose DC is too low
-        // (near-dark, e.g. an uncovered/under-covered green channel) is
-        // excluded - its AC/DC ratio is quantization noise, not signal.
-        // Ring buffers are written at slot = nFrame % windowLength, which is
-        // NOT the same as chronological (oldest-first) order once the ring
-        // has wrapped - rotate before handing to anything that assumes
-        // sample order (detrend's linear fit, the bandpass filter, and the
-        // measured-sample-rate min/max scan below). See toChronological()
-        // doc comment for why skipping this manufactures a fake
-        // discontinuity every single window.
-        const newestSlot = this.nFrame % this.options.signal.windowLength;
-        const acdcChrono = toChronological(this.acdc, newestSlot);
-        const redChrono = toChronological(this.redBuf, newestSlot);
-        const greenChrono = toChronological(this.greenBuf, newestSlot);
-
-        const redDc = windowMean(redChrono);
-        const greenDc = windowMean(greenChrono);
-        const redAc = peakToPeak(redChrono) / (redDc || 1);
-        const greenAc = peakToPeak(greenChrono) / (greenDc || 1);
-        const redEligible = redDc > MIN_CHANNEL_DC;
-        const greenEligible = greenDc > MIN_CHANNEL_DC;
-        const redRatio = redEligible ? redAc : 0;
-        const greenRatio = greenEligible ? greenAc : 0;
-        this.selectedChannel = (redEligible || greenEligible)
-          ? selectChannel(this.selectedChannel, redRatio, greenRatio)
-          : 'red';
-        this.lastAcDcRatio = this.selectedChannel === 'green' ? greenRatio : redRatio;
-
-        // Detrend signal
-        const detrendedArray = detrend(acdcChrono);
-        this.ac = new Float32Array(detrendedArray);
-        this.acWindow = windowMean(this.ac);
-
-        // Real measured sample rate for this window, not an assumed FPS.
-        // (frameTimestamps' min/max scan doesn't care about ring order, so
-        // it's read directly - no chronological rotation needed here.)
-        const sampleRate = this.measuredSampleRate();
-
-        // Only run HR/IBI/RMSSD/SDNN while MEASURING - the first ~15s of any
-        // session (placement + iOS re-exposure settling) produces numbers
-        // that look plausible but are noise, per the real-log evidence this
-        // whole change is built from. Strict per-window quality gating
-        // (utils/quality.js `good`) happens inside process().
-        if (fingerState === STATE.MEASURING) {
-          this.currentMetrics = this.signalProcessor.process(acdcChrono, this.ac, sampleRate, {
-            fingerState,
-            acDcRatio: this.lastAcDcRatio,
-            nowSec: sessionSec
-          });
-        } else {
-          this.currentMetrics = {
-            snr_dB: 0, perfusionIndex: 0, heartRate: 0, heartRateRaw: 0,
-            ibi: 0, rmssd: 0, sdnn: 0, artifactRatio: 0, sampleRate,
-            signalStability: 0, qualityStatus: 'Initializing',
-            guidanceMessage: '', qualityFrameCount: 0,
-            quality: { state: fingerState, acdc: 0, artifactRatio: 0, ibiCount: 0, fftAgree: true, good: false, reason: fingerState === STATE.NO_FINGER ? 'No finger detected' : 'Settling' },
-            peakTimesSec: [], ibiDetails: []
-          };
-        }
-        this.currentMetrics.fingerState = fingerState;
-        this.currentMetrics.selectedChannel = this.selectedChannel;
-        this.currentMetrics.acDcRatio = this.lastAcDcRatio;
-        this.currentMetrics.settleRemainingSec = fingerState === STATE.SETTLING
-          ? Math.max(0, this.fingerState.settleSec - this.fingerState.timeInState(sessionSec))
-          : 0;
-        this.currentMetrics.qualityScore = this.currentMetrics.quality.good
-          ? qualityScore(this.lastAcDcRatio, this.currentMetrics.artifactRatio)
-          : 0;
-        this.currentMetrics.guidanceMessage = this.currentMetrics.quality.good
-          ? coachingMessage({
-              state: fingerState,
-              torchSupported: this.torchSupported,
-              redMean: rMean,
-              greenMean: gMean,
-              blueMean: bMean,
-              settleRemainingSec: this.fingerState.settleSec - this.fingerState.timeInState(sessionSec),
-              acDcRatio: this.lastAcDcRatio
-            })
-          : this.currentMetrics.quality.reason;
-
-        // Log every distinct coaching message shown, with when it first
-        // appeared - see job 5 (full debug log completeness).
-        if (this.currentMetrics.guidanceMessage !== this._lastLoggedCoachMessage) {
-          this._lastLoggedCoachMessage = this.currentMetrics.guidanceMessage;
-          this.recorder.pushEvent({ t: timestampSec * 1000, type: 'coaching_message', message: this.currentMetrics.guidanceMessage, state: fingerState });
-        }
-
-
-        // Session-long tachogram + good-window accounting, for the demo's
-        // IBI plot and the Stop-time summary (getSessionSummary()). Only
-        // GOOD windows contribute HR/RMSSD/SDNN samples and accepted-beat
-        // tachogram points; rejected/missed beats are kept too (drawn as
-        // hollow/red markers by the caller) so the user can see what was
-        // thrown out even during a not-good stretch.
-        if (Array.isArray(this.currentMetrics.ibiDetails)) {
-          for (const d of this.currentMetrics.ibiDetails) {
-            this.tachogram.push({ t: sessionSec, ibiMs: d.ibiMs, valid: d.valid, reason: d.reason });
-          }
-        }
-        this.sessionWindows.push({
-          t: sessionSec,
-          good: this.currentMetrics.quality.good,
-          heartRate: this.currentMetrics.heartRate,
-          rmssd: this.currentMetrics.rmssd,
-          sdnn: this.currentMetrics.sdnn
-        });
-
-        // Per-window instrumentation record - the primary tool for
-        // remotely diagnosing "Irregular beats detected" and similar
-        // stuck-quality reports without hardware access (see job 4).
-        {
-          const details = Array.isArray(this.currentMetrics.ibiDetails) ? this.currentMetrics.ibiDetails : [];
-          const rejectionReasons = {};
-          for (const d of details) {
-            if (d.valid) continue;
-            const key = d.reason || 'unknown';
-            rejectionReasons[key] = (rejectionReasons[key] || 0) + 1;
-          }
-          this.recorder.pushWindow({
-            t: sessionSec,
-            state: fingerState,
-            acdc: this.lastAcDcRatio,
-            dcRed: redDc,
-            dcGreen: greenDc,
-            channel: this.selectedChannel,
-            artifactRatio: this.currentMetrics.artifactRatio,
-            ibiCount: this.currentMetrics.quality ? this.currentMetrics.quality.ibiCount : 0,
-            fftHr: this.currentMetrics.heartRateFFT ?? 0,
-            ibiHr: this.currentMetrics.heartRateSource === 'ibi' ? this.currentMetrics.heartRateRaw : null,
-            fftAgree: !this.currentMetrics.ibiFftDisagree,
-            good: this.currentMetrics.quality.good,
-            reason: this.currentMetrics.quality.reason,
-            rejectionReasons,
-            sampleRate
-          });
-        }
-
-
-        // Log derived events for offline/live comparison (see utils/recorder.js).
-        const windowEndMs = timestampSec * 1000;
-        const windowStartMs = windowEndMs - (this.options.signal.windowLength / sampleRate) * 1000;
-        if (Array.isArray(this.currentMetrics.peakTimesSec)) {
-          for (const peakSec of this.currentMetrics.peakTimesSec) {
-            this.recorder.pushEvent({ t: windowStartMs + peakSec * 1000, type: 'peak' });
-          }
-        }
-        if (Array.isArray(this.currentMetrics.ibiDetails)) {
-          for (const d of this.currentMetrics.ibiDetails) {
-            this.recorder.pushEvent({
-              t: windowStartMs + d.peakTimeSec * 1000,
-              type: d.valid ? 'ibi_accepted' : 'ibi_rejected',
-              ibiMs: d.ibiMs,
-              reason: d.reason
-            });
-          }
-        }
-        this.recorder.pushEvent({
-          t: windowEndMs,
-          type: 'metrics_update',
-          heartRate: this.currentMetrics.heartRate,
-          rmssd: this.currentMetrics.rmssd,
-          qualityStatus: this.currentMetrics.qualityStatus,
-          snr_dB: this.currentMetrics.snr_dB,
-          fingerState,
-          selectedChannel: this.selectedChannel,
-          acDcRatio: this.lastAcDcRatio,
-          ibiFftDisagree: this.currentMetrics.ibiFftDisagree || false
-        });
-
-        // Detect the exact failure mode this whole change targets: iOS
-        // silently swapping the active lens/resolution mid-session.
-        const liveTrack = this.stream && this.stream.getVideoTracks()[0];
-        if (liveTrack && liveTrack.getSettings) {
-          const settings = liveTrack.getSettings();
-          const prev = this._lastTrackSettings || {};
-          const keys = ['deviceId', 'width', 'height', 'frameRate'];
-          const changed = keys.some(k => settings[k] !== prev[k]);
-          if (changed) {
-            this.recorder.pushEvent({
-              t: windowEndMs,
-              type: 'track_settings_changed',
-              from: { deviceId: (prev.deviceId || '').slice(0, 8), width: prev.width, height: prev.height, frameRate: prev.frameRate },
-              to: { deviceId: (settings.deviceId || '').slice(0, 8), width: settings.width, height: settings.height, frameRate: settings.frameRate }
-            });
-          }
-          this._lastTrackSettings = settings;
-        }
-
-        // Update UI
-        if (this.uiRenderer) {
-          this.uiRenderer.updateMetrics(this.currentMetrics);
-          this.uiRenderer.updateTechnicalInfo({
-            window: windowNum
-          });
-        }
-
-        // Emit quality update callback
-        if (this.options.onQualityUpdate) {
-          this.options.onQualityUpdate(this.currentMetrics);
-        }
-      }
-
-      // Get current AC value
-      this.acFrame = this.ac[this.nFrame % this.options.signal.windowLength];
-
-      // Haptic tick on each accepted beat (Android Chrome; no-op elsewhere -
-      // iOS Safari has no navigator.vibrate). Approximated here as "just
-      // crossed into a new peak this frame" via the peak list from the last
-      // processed window would require frame-accurate replay of history, so
-      // instead we tick once per window when a fresh MEASURING window
-      // reports at least one accepted beat - close enough for a haptic cue
-      // and avoids re-deriving frame-level peak timing here.
-      if (
-        this.nFrame % this.options.signal.windowLength === 0 &&
-        fingerState === STATE.MEASURING &&
-        typeof navigator !== 'undefined' && navigator.vibrate &&
-        Array.isArray(this.currentMetrics.ibiDetails) &&
-        this.currentMetrics.ibiDetails.some(d => d.valid)
-      ) {
-        navigator.vibrate(10);
-      }
-
-      // Update chart
-      if (this.uiRenderer && this.nFrame % 10 === 0) {
-        this.uiRenderer.updateChart({
-          value: this.acFrame,
-          isSignal: this.isSignal
-        });
-      }
-
-      // Emit signal update callback
-      if (this.options.onSignalUpdate) {
-        this.options.onSignalUpdate({
-          time: (Date.now() - Number(this.initTime)) / 1000,
-          value: this.acFrame,
-          isProcessing: this.isSignal === 1
-        });
-      }
-
-      // Update technical info (lazy update every 10 frames)
-      if (this.frameCount % 10 === 0 && this.uiRenderer) {
-        const frameTime = ((Date.now() - Number(this.initTime)) / 1000).toFixed(2);
-        const videoTime = this.video.currentTime.toFixed(2);
-        const fps = (this.frameCount / this.video.currentTime).toFixed(3);
-
-        this.uiRenderer.updateTechnicalInfo({
-          frameTime,
-          videoTime,
-          fps,
-          frameCount: this.frameCount,
-          signal: xMean.toFixed(4)
-        });
-      }
-
-      // Emit frame callback
-      if (this.options.onFrame) {
-        this.options.onFrame({
-          frameCount: this.frameCount,
-          xMean,
-          acFrame: this.acFrame
-        });
-      }
-
-      this.frameCount++;
-    }
-
-    this.nFrame++;
-
-    // Continue processing. Prefer requestVideoFrameCallback: it fires once
-    // per actual decoded camera frame (not once per display refresh) and
-    // hands back the frame's real capture time, which is what
-    // measuredSampleRate() below needs. Falls back to requestAnimationFrame
-    // on browsers without rVFC (older Safari).
-    if (this.video.requestVideoFrameCallback) {
-      this.rvfcHandle = this.video.requestVideoFrameCallback((nowMs, metadata) => {
-        // WebKit live camera streams report mediaTime as 0 on iOS (it's a
-        // media-element timeline concept that doesn't apply to a live
-        // MediaStream), which poisons measuredSampleRate() and every peak
-        // timestamp downstream. expectedDisplayTime and nowMs are both in
-        // the performance.now() clock domain (ms) and are always populated,
-        // so prefer expectedDisplayTime (closer to actual capture) and fall
-        // back to nowMs. Never use mediaTime.
-        const edt = metadata.expectedDisplayTime;
-        const t = (typeof edt === 'number' && isFinite(edt) && edt > 0) ? edt : nowMs;
-        this.computeFrame(t);
-      });
-    } else {
-      this.animationId = requestAnimationFrame(() => this.computeFrame(performance.now()));
-    }
-  }
-
-  /**
-   * Real sample rate (Hz) measured from actual frame timestamps in the
-   * current window, instead of assuming a fixed FPS. Camera capture rate
-   * varies with lighting/exposure and is often well below the display's
-   * 60Hz refresh, especially with torch + finger covering the lens.
-   * @returns {number}
-   */
-  measuredSampleRate() {
-    const ts = this.frameTimestamps;
-    const n = ts.length;
-    if (n < 2) return this.options.signal.sampleRate;
-
-    // frameTimestamps is a ring buffer; find min/max within the current
-    // window (ignore zero-initialized slots not yet written).
-    let min = Infinity;
-    let max = -Infinity;
-    for (let i = 0; i < n; i++) {
-      if (ts[i] === 0) continue;
-      if (ts[i] < min) min = ts[i];
-      if (ts[i] > max) max = ts[i];
-    }
-
-    const elapsed = max - min;
-    if (!isFinite(elapsed) || elapsed <= 0) return this.options.signal.sampleRate;
-
-    const rate = (n - 1) / elapsed;
-    // Sanity clamp: reject absurd values (e.g. clock jump) rather than
-    // feeding garbage into the FFT/filter frequency axis.
-    if (rate < 1 || rate > 240) return this.options.signal.sampleRate;
-    return rate;
-  }
-
-  /**
-   * Re-read torch state from the live track and, if the device supports
-   * torch but it has flipped off, re-apply {advanced:[{torch:true}]}.
-   * Called on a 2s interval, on every SETTLING-entering state transition,
-   * on visibilitychange-to-visible, and on track unmute - see start().
-   * Logs `torch_lost` the moment torch is observed off, and
-   * `torch_reapplied` with the constraint result either way.
-   * @param {string} trigger - why this check ran, for the debug log
-   */
-  async _reapplyTorchIfNeeded(trigger) {
-    if (!this._torchCapable || !this.stream) return;
+  async _reapplyTorchIfNeeded(trigger: string): Promise<void> {
+    if (!this._torchCapable || !this.stream || !this.options.camera.torch) return;
     const track = this.stream.getVideoTracks()[0];
     if (!track || track.readyState !== 'live') return;
-    let settings: any = {};
-    try {
-      settings = track.getSettings ? track.getSettings() : {};
-    } catch (err) {
-      return;
-    }
+    let settings: Record<string, unknown> = {};
+    try { settings = track.getSettings ? (track.getSettings() as Record<string, unknown>) : {}; } catch { return; }
     const isOn = settings.torch === true;
     const prevState = this.torchState;
     this.torchState = isOn ? 'on' : 'off';
-    if (isOn) return; // nothing to do - torch is already lit
-    if (prevState === 'on') {
-      this.recorder.pushEvent({ t: performance.now(), type: 'torch_lost', trigger });
-    }
+    if (isOn) return;
+    if (prevState === 'on') this.recorder.pushEvent({ t: nowMs(), type: 'torch_lost', trigger });
     try {
-      await track.applyConstraints({ advanced: [{ torch: true }] });
-      const after = track.getSettings ? track.getSettings() : {};
+      await track.applyConstraints({ advanced: [{ torch: true } as MediaTrackConstraintSet] });
+      const after = track.getSettings ? (track.getSettings() as Record<string, unknown>) : {};
       this.torchState = after.torch === true ? 'on' : 'off';
-      this.recorder.pushEvent({ t: performance.now(), type: 'torch_reapplied', trigger, ok: this.torchState === 'on' });
+      this.recorder.pushEvent({ t: nowMs(), type: 'torch_reapplied', trigger, ok: this.torchState === 'on' });
     } catch (err) {
-      this.recorder.pushEvent({ t: performance.now(), type: 'torch_reapplied', trigger, ok: false, error: String(err && err.message || err) });
+      this.recorder.pushEvent({ t: nowMs(), type: 'torch_reapplied', trigger, ok: false, error: String((err as Error)?.message || err) });
     }
   }
 
-  /**
-   * Persist the current debug log to localStorage under a fixed key, so the
-   * app's debug menu can offer "Share last session log" even after a crash/
-   * reload (pagehide) or an explicit Cancel/Stop - see job 6. Drops the
-   * heaviest field (samples) first if the quota is exceeded, and marks
-   * `truncated:true` in the log itself so nothing looks silently complete.
-   */
-  _persistLastSessionLog() {
+  // ------------------------------------------------------- wake lock / motion
+
+  private async _acquireWakeLock(): Promise<boolean> {
+    const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { wakeLock?: { request: (t: 'screen') => Promise<WakeLockSentinelLike> } }) : null;
+    if (!nav || !nav.wakeLock) return false;
     try {
-      const log = this.getDebugLog();
-      let json = JSON.stringify(log);
-      const LIMIT = 4.5 * 1024 * 1024; // localStorage is commonly ~5-10MB/origin
-      if (json.length > LIMIT) {
-        this.recorder.markTruncated();
-        const truncatedLog = { ...log, samples: log.samples.slice(-2000), truncated: true };
-        json = JSON.stringify(truncatedLog);
-      }
-      localStorage.setItem('ppg_last_session_log', json);
+      this.wakeLockSentinel = await nav.wakeLock.request('screen');
+      this.wakeLockActive = true;
+      this.wakeLockSentinel.addEventListener?.('release', () => { this.wakeLockActive = false; });
+      this.recorder.pushEvent({ t: nowMs(), type: 'wake_lock', ok: true });
+      return true;
     } catch (err) {
-      // Quota exceeded or localStorage unavailable (private mode) - drop
-      // frames and retry once with just meta+events+windows, never throw:
-      // losing the log is bad, but crashing stop()/pagehide is worse.
-      try {
-        this.recorder.markTruncated();
-        const minimal = { ...this.getDebugLog(), samples: [] };
-        localStorage.setItem('ppg_last_session_log', JSON.stringify(minimal));
-      } catch (err2) {
-        console.warn('Could not persist debug log:', err2);
+      this.recorder.pushEvent({ t: nowMs(), type: 'wake_lock', ok: false, error: String((err as Error)?.message || err) });
+      return false;
+    }
+  }
+
+  private async _releaseWakeLock(): Promise<void> {
+    if (this.wakeLockSentinel) {
+      try { await this.wakeLockSentinel.release(); } catch { /* no-op */ }
+    }
+    this.wakeLockSentinel = null;
+    this.wakeLockActive = false;
+  }
+
+  private async _startMotion(): Promise<boolean> {
+    if (typeof window === 'undefined' || typeof DeviceMotionEvent === 'undefined') return false;
+    const DME = DeviceMotionEvent as unknown as { requestPermission?: () => Promise<'granted' | 'denied'> };
+    try {
+      if (typeof DME.requestPermission === 'function') {
+        const res = await DME.requestPermission();
+        if (res !== 'granted') return false;
+      }
+    } catch { return false; }
+    this._onMotion = (e: DeviceMotionEvent) => {
+      const a = e.accelerationIncludingGravity;
+      if (!a || a.x == null || a.y == null || a.z == null) return;
+      const mag = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+      const dev = Math.abs(mag - 9.81);
+      this.motionValue += 0.2 * (dev - this.motionValue);
+    };
+    window.addEventListener('devicemotion', this._onMotion);
+    this.motionActive = true;
+    return true;
+  }
+
+  private _stopMotion(): void {
+    if (this._onMotion && typeof window !== 'undefined') window.removeEventListener('devicemotion', this._onMotion);
+    this._onMotion = null;
+    this.motionActive = false;
+    this.motionValue = 0;
+  }
+
+  // ----------------------------------------------------------- frame loop
+
+  private _scheduleNextFrame(): void {
+    if (!this.running || !this.video) return;
+    if (typeof this.video.requestVideoFrameCallback === 'function') {
+      this.rvfcHandle = this.video.requestVideoFrameCallback((nowMsArg, metadata) => this.computeFrame(nowMsArg, metadata));
+    } else if (typeof requestAnimationFrame === 'function') {
+      this.animationId = requestAnimationFrame(() => this.computeFrame(nowMs()));
+    }
+  }
+
+  /**
+   * Process one camera frame. Public so tests can drive it directly.
+   * @param now - ms timestamp (performance.now() domain) of this frame
+   * @param metadata - requestVideoFrameCallback metadata, when available
+   */
+  computeFrame(now?: number, metadata?: VideoFrameMetadata): void {
+    if (!this.running && this.startTimestampSec == null && now === undefined) return;
+    try {
+      this._processFrame(now, metadata);
+    } catch (err) {
+      // Never let one bad frame kill the loop silently (docs/audit B5).
+      this.recorder.pushEvent({ t: nowMs(), type: 'frame_error', error: String((err as Error)?.message || err) });
+      if (this.options.onError) this.options.onError(PPGError.from(err));
+    } finally {
+      if (this.running) this._scheduleNextFrame();
+    }
+  }
+
+  private _processFrame(now: number | undefined, metadata: VideoFrameMetadata | undefined): void {
+    // Timestamp: captureTime (Chromium, local camera) > expectedDisplayTime
+    // > callback time. WebKit reports mediaTime as 0 for live streams, so it
+    // is never used.
+    let tMs = typeof now === 'number' ? now : nowMs();
+    if (metadata) {
+      const ct = metadata.captureTime, edt = metadata.expectedDisplayTime;
+      if (typeof ct === 'number' && Number.isFinite(ct) && ct > 0) tMs = ct;
+      else if (typeof edt === 'number' && Number.isFinite(edt) && edt > 0) tMs = edt;
+      if (typeof metadata.presentedFrames === 'number') {
+        if (this.lastPresentedFrames != null) this.recorder.addDroppedFrames(metadata.presentedFrames - this.lastPresentedFrames - 1);
+        this.lastPresentedFrames = metadata.presentedFrames;
       }
     }
-  }
+    this.frameCount++;
+    if (this.frameCount <= WARMUP_FRAMES && !this.startTimestampSec && metadata) return;
+    if (!this.roiCtx || !this.roiSourceRect || !this.video) return;
 
-  /**
-   * Handle window resize
-   */
-  handleResize() {
-    if (this.uiRenderer) {
-      this.uiRenderer.handleResize();
+    const { sx, sy, sw, sh } = this.roiSourceRect;
+    if (!(sw > 0 && sh > 0)) return;
+    this.roiCtx.drawImage(this.video, sx, sy, sw, sh, 0, 0, ROI_CANVAS_WIDTH, ROI_CANVAS_HEIGHT);
+    const frame = this.roiCtx.getImageData(0, 0, ROI_CANVAS_WIDTH, ROI_CANVAS_HEIGHT);
+    const data = frame.data;
+    const count = data.length / 4;
+    let rSum = 0, gSum = 0, bSum = 0, clipped = 0;
+    for (let i = 0; i < count; i++) {
+      const r = data[i * 4];
+      rSum += r; gSum += data[i * 4 + 1]; bSum += data[i * 4 + 2];
+      if (r >= CLIP_LEVEL) clipped++;
+    }
+    const rMean = rSum / count, gMean = gSum / count, bMean = bSum / count;
+    const clippedFraction = clipped / count;
+    this._lastRedMean = rMean;
+
+    if (this.startTimestampSec == null) this.startTimestampSec = tMs / 1000;
+    const tSec = tMs / 1000 - this.startTimestampSec;
+    const motion = this.motionActive ? this.motionValue : undefined;
+
+    this.recorder.pushSample({ t: tMs, r: rMean, g: gMean, b: bMean, clipped: clippedFraction, ...(motion !== undefined ? { motion } : {}) });
+
+    const res = this.engine.push({ t: tSec, r: rMean, g: gMean, b: bMean, clipped: clippedFraction, motion });
+
+    if (res.stateChanged) this._onStateChange(res.state, res.stateReason, tSec, tMs);
+    if (res.window) this._onWindow(res.window, tMs, rMean, gMean, bMean, clippedFraction);
+
+    if (this.options.onSignalUpdate) {
+      this.options.onSignalUpdate({ time: tSec, value: res.waveform, isProcessing: res.state === STATE.MEASURING });
+    }
+    if (this.options.onFrame) {
+      this.options.onFrame({ frameCount: this.frameCount, xMean: 1 - rMean / 255, acFrame: res.waveform, clippedFraction });
     }
   }
 
-  /**
-   * Get the raw debug log recorded so far: {meta, samples, events}.
-   * Available whether or not the session is still running.
-   * @returns {{meta: Object|null, samples: Array, events: Array}}
-   */
-  getDebugLog() {
-    return this.recorder.toJSON();
+  private _onStateChange(state: FingerState, reason: string | null, tSec: number, tMs: number): void {
+    this._lastState = state;
+    this.recorder.pushEvent({ t: tMs, type: 'state_transition', state, reason });
+    const liveTrack = this.stream && this.stream.getVideoTracks()[0];
+    if (liveTrack && liveTrack.getSettings) {
+      this.recorder.pushEvent({ t: tMs, type: 'track_settings_snapshot', settings: liveTrack.getSettings(), trigger: 'state_transition' });
+    }
+    if (state === STATE.SETTLING) void this._reapplyTorchIfNeeded('state_transition_settling');
+    if (state === STATE.MEASURING) void this._lockExposureNow('measuring');
+    if (state === STATE.NO_FINGER) void this._unlockExposure('finger_lifted');
+    // Immediate coaching update on a transition (windows only come every few seconds).
+    this.currentMetrics.fingerState = state;
+    this.currentMetrics.settleRemainingSec = state === STATE.SETTLING ? this.engine.fingerState.settleSec : 0;
+    if (this.options.onState) this.options.onState({ state, reason, time: tSec });
   }
 
-  /**
-   * Trigger a browser download of the debug log as JSON. Works via
-   * Blob + <a download> on Android Chrome and iOS Safari 13+ (iOS shows
-   * the share sheet instead of a direct save - that's expected).
-   * @returns {string} filename used
-   */
-  downloadDebugLog() {
+  private _onWindow(w: EngineWindow, tMs: number, rMean: number, gMean: number, bMean: number, clippedFraction: number): void {
+    const windowEndMs = tMs;
+    const startMs = (this.startTimestampSec || 0) * 1000;
+    const guidance = coachingMessage({
+      state: w.fingerState,
+      torchSupported: this.torchSupported,
+      redMean: rMean, greenMean: gMean, blueMean: bMean,
+      settleRemainingSec: w.settleRemainingSec,
+      acDcRatio: w.acDcRatio,
+      qualityCode: w.quality.code,
+      clippedFraction
+    });
+
+    const metrics: Record<string, unknown> = {
+      t: w.t,
+      snr_dB: w.snr_dB,
+      perfusionIndex: w.perfusionIndex,
+      heartRate: w.heartRate,
+      heartRateRaw: w.heartRateRaw,
+      heartRateFFT: w.heartRateFFT,
+      heartRateIBI: w.heartRateIBI,
+      heartRateSource: w.heartRateSource,
+      ibiFftDisagree: w.ibiFftDisagree,
+      harmonicCorrected: w.harmonicCorrected,
+      ibi: w.ibi,
+      rmssd: w.rmssd,
+      sdnn: w.sdnn,
+      rmssdFloorMs: w.rmssdFloorMs,
+      timingUncertaintyMs: w.timingUncertaintyMs,
+      artifactRatio: w.artifactRatio,
+      templateSqi: w.templateSqi,
+      sampleRate: w.sampleRate,
+      signalStability: w.signalStability,
+      qualityStatus: w.qualityStatus,
+      guidanceMessage: guidance,
+      fingerState: w.fingerState,
+      selectedChannel: w.selectedChannel,
+      acDcRatio: w.acDcRatio,
+      rawRangeRatio: w.rawRangeRatio,
+      redDc: w.redDc,
+      greenDc: w.greenDc,
+      clippedFraction: w.clippedFraction,
+      motion: w.motion,
+      qualityScore: w.qualityScore,
+      settleRemainingSec: w.settleRemainingSec,
+      quality: w.quality,
+      peakTimesSec: w.peakTimesSec,
+      ibiDetails: w.ibiDetails,
+      respiration: w.respiration,
+      sqi: w.sqi,
+      torchState: this.torchState,
+      gap: w.gap
+    };
+    this.currentMetrics = metrics;
+
+    if (guidance !== this._lastLoggedCoachMessage) {
+      this._lastLoggedCoachMessage = guidance;
+      this.recorder.pushEvent({ t: windowEndMs, type: 'coaching_message', message: guidance, state: w.fingerState });
+    }
+
+    const rejectionReasons: Record<string, number> = {};
+    for (const d of w.ibiDetails) {
+      if (d.valid) continue;
+      const key = d.reason || 'unknown';
+      rejectionReasons[key] = (rejectionReasons[key] || 0) + 1;
+    }
+    this.recorder.pushWindow({
+      t: w.t, state: w.fingerState, acdc: w.acDcRatio, rawRange: w.rawRangeRatio, dcRed: w.redDc, dcGreen: w.greenDc,
+      clipped: w.clippedFraction, motion: w.motion, channel: w.selectedChannel, artifactRatio: w.artifactRatio,
+      ibiCount: w.quality.ibiCount, fftHr: w.heartRateFFT, ibiHr: w.heartRateIBI, fftAgree: !w.ibiFftDisagree,
+      harmonicCorrected: w.harmonicCorrected, templateSqi: w.templateSqi, rmssdFloorMs: w.rmssdFloorMs, sqiScore: w.sqi ? w.sqi.score : null,
+      good: w.quality.good, reason: w.quality.reason, code: w.quality.code, rejectionReasons, sampleRate: w.sampleRate,
+      gap: w.gap, torchState: this.torchState
+    });
+
+    for (const peakSec of w.peakTimesSec) this.recorder.pushEvent({ t: startMs + peakSec * 1000, type: 'peak' });
+    for (const d of w.ibiDetails) {
+      this.recorder.pushEvent({ t: startMs + d.peakTimeSec * 1000, type: d.valid ? 'ibi_accepted' : 'ibi_rejected', ibiMs: d.ibiMs, reason: d.reason, good: d.good, lowSnr: d.lowSnr, sqi: d.sqi });
+    }
+    this.recorder.pushEvent({
+      t: windowEndMs, type: 'metrics_update', heartRate: w.heartRate, rmssd: w.rmssd, qualityStatus: w.qualityStatus,
+      snr_dB: w.snr_dB, fingerState: w.fingerState, selectedChannel: w.selectedChannel, acDcRatio: w.acDcRatio,
+      ibiFftDisagree: w.ibiFftDisagree, good: w.quality.good, reason: w.quality.reason
+    });
+
+    const liveTrack = this.stream && this.stream.getVideoTracks()[0];
+    if (liveTrack && liveTrack.getSettings) {
+      const settings = liveTrack.getSettings() as Record<string, unknown>;
+      const prev = this._lastTrackSettings || {};
+      const keys = ['deviceId', 'width', 'height', 'frameRate'];
+      if (keys.some(k => settings[k] !== prev[k])) {
+        this.recorder.pushEvent({
+          t: windowEndMs, type: 'track_settings_changed',
+          from: { deviceId: String(prev.deviceId || '').slice(0, 8), width: prev.width, height: prev.height, frameRate: prev.frameRate },
+          to: { deviceId: String(settings.deviceId || '').slice(0, 8), width: settings.width, height: settings.height, frameRate: settings.frameRate }
+        });
+      }
+      this._lastTrackSettings = settings;
+    }
+
+    if (w.fingerState === STATE.MEASURING && typeof navigator !== 'undefined' && 'vibrate' in navigator && typeof navigator.vibrate === 'function' && w.ibiDetails.some(d => d.valid)) {
+      try { navigator.vibrate(10); } catch { /* no-op */ }
+    }
+
+    if (this.options.onQualityUpdate) this.options.onQualityUpdate(this.currentMetrics);
+  }
+
+  // ------------------------------------------------------------- accessors
+
+  /** Camera sample rate measured over the last window, Hz (0 before the first window). */
+  measuredSampleRate(): number {
+    return this.engine.lastWindow ? this.engine.lastWindow.sampleRate : 0;
+  }
+
+  getEngine(): PpgEngine { return this.engine; }
+
+  getMetrics(): Record<string, unknown> { return { ...this.currentMetrics }; }
+
+  getSignalQuality(): string { return String(this.currentMetrics.qualityStatus || ''); }
+
+  getDebugLog(): DebugLog { return this.recorder.toJSON(); }
+
+  downloadDebugLog(filenamePrefix = 'ppg-debug'): string {
     const json = JSON.stringify(this.getDebugLog(), null, 2);
-    const filename = `hrv-spot-check-${new Date().toISOString()}.json`;
+    const filename = `${filenamePrefix}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1219,87 +857,41 @@ export class PPGMonitor {
     return filename;
   }
 
-  /**
-   * Copy the debug log JSON to the clipboard - fallback for browsers/contexts
-   * where a download prompt isn't convenient (e.g. no Files app handy).
-   * @returns {Promise<void>}
-   */
-  async copyDebugLogToClipboard() {
-    const json = JSON.stringify(this.getDebugLog());
-    await navigator.clipboard.writeText(json);
+  async copyDebugLogToClipboard(): Promise<void> {
+    if (typeof navigator === 'undefined' || !navigator.clipboard) throw new PPGError('unsupported', 'Clipboard API unavailable');
+    await navigator.clipboard.writeText(JSON.stringify(this.getDebugLog()));
   }
 
-  /**
-   * Session-long IBI tachogram: every candidate IBI (accepted + rejected),
-   * for the demo's live tachogram plot. Rejected/missed beats included so
-   * the caller can draw hollow/red markers for what was thrown out.
-   * @returns {Array<{t:number, ibiMs:number, valid:boolean, reason:string|null}>}
-   */
-  getTachogram() {
-    return this.tachogram;
-  }
+  /** Session tachogram; pass { goodOnly: true } for beats from windows that passed the gate. */
+  getTachogram(opts: { goodOnly?: boolean; hrvOnly?: boolean } = {}): TachogramPoint[] { return this.engine.getTachogram(opts); }
 
-  /**
-   * Session summary over GOOD windows only (see utils/quality.js) - min/
-   * median/max HR, RMSSD, SDNN, plus the fraction of session time that was
-   * good. Call any time, including after stop().
-   * @returns {Object}
-   */
-  getSessionSummary() {
-    const good = this.sessionWindows.filter(w => w.good);
-    const median = (arr) => {
-      if (!arr.length) return null;
-      const sorted = [...arr].sort((a, b) => a - b);
-      const mid = Math.floor(sorted.length / 2);
-      return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-    };
-    const stats = (arr) => arr.length ? { min: Math.min(...arr), median: median(arr), max: Math.max(...arr) } : null;
+  getSessionSummary(): SessionSummary { return this.engine.getSessionSummary(); }
 
-    return {
-      totalWindows: this.sessionWindows.length,
-      goodWindows: good.length,
-      goodFraction: this.sessionWindows.length ? good.length / this.sessionWindows.length : 0,
-      hr: stats(good.map(w => w.heartRate).filter(v => v > 0)),
-      rmssd: stats(good.map(w => w.rmssd).filter(v => v > 0)),
-      sdnn: stats(good.map(w => w.sdnn).filter(v => v > 0))
-    };
-  }
-
-  /**
-   * Get current signal quality metrics
-   * @returns {Object} Current metrics
-   */
-  getMetrics() {
-    return { ...this.currentMetrics };
-  }
-
-  /**
-   * Get current signal quality status
-   * @returns {string} Quality status
-   */
-  getSignalQuality() {
-    return this.currentMetrics.qualityStatus;
-  }
-
-  /**
-   * Destroy the PPG monitor and cleanup
-   */
-  destroy() {
-    this.stop();
-
-    if (this.uiRenderer) {
-      this.uiRenderer.destroy();
-      this.uiRenderer = null;
+  /** Persist the debug log to localStorage (opt-in via debug.persistLastSession). */
+  _persistLastSessionLog(): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const log = this.getDebugLog();
+      let json = JSON.stringify(log);
+      const LIMIT = 4.5 * 1024 * 1024;
+      if (json.length > LIMIT) {
+        this.recorder.markTruncated();
+        json = JSON.stringify({ ...log, samples: log.samples.slice(-2000), truncated: true });
+      }
+      localStorage.setItem('ppg_last_session_log', json);
+    } catch {
+      try {
+        this.recorder.markTruncated();
+        localStorage.setItem('ppg_last_session_log', JSON.stringify({ ...this.getDebugLog(), samples: [] }));
+      } catch (err2) {
+        console.warn('Could not persist debug log:', err2);
+      }
     }
-
-    this.video = null;
-    this.canvas = null;
-    this.ctx = null;
-    this.stream = null;
-
-    this.acdc = null;
-    this.ac = null;
   }
+}
+
+function nowMs(): number {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
 export default PPGMonitor;

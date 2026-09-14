@@ -1,353 +1,390 @@
 # ppg-js
 
-Real-time heart rate and HRV from a phone camera, in the browser.
+Heart rate, pulse-rate variability, respiration and an honest signal-quality
+gate from a fingertip on a phone camera, in the browser. Zero dependencies,
+typed, no UI.
 
 [![CI](https://github.com/sontakey/ppg-js/actions/workflows/test.yml/badge.svg)](https://github.com/sontakey/ppg-js/actions/workflows/test.yml)
 [![npm version](https://img.shields.io/npm/v/%40sontakey%2Fppg-js.svg)](https://www.npmjs.com/package/@sontakey/ppg-js)
-[![bundle size](https://img.shields.io/bundlephobia/minzip/@sontakey/ppg-js)](https://bundlephobia.com/package/@sontakey/ppg-js)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-`ppg-js` uses the camera and (where available) the flash to capture a
-photoplethysmography (PPG) signal from a covered fingertip, and turns it into
-heart rate, IBI, RMSSD, and SDNN with an explicit signal-quality gate so it
-tells you when a number is not trustworthy instead of guessing.
+`ppg-js` turns the camera (and the flash, where the browser exposes it) into
+a photoplethysmography sensor: cover the rear lens with a fingertip and it
+reports heart rate, inter-beat intervals, RMSSD/SDNN, breathing rate and a
+per-window quality verdict that says *why* a number is withheld rather than
+guessing. Every session is recorded and can be replayed offline through the
+exact same engine.
 
-![Measuring screen placeholder](docs/assets/hero.png)
+**Live demo:** <https://ppg-js.vercel.app> (needs a phone and HTTPS)
 
-> Hero image not yet captured — see [docs/design/screens](docs/design/) for
-> the live demo UI once available; this path is a placeholder until then.
+<p align="center">
+  <img src="docs/media/start.png" width="230" alt="HRV Spot Check start screen: cover the camera and flash, hold still for 3 minutes, wait for the ring">
+  <img src="docs/media/measuring.gif" width="230" alt="Measuring screen: 69 bpm, good signal, RMSSD and SDNN with the noise floor, live pulse waveform">
+  <img src="docs/media/report.png" width="230" alt="Report: ANS balance, time-domain HRV with the measurement floor next to RMSSD">
+</p>
 
-## Table of contents
+The demo app in `examples/app` is the three-minute HRV Spot Check shown
+above: [start](docs/media/start.png), [measuring](docs/media/measuring.mp4)
+(screen recording from an iPhone), and the report
+([frequency domain](docs/media/report-frequency.png), [full page](docs/media/report-full.png))
+rendered from a real recording in `test/fixtures/`.
 
-- [Why](#why)
-- [Live demo](#live-demo)
+## Contents
+
+- [Install](#install)
 - [Quick start](#quick-start)
+- [What you get](#what-you-get)
 - [How it works](#how-it-works)
-- [API reference](#api-reference)
+- [API](#api)
 - [Signal quality contract](#signal-quality-contract)
-- [Browser support](#browser-support)
-- [Debugging with the recorder and replay CLI](#debugging-with-the-recorder-and-replay-cli)
-- [Testing](#testing)
+- [HRV module](#hrv-module)
+- [Other sources](#other-sources)
+- [Browser and device support](#browser-and-device-support)
+- [Debug recording and replay](#debug-recording-and-replay)
 - [Accuracy and limitations](#accuracy-and-limitations)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [License](#license)
-- [Acknowledgements](#acknowledgements)
+- [Testing](#testing)
+- [Contributing and license](#contributing-and-license)
 
-## Why
-
-- **Raw waveform kept.** Every frame's RGB channel means are recorded, always,
-  no toggle — a bad session is never lost and can be replayed offline.
-- **Quality-gated numbers, not best-effort guesses.** Heart rate, RMSSD, and
-  SDNN are only emitted while a strict per-window check (`good`) passes; the
-  library tells you *why* a number isn't showing instead of showing a wrong one.
-- **Debug log + replay, not "trust me."** A one-tap JSON export plus a Node
-  CLI (`npm run replay`) runs a recorded session through the exact same
-  pipeline the browser used, so a bad reading in the field is reproducible on
-  a laptop.
-
-## Live demo
-
-**[https://ppg-js.vercel.app](https://ppg-js.vercel.app)**
-
-Needs a real camera and HTTPS — open it on a phone.
-
-## Quick start
-
-### Install
+## Install
 
 ```bash
 npm install @sontakey/ppg-js
 ```
 
-### CDN
+Browser global (no bundler):
 
 ```html
 <script src="https://unpkg.com/@sontakey/ppg-js/dist/index.global.js"></script>
 <script>
-  const monitor = new PPG.PPGMonitor(null, { ui: { enabled: false }, onQualityUpdate: console.log });
+  const ppg = new PPG.PPG();
+  ppg.addEventListener('metrics', (e) => console.log(e.detail.heartRate, e.detail.quality));
+  document.querySelector('#start').onclick = () => ppg.start();
 </script>
 ```
 
-The CDN build exposes a global `PPG` (IIFE). The core injects no CSS; the demo app in `examples/app/` shows a full UI built on the public API.
+The global build exposes `PPG.PPG`, `PPG.PPGMonitor`, `PPG.PpgEngine`,
+`PPG.hrv`, `PPG.dsp` and `PPG.sources`.
 
-### Example
+## Quick start
 
-```javascript
-import PPGMonitor from '@sontakey/ppg-js';
+```ts
+import { PPG } from '@sontakey/ppg-js';
 
-const ppg = new PPGMonitor('#container', {
-  onReady: ({ torchSupported }) => {
-    console.log('camera ready, torch:', torchSupported);
-  },
-  onQualityUpdate: (metrics) => {
-    if (!metrics.quality.good) {
-      console.log('not ready:', metrics.quality.reason);
-      return;
-    }
-    console.log(`${metrics.heartRate} bpm, RMSSD ${metrics.rmssd}ms`);
-  },
-  onError: (err) => console.error(err)
+const ppg = new PPG();
+
+ppg.addEventListener('state', (e) => {
+  // NO_FINGER -> SETTLING -> MEASURING
+  console.log(e.detail.state, e.detail.reason);
 });
 
-await ppg.start();
+ppg.addEventListener('metrics', (e) => {
+  const m = e.detail;
+  if (!m.quality.good) {
+    console.log('not ready:', m.quality.reason, m.guidanceMessage);
+    return;
+  }
+  console.log(`${m.heartRate} bpm, RMSSD ${m.rmssd.toFixed(0)} ms (noise floor ±${m.rmssdFloorMs.toFixed(0)} ms)`);
+});
+
+ppg.addEventListener('respiration', (e) => console.log(`${e.detail.rateBpm.toFixed(0)} breaths/min`));
+ppg.addEventListener('error', (e) => console.error(e.detail.error.code, e.detail.error.guidance));
+
+// Call from a user gesture (tap): camera, wake lock and motion permission all need one.
+button.onclick = () => ppg.start();
 // later
 ppg.stop();
 ```
 
-Pass `null` as the container for headless mode (no built-in UI, only
-callbacks):
+After a session:
 
-```javascript
-const ppg = new PPGMonitor(null, { ui: { enabled: false }, onQualityUpdate });
+```ts
+import { hrv } from '@sontakey/ppg-js';
+
+const beats = ppg.getTachogram({ goodOnly: true, hrvOnly: true }).filter(b => b.valid);
+const report = hrv.analyzeHRV(beats, { rmssdFloorMs: ppg.getMetrics().rmssdFloorMs });
+console.log(report.timeDomain.rmssd, report.frequencyDomain.lfhf, report.stressIndex.sqrt);
 ```
+
+## What you get
+
+| Field | Meaning |
+|---|---|
+| `heartRate` | bpm, median of the last accepted intervals, cross-checked against a spectral estimate; `0` unless `quality.good` |
+| `ibi`, `rmssd`, `sdnn` | most recent interval and variability over the last 60 s of accepted beats; `0` unless `quality.good` |
+| `rmssdFloorMs`, `timingUncertaintyMs` | the RMSSD the pipeline's own beat-timing noise would produce on a perfectly regular pulse, estimated per window (accurate to roughly ±50%) |
+| `respiration` | `{ rateBpm, confidence, basis }` from breathing-driven modulation of beat timing, pulse amplitude and baseline (5.5-30 breaths/min). Confidence ≥ 0.6 when at least two estimates agree, 0.5 for a pair with one weak source, 0.3 for a single clear source (provisional), 0.4 while a recent firm rate is held. First estimate about 45 s after MEASURING |
+| `quality` | `{ good, reason, code }`: the gate verdict, why, and a stable code (see the contract below). Its inputs sit beside it: `acDcRatio`, `artifactRatio`, `ibiFftDisagree`, `clippedFraction`, `motion`, `templateSqi` |
+| `templateSqi` | median correlation of each pulse with the window's mean pulse shape (0-1) |
+| `acDcRatio`, `perfusionIndex` | pulsatile amplitude over DC of the selected channel (bandpassed per-beat, not raw range) |
+| `heartRateFFT`, `heartRateIBI`, `heartRateSource`, `harmonicCorrected` | the two independent estimates and which one won |
+| `fingerState`, `settleRemainingSec`, `guidanceMessage` | state machine and coaching copy |
+| `sampleRate`, `selectedChannel`, `redDc`, `greenDc`, `clippedFraction`, `motion` | capture diagnostics |
+
+Every `beat` event carries `{ time, ibiMs, valid, good, lowSnr, sqi, reason, heartRate }`: `valid` is
+the interval-level artifact decision, `good` is whether the window it came
+from passed the quality gate, and `lowSnr` marks an interval next to a
+recovered weak beat (counted for heart rate, excluded from variability).
 
 ## How it works
 
 ```
-camera frame
-   -> ROI crop + downscale (center 30% x 30%, 64x48 canvas)
-   -> red/green channel means
-   -> finger state machine (NO_FINGER / SETTLING / MEASURING)
-   -> per-window: detrend -> bandpass filter -> peak detection -> IBI
-   -> FFT cross-check (peak-frequency HR vs IBI-median HR)
-   -> HR / RMSSD / SDNN
-   -> strict quality gate ("good": true/false)
+camera frame (requestVideoFrameCallback, captureTime when available)
+  -> centre ROI, downscaled, channel means + clipped-pixel fraction
+  -> PpgEngine.push({ t, r, g, b, clipped, motion })
+       -> finger state machine every sample (relative presence, drift)
+       -> every 5 s of signal time:
+            interpolate the last 8 s onto one absolute 60 Hz grid
+            zero-phase Butterworth bandpass (4th-order HP 0.6 Hz, 2nd-order LP 4.6 Hz)
+            channel selection by pulsatile amplitude
+            spectral HR (Hann, zero-padded, sub-harmonic guard) -> refractory prior
+            peaks (adaptive threshold + 0.3 s vertex fit) -> absolute beat times
+            missed-beat recovery (weak pulse inside a 2x gap, flagged lowSnr)
+            template correlation per beat -> interval validation over the continuous stream
+            (range, missed-beat multiples, jump vs the recent median; four consistent
+             rejects re-seed the median so a noisy start or a real rate change is followed)
+            RMSSD / SDNN over 60 s, respiration from beat modulation
+            quality gate -> good / reason / code
 ```
+
+The same `PpgEngine` runs the live camera path and `tools/replay.js`, so a
+recorded session replays to identical windows (`test/live-parity.test.js`
+asserts it).
 
 ### Finger state machine
 
 ```
-NO_FINGER --finger placed--> SETTLING --settled (6s, low drift, AC/DC ok)--> MEASURING
-    ^                             |                                              |
+NO_FINGER --finger placed--> SETTLING --6 s, low drift, pulse amplitude ok--> MEASURING
+    ^                            |                                              |
     |                       finger lifted                                  large drift
-    +-----------------------------+----------------------------------------------+
+    +----------------------------+----------------------------------------------+
 ```
 
-HR/IBI/RMSSD are only computed while `MEASURING`. The first several seconds
-of any session are placement noise (baseline settling, exposure re-lock) and
-are deliberately withheld rather than shown as a wrong number.
+Exposure, white balance and focus are locked when MEASURING is first reached
+(the auto algorithms have converged on the finger by then) and released when
+the finger lifts.
 
-## API reference
+## API
 
-### `new PPGMonitor(container, options)`
+### `new PPG(options?)`
 
-- `container` — `string | HTMLElement | null`. CSS selector or element for
-  the built-in UI. `null` runs headless (no DOM, callbacks only).
-- `options` — see defaults below (from `src/utils/helpers.js`
-  `createDefaultOptions`); any subset may be passed, unspecified keys fall
-  back to these defaults.
+Typed-event facade, always headless. Events: `ready`, `state`, `beat`,
+`metrics`, `quality`, `waveform` (every frame), `respiration`, `error`.
+Methods: `start(abortSignal?)`, `stop()`, `destroy()`, `getMetrics()`,
+`getTachogram({ goodOnly, hrvOnly })`, `getSessionSummary()`, `exportDebugLog()`,
+`downloadDebugLog(prefix?)`, `getConfig()`; getters `state`, `capabilities`,
+`engine`.
 
-```javascript
+### `new PPGMonitor(container, options?)`
+
+The callback-style class the facade wraps (`container` is accepted for
+compatibility and ignored; the core renders no UI). Callbacks: `onReady`,
+`onState`, `onQualityUpdate` (per window), `onSignalUpdate` (per frame),
+`onFrame`, `onError`. Same methods as `PPG` plus `getDebugLog()`,
+`copyDebugLogToClipboard()`, `getEngine()`, and the `video` element as a
+property for previews.
+
+### Options (all optional)
+
+```ts
 {
-  ui: {
-    enabled: true,        // render the built-in video/chart/metrics UI
-    showVideo: true,
-    showMetrics: true,
-    showChart: true,
-    theme: 'light'         // not yet used
-  },
-  signal: {
-    windowLength: 300,     // samples per processing window (5s @ 60 FPS)
-    sampleRate: 60,        // Hz, fallback only — real rate is measured from frame timestamps
-    cardiacBandLow: 0.75,  // Hz (45 BPM), bandpass filter low edge
-    cardiacBandHigh: 4.0,  // Hz (240 BPM), bandpass filter high edge
-    fftSize: 256           // FFT size for the coarse frequency-domain HR estimate
+  signal: {                     // PpgEngine options (the common ones; see EngineOptions for all)
+    windowSec: 5,               // analysis window, seconds of signal time
+    hopSec: 5,                  // interval between windows
+    contextSec: 3,              // extra history filtered with each window
+    gridHz: 60,                 // uniform analysis grid
+    hrSlewPerWindow: 8,         // max displayed HR change between consecutive good windows
+    recoverMissedBeats: true,   // look for a weak beat inside a 2x gap (flagged lowSnr)
+    cardiacBandLow: 0.75,       // Hz, heart-rate search band (45 bpm)
+    cardiacBandHigh: 4.0,       // Hz (240 bpm)
+    quality: { minAcDc: 0.002, maxArtifactRatio: 0.2, minIbiCount60s: 8,
+               maxClippedFraction: 0.05, maxMotion: 1.5, minTemplateSqi: 0.6 },
+    fingerState: { settleSec: 6, driftEnterFraction: 0.03, driftExitFraction: 0.06,
+                   presence: { minRed: 60, minRedShare: 0.5 } },
+    respiration: true, templateSqi: true
   },
   camera: {
-    width: { ideal: 640 },
-    height: { ideal: 480 },
-    frameRate: { ideal: 60 },
-    facingMode: 'environment'   // 'user' for front camera
+    width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 60 },
+    facingMode: 'environment',
+    torch: true,                // request the flash when the device advertises it
+    lockExposure: 'measuring',  // 'measuring' | 'start' | 'never'
+    zoom: null                  // opt-in digital zoom (some Androids switch lens above 1)
   },
-  roi: {
-    widthFraction: 0.3,   // center-crop fraction of frame width sampled
-    heightFraction: 0.3
-  },
-  onReady: ({ torchSupported }) => {},   // camera acquired, monitoring started
-  onQualityUpdate: (metrics) => {},      // fired once per window (~5s)
-  onSignalUpdate: ({ time, value, isProcessing }) => {},  // fired every frame
-  onFrame: ({ frameCount, xMean, acFrame }) => {},        // fired every frame
-  onError: (error) => {}
+  roi: { widthFraction: 0.3, heightFraction: 0.3 },
+  wakeLock: true,               // keep the screen on while measuring
+  motion: false,                // DeviceMotion gate (asks permission on iOS)
+  debug: { persistLastSession: false, includeUserAgent: false, sampleCap: 36000 },
+  video: null                   // supply your own <video> element
 }
 ```
 
-### Methods
+### Errors
 
-| Method | Returns | Notes |
-|---|---|---|
-| `start()` | `Promise<void>` | Requests camera, locks exposure/WB/focus/zoom where supported, begins the frame loop. |
-| `stop()` | `void` | Stops the frame loop and releases the camera. |
-| `destroy()` | `void` | `stop()` plus tears down the UI and buffers. |
-| `getMetrics()` | `Object` | Snapshot of the current metrics object (see below). |
-| `getSignalQuality()` | `string` | Current `qualityStatus` ("Excellent"/"Good"/"Fair"/"Poor"). |
-| `getDebugLog()` | `{meta, samples, events, timestampAnomalies}` | Full raw recording so far; safe to call any time, running or stopped. |
-| `downloadDebugLog()` | `string` (filename) | Triggers a browser download of the debug log JSON. |
-| `copyDebugLogToClipboard()` | `Promise<void>` | Copies the debug log JSON to the clipboard. |
-| `getTachogram()` | `Array<{t, ibiMs, valid, reason}>` | Every candidate IBI for the session, accepted and rejected. |
-| `getSessionSummary()` | `Object` | min/median/max HR, RMSSD, SDNN over `good` windows only, plus `goodFraction`. |
+`start()` rejects with a `PPGError` whose `code` is one of
+`insecure_context`, `unsupported`, `permission_denied`, `no_camera`,
+`camera_busy`, `overconstrained`, `aborted`, `unknown`, and whose `guidance`
+is a sentence you can show to the user.
 
-### Metrics object (`onQualityUpdate` argument / `getMetrics()`)
+### `PpgEngine` (`@sontakey/ppg-js/engine`)
 
-```javascript
-{
-  snr_dB: number,             // frequency-domain SNR in the cardiac band
-  perfusionIndex: number,     // AC/DC ratio as a percentage
-  heartRate: number,          // BPM, 0 unless quality.good
-  heartRateRaw: number,       // BPM, cross-checked estimate regardless of gate
-  heartRateSource: string,    // which estimate won the FFT/IBI cross-check
-  ibi: number,                // most recent inter-beat interval, ms
-  rmssd: number,              // ms, 0 unless quality.good
-  sdnn: number,                // ms, 0 unless quality.good
-  artifactRatio: number,      // fraction of candidate IBIs rejected in last 60s
-  sampleRate: number,         // measured Hz for this window
-  signalStability: number,    // 0-1, variance-ratio between consecutive windows
-  qualityStatus: string,      // "Excellent" | "Good" | "Fair" | "Poor" (SNR bucket)
-  guidanceMessage: string,    // human-readable coaching text
-  qualityFrameCount: number,
-  fingerState: string,        // "NO_FINGER" | "SETTLING" | "MEASURING"
-  selectedChannel: string,    // "red" | "green"
-  qualityScore: number,
-  settleRemainingSec: number,
-  quality: {
-    state: string,
-    acdc: number,
-    artifactRatio: number,
-    ibiCount: number,
-    fftAgree: boolean,
-    good: boolean,
-    reason: string | null
-  },
-  peakTimesSec: number[],     // debug: detected peaks, window-relative seconds
-  ibiDetails: Array<{ peakTimeSec, ibiMs, valid, reason }>
-}
-```
+Feed it your own samples: `engine.push({ t, r, g, b, clipped?, motion? })`
+returns `{ state, stateChanged, stateReason, present, waveform, window }` (`window` is null except every `hopSec`). Use it for other
+capture paths (a WebView bridge, a wearable's raw PPG, a file).
+
+### DSP (`@sontakey/ppg-js/dsp`)
+
+Pure functions: `designBandpass`, `filtfilt`, `filtfiltPadded`,
+`resampleToGrid`, `computeFFT`, `calculateSNRFromPSD`, `detectPeaksDetailed`,
+`computeIBIs`, `crossCheckHeartRate`, `templateCorrelation`,
+`estimateRespiration`, `evaluateQuality`, `FingerStateMachine`.
 
 ## Signal quality contract
 
-`metrics.quality.good` is `true` only when every one of these holds
-(checked in this order — `reason` is always the first one that fails, see
-`src/utils/quality.js`):
+`quality.good` is `true` only when, in this order, all of these hold; `reason`
+and `code` name the first that fails:
 
-1. `fingerState === 'MEASURING'` (not `NO_FINGER` or `SETTLING`)
-2. AC/DC ratio of the selected channel ≥ `0.005` (0.5%) — rejects a weak pulse
-3. Artifact ratio (rejected IBIs / total candidate IBIs in the last 60s) ≤ `0.2`
-4. At least 8 accepted IBIs in the last 60 seconds
-5. The IBI-median heart rate agrees with the independent FFT-peak heart rate
-   (no `crossCheckHeartRate` disagreement)
+1. `fingerState === 'MEASURING'` (`no_finger`, `settling`)
+2. clipped-pixel fraction ≤ 5% (`saturated`)
+3. device motion ≤ threshold, when a motion source is attached (`motion`)
+4. pulsatile AC/DC ≥ 0.2% (`weak_pulse`)
+5. ≤ 20% of candidate intervals rejected in the last 60 s (`irregular`); intervals from before the beat reference settled after a rough start count as settling, not rejects
+6. ≥ 8 accepted intervals in the last 60 s (`collecting`)
+7. median template correlation ≥ 0.6 (`morphology`)
+8. interval-based and spectral heart rate agree within 25%
+   (`double_count`, `missed_beats`, `fft_disagree`)
 
-`heartRate`, `rmssd`, and `sdnn` are `0` whenever `good` is `false`.
-`heartRateRaw` is always populated (even when not `good`) for callers that
-want the raw estimate anyway.
+`heartRate`, `rmssd` and `sdnn` are `0` whenever `good` is `false`;
+`heartRateRaw` is always populated.
 
-## Browser support
+## Signal quality indices
 
-| Browser | Camera | Torch | Notes |
+Every window carries `metrics.sqi`, the standard indices from the PPG
+quality literature plus one documented composite, so you can build your own
+acceptance rule or compare with other toolkits:
+
+| Field | Definition |
+|---|---|
+| `score` | 0-1 composite: geometric mean of bounded sub-scores for template correlation, artifact ratio, pulse amplitude, SNR, clipping, motion and detector agreement (`components` lists each) |
+| `skewness`, `kurtosis` | of the bandpassed pulse (Elgendi 2016: skewness is the most informative single index; a clean pulse is positively skewed) |
+| `perfusion` | pulsatile amplitude / DC, percent |
+| `relativePower`, `snrDb` | cardiac-band power over total power, linear and in dB |
+| `zeroCrossingRate` | zero crossings per second of the bandpassed pulse (about 2 per beat when clean) |
+| `templateCorrelation` | median per-beat correlation with the window's mean beat (Orphanidou 2015) |
+| `detectorAgreement` | 1 − |HR from intervals − HR from spectrum| / HR from spectrum |
+| `artifactRatio`, `clippedFraction`, `motion` | the gate's inputs |
+
+Each `beat` event and tachogram point also carries `sqi`, that beat's
+template correlation (the lower of its two peaks), so beats can be weighted
+or filtered individually. The composite is for ranking and display; the
+accept/reject decision remains `quality.good`.
+
+## HRV module
+
+`@sontakey/ppg-js/hrv` works on any list of intervals (numbers in ms, or
+`{ ibiMs, t }` with beat times so gaps are handled correctly):
+
+- `timeDomain`: mean RR/HR, SDNN, RMSSD, lnRMSSD, NN50/pNN50, min/max HR,
+  triangular index, least-squares TINN, RR range
+- `frequencyDomain`: Welch PSD on a 4 Hz linear resample using real beat
+  times, LF/HF (VLF only for ≥ 5 min), normalised units, HF-peak respiration,
+  coherence (0.04-0.26 Hz peak share); refuses recordings with > 20% gaps.
+  Pass `respirationRateBpm` (the engine's fusion estimate) and
+  `respirationInLf` tells you when breathing under 9/min has moved RSA into
+  the LF band, so LF/HF is breathing-driven rather than sympathetic
+- `nonlinear`: Poincaré SD1/SD2, sample entropy, DFA α1
+- `stressIndex`: Baevsky SI and its square root (the form Kubios reports)
+- `ansIndices` (experimental): PNS/SNS z-scores against cited references
+- `ultraShortRmssd` (last 60 s), `lnRmssdBaseline` (7-day rolling mean,
+  CV, smallest-worthwhile-change band)
+- `analyzeHRV`: all of the above
+
+What a camera measures is pulse-rate variability. At rest it tracks
+heart-rate variability closely; under posture or temperature change the two
+diverge. Treat the numbers accordingly.
+
+## Other sources
+
+`@sontakey/ppg-js/sources` has `BleHeartRateSource` (Web Bluetooth Heart
+Rate Service: RR intervals from a Polar/Garmin chest strap, Chrome on
+Android and desktop) and `ArraySource` (recorded samples through the
+engine). Recording a strap alongside the camera is the cheapest way to
+validate this library on your own device.
+
+## Browser and device support
+
+| Platform | Camera | Flash (torch) | Notes |
 |---|---|---|---|
-| iOS Safari 14.1+ | Yes | **No** | No `torch` capability on iOS Safari; demo instructs users to use a bright external light source instead. |
-| iOS Chrome | Yes | No | Chrome on iOS uses WebKit under the hood — same torch limitation as Safari. |
-| Android Chrome | Yes | Yes | Torch supported via `MediaTrackConstraints.advanced.torch`. |
-| Desktop Chrome/Edge 89+ | Yes | N/A | Works for development/testing; no fingertip-covers-flash physical setup, so expect poor real signal without a controlled light source. |
-| Firefox 88+ | Yes | No | `getUserMedia` supported; not the primary tested target. |
+| iOS Safari 17+ and every iOS browser (WebKit) | yes | yes | `exposureMode` is not exposed on iPhone rear cameras; white balance is. The engine's late lock handles both. |
+| Android Chrome | yes | yes | Torch, exposure/white-balance/focus locks, zoom, Web Bluetooth. Lens selection by label is best-effort. |
+| Desktop Chrome/Edge/Firefox | yes | no | Works with a desk lamp for development; not a measurement setup. |
+| In-app browsers (Instagram, Facebook, some WebViews) | often no | no | `start()` rejects with `unsupported`. |
 
-Requirements: HTTPS (camera access requires a secure context), `getUserMedia`
-support. `requestVideoFrameCallback` is used when available (accurate
-per-frame capture timestamps) and falls back to `requestAnimationFrame`.
+Requirements: HTTPS (or localhost), `getUserMedia`. `requestVideoFrameCallback`
+is used when available; `requestAnimationFrame` otherwise.
 
-## Debugging with the recorder and replay CLI
+Tested against six real recordings from one iPhone (iOS 26, Safari and
+Chrome, 60 fps, in `test/fixtures/`: clean, muted, slow breathing, periodic
+30 fps dips, a noisy onset) and against a simulator at 24/30/60 fps with
+dropped frames, saturation, motion, respiratory modulation and dominant
+dicrotic waves, and benchmarked against HeartPy and vital_sqi
+(`docs/audit/BENCHMARK-2026-09.md`). Android recordings are
+the most valuable thing you can contribute right now; see
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
-Every session **always** records a raw debug log — no toggle, so a bad
-measurement is never lost. It captures per-frame RGB channel means, session
-metadata (camera capabilities/constraints, ROI, timing mode, measured sample
-rate), and every detected peak/IBI/HR update.
+## Debug recording and replay
 
-**Record on a phone:**
-1. Open the demo, start a measurement, hold the finger steady for the full
-   session.
-2. Tap **Save debug log** (downloads `ppg-debug-<ISO timestamp>.json`; iOS
-   opens the share sheet instead of a direct save) or **Copy debug log** to
-   copy the JSON to the clipboard.
-3. Send the file to whoever is debugging.
-
-**Replay offline:**
+Every session records per-frame channel means, timestamps, camera
+capabilities and settings, applied constraints, dropped-frame counts, every
+peak and interval decision, and per-window quality records.
+`getDebugLog()` returns it; `downloadDebugLog()` saves it. Nothing is written
+to `localStorage` unless `debug.persistLastSession` is set.
 
 ```bash
-npm run replay -- /path/to/ppg-debug-2024-01-01T00-00-00.json
+npm run replay -- path/to/ppg-debug.json
 ```
 
-This runs the recorded raw samples through the exact same
-filter → detect-peaks → IBI → HR/RMSSD pipeline the browser uses (imported
-directly from `src/utils`, not a reimplementation), and prints measured fps
-(mean/min/max/jitter), finger-present ratio, an HR timeline, the IBI list
-with artifact flags, RMSSD, and a comparison against the peaks recorded live
-(matched/missed/extra).
+replays the recording through the same engine the browser used and prints
+state transitions, per-window quality, the HR timeline with the RMSSD floor,
+every interval decision, respiration, and a comparison with the peaks the
+phone recorded live.
+
+## Accuracy and limitations
+
+Measured on the simulator (what the tests enforce):
+
+| Case | Result |
+|---|---|
+| Heart rate, 60-90 bpm, 24/30/60 fps | within 1 bpm |
+| RMSSD floor on a zero-variability pulse, fractional ROI means | 9-13 ms (bound 15 ms) |
+| Same with whole-count quantised means | 11-16 ms (bound 22 ms) |
+| 10% dropped frames | raises RMSSD by < 2 ms (bound 5 ms) |
+| Respiration at 6 breaths/min | 6.0 ± 1 |
+
+And on the real recordings (what `test/fixtures.test.js` enforces):
+
+| Case | Result |
+|---|---|
+| Live vs replay, 3 min session | 212 of 212 beats reproduced |
+| Time to first heart rate, clean start | 10 s after MEASURING (20 s after finger placement: 6 s settle, then 8 accepted beats) |
+| Time to first heart rate, noisy onset (junk intervals seeded the reference) | 15 s after MEASURING (25 s after placement); before 0.3.0 the session never recovered |
+| Periodic 30 fps dips (every other frame dropped for 20 s) | HR unchanged, RMSSD floor 7 -> 14 ms during the dip |
+| Breathing at 6.7/min | first estimate 40 s after MEASURING, then available in every window but one |
+
+Not validated: no ECG or chest-strap comparison across a population, no
+claim across skin tones or ambient light beyond the recordings in
+`test/fixtures/`. **This is not a medical device.** It is for research and
+personal curiosity, not diagnosis, treatment, or any decision that needs a
+validated instrument.
 
 ## Testing
 
 ```bash
-npm test
+npm test          # strict typecheck + all unit suites
+npm run test:e2e  # real Chromium + fake camera fed from a fixture (after npm run build)
 ```
 
-Runs, assert-based, no framework, non-zero exit on failure:
+## Contributing and license
 
-- `test/ppg-pipeline.test.js` — synthetic-signal test of the real filter →
-  peak → IBI pipeline
-- `test/replay.test.js` — replay tool correctness
-- `test/camera.test.js` — rear-lens selection logic
-- `test/timestamps.test.js` — timestamp repair/monotonicity in the recorder
-- `test/quality.test.js`, `test/missed-beat.test.js`, `test/fixtures.test.js`,
-  `test/sim.test.js` — additional coverage of the quality gate, missed-beat
-  handling, and synthetic simulation, runnable individually with `node
-  test/<file>`
+See [CONTRIBUTING.md](CONTRIBUTING.md). MIT, see [LICENSE](LICENSE).
 
-`test/fixtures/` contains two real anonymized iPhone recordings
-(`iphone-52s.json`, `iphone-200s.json`) replayed through the pipeline as
-regression fixtures — see [CONTRIBUTING.md](CONTRIBUTING.md) for how to add
-another one.
-
-CI runs `npm test` on every push and PR (`.github/workflows/test.yml`).
-
-## Accuracy and limitations
-
-**Validated against:**
-- Synthetic PPG signals with known heart rate, harmonics, baseline drift,
-  irregular sample timing, and injected noise (`test/ppg-pipeline.test.js`,
-  `test/sim.test.js`)
-- Two real iPhone recordings, replayed through the exact production pipeline
-
-**Not validated:**
-- No clinical or IRB-approved validation against a reference pulse oximeter
-  or ECG across a real population
-- No accuracy claim across skin tones, motion, or ambient-light conditions
-  beyond what the two recorded logs cover
-
-**This is not a medical device.** It is for demonstration and research use
-only — do not use it for diagnosis, treatment, or any decision that requires
-a validated instrument.
-
-## Roadmap
-
-A TypeScript rewrite is planned. Nothing below exists in the current
-JavaScript implementation yet:
-
-- Zero-dependency core (drop the current `d3` and `fft.js` dependencies)
-- Pluggable signal sources (camera today; wearables and other sensors as
-  additional source implementations)
-- Pluggable pipeline stages (swap filter/peak-detection/quality stages)
-- Typed events end to end
-- Face-based remote PPG (rPPG) via the POS algorithm, as an alternative
-  source to fingertip camera capture
-- Accelerometer-based motion gate as an additional quality-gate input
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## License
-
-MIT — see [LICENSE](LICENSE).
-
-## Acknowledgements
-
-Vandenberk T, et al. "Clinical Validation of Heart Rate Apps," JMIR Mhealth
-Uhealth 2017;5(8):e129. <https://mhealth.jmir.org/2017/8/e129>
+The audit that drove the 0.3 rebuild, with its measurements and references,
+is in [`docs/audit/AUDIT-2026-09.md`](docs/audit/AUDIT-2026-09.md).

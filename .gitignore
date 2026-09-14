@@ -29,3 +29,10 @@ npm-debug.log*
 # Claude plans
 .claude/
 .vercel
+
+# e2e scratch
+test/e2e/.tmp/
+
+# benchmark scratch outputs
+bench/out/
+bench/*-results.json

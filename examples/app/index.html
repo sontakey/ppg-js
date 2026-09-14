@@ -66,7 +66,7 @@
       <p id="coach-line" class="coach-line" role="status" aria-live="polite">Cover the lens and flash with your fingertip pad</p>
       <p id="state-line" class="state-line" aria-hidden="true"></p>
       <canvas id="placement-wave-canvas" class="wave-canvas wave-canvas-small" width="600" height="60" aria-hidden="true"></canvas>
-      <p id="torch-note" class="torch-note" hidden>Your phone's flashlight can't be turned on by this page (iOS Safari has no flashlight API). Turn it on yourself from Control Center, then cover the lens and the light with your fingertip.</p>
+      <p id="torch-note" class="torch-note" hidden>This camera has no flash the page can control. Turn on your phone's flashlight yourself (or use a bright lamp), then cover the lens and the light with your fingertip.</p>
     </div>
     <button id="btn-cancel-placement" class="btn-secondary btn-bordered" type="button">Cancel</button>
   </section>
@@ -86,7 +86,9 @@
       <div class="secondary-row">
         <div class="secondary-metric"><span class="sm-label">RMSSD</span><span id="rmssd-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
         <div class="secondary-metric"><span class="sm-label">SDNN</span><span id="sdnn-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
+        <div class="secondary-metric"><span class="sm-label">Breathing</span><span id="resp-value" class="sm-value sm-value-small">--</span></div>
       </div>
+      <p id="rmssd-floor" class="rmssd-floor" aria-live="polite"></p>
       <canvas id="wave-canvas" class="wave-canvas" width="600" height="120" aria-hidden="true"></canvas>
       <canvas id="tacho-canvas" class="tacho-canvas" width="600" height="60" aria-hidden="true"></canvas>
     </div>
@@ -108,9 +110,8 @@
   <div id="video-container" class="video-container" hidden></div>
 </div>
 
-<script src="../demo/dist/ppg.global.js?v=0.2.0-mtz1zqm9"></script>
+<script src="../demo/dist/ppg.global.js"></script>
 <script>window.PPGMonitor = PPG.PPGMonitor;</script>
-<script src="hrv-analysis.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
