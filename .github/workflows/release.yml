@@ -1,10 +1,17 @@
 name: release
 
-# Publishes a GitHub Release when a version tag is pushed. Release notes are
+# Publishes a GitHub Release when a version tag is pushed, or on manual
+# dispatch (which creates the tag on the chosen commit). Release notes are
 # the matching section of CHANGELOG.md.
 on:
   push:
     tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version tag to create and release, e.g. v0.3.0'
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -20,9 +27,11 @@ jobs:
       - run: npm ci --no-audit --no-fund
       - run: npm test
       - run: npm run build
+      - name: Resolve tag
+        run: echo "TAG=${{ inputs.tag || github.ref_name }}" >> "$GITHUB_ENV"
       - name: Extract release notes from CHANGELOG.md
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           awk -v v="$VERSION" '
             $0 ~ "^## \\[" v "\\]" { on=1; next }
             on && /^## \[/ { exit }
@@ -30,13 +39,14 @@ jobs:
           ' CHANGELOG.md > RELEASE_NOTES.md
           test -s RELEASE_NOTES.md || echo "See CHANGELOG.md." > RELEASE_NOTES.md
       - name: Pack tarball
-        run: npm pack && mv sontakey-ppg-js-*.tgz "ppg-js-${GITHUB_REF_NAME}.tgz"
+        run: npm pack && mv sontakey-ppg-js-*.tgz "ppg-js-${TAG}.tgz"
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
             --notes-file RELEASE_NOTES.md \
-            "ppg-js-${GITHUB_REF_NAME}.tgz" \
-            "dist/ppg.global.js"
+            "ppg-js-${TAG}.tgz" \
+            "dist/index.global.js"
