@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-14
+
+Rebuild of the signal core after the September 2026 audit
+(`docs/audit/AUDIT-2026-09.md`). Heart rate was already right; this release
+makes the variability numbers trustworthy and the capture layer portable.
+
 ### Changed
 - **Respiration** reports sooner and stays on. The modulation series are
   high-passed at 0.06 Hz instead of linearly detrended and searched down to
@@ -49,12 +55,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tools/anonymize-log.js` now redacts device and group ids inside recorded
   events too, not only in `meta`; the two `iphone-cros-*` fixtures were
   re-anonymized.
-
-## [0.3.0] - 2026-09-13
-
-Rebuild of the signal core after the September 2026 audit
-(`docs/audit/AUDIT-2026-09.md`). Heart rate was already right; this release
-makes the variability numbers trustworthy and the capture layer portable.
 
 ### Changed
 - **One streaming engine** (`PpgEngine`) drives both the live camera path and
