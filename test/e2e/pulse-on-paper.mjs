@@ -45,12 +45,22 @@ try {
     window.PPGMonitor = class extends PPG.PPGMonitor {
       constructor(_host, options) {
         super(_host, options);
-        this.engine = new PPG.PpgEngine(log.meta?.engineConfig?.engine || {});
+        this.engine = new PPG.PpgEngine({ ...log.meta?.engineConfig?.engine, ...options.signal });
         this.video = document.createElement('video');
         this.torchSupported = true;
         this.torchState = 'on';
         this.currentMetrics = { fingerState: 'NO_FINGER' };
         this.i = 0;
+        this.metricUpdates = [];
+        const update = this.options.onQualityUpdate;
+        this.options.onQualityUpdate = metrics => {
+          update(metrics);
+          if (metrics.fingerState === 'MEASURING') this.metricUpdates.push({
+            t: metrics.t, good: metrics.quality.good, segments: manuscript.segments.length,
+            values: ['hr-value', 'rmssd-value', 'sdnn-value'].map(id => document.getElementById(id).textContent),
+            expected: [metrics.heartRate, metrics.rmssd, metrics.sdnn].map(value => metrics.quality.good && Number.isFinite(value) ? String(Math.round(value)) : '--'),
+          });
+        };
       }
       async start() { this.options.onReady({ torchSupported: true }); }
       stop() {}
@@ -91,6 +101,15 @@ try {
   await page.evaluate(() => monitor.feedUntil(70));
   assert.equal(await page.evaluate(() => 'windowStartSec' in monitor.getMetrics()), false, 'replay uses the real public callback payload');
   assert.ok(await page.evaluate(() => manuscript.segments.length > 0), 'accepted real signal paints');
+  const cadence = await page.evaluate(() => ({ updates: monitor.metricUpdates, hop: monitor.engine.opts.hopSec, window: monitor.engine.opts.windowSec }));
+  assert.equal(cadence.hop, 1, 'capture requests genuine computed updates once a second');
+  assert.equal(cadence.window, 5, 'signal analysis retains five-second windows');
+  assert.ok(cadence.updates.every(update => update.values.join() === update.expected.join()), 'readouts display the actual quality-gated metrics, without interpolation');
+  const byPaint = new Map();
+  for (const update of cadence.updates.filter(update => update.good)) {
+    const group = byPaint.get(update.segments) || []; group.push(update); byPaint.set(update.segments, group);
+  }
+  assert.ok([...byPaint.values()].some(group => group.length >= 4 && new Set(group.map(update => update.values.join())).size > 1), 'computed metrics visibly update several times within one painted segment');
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await assertViewportFits(page, `capture ${width}px`);
@@ -108,12 +127,19 @@ try {
   assert.ok(scrollStart.cacheRows <= 5, 'live cache holds at most four visible rows plus one scrolling row');
   await page.emulateMedia({ reducedMotion: 'reduce' });
   const captureCount = await page.evaluate(() => manuscript.segments.length);
+  const beforePauseUpdates = await page.evaluate(() => monitor.metricUpdates.length);
   await page.getByRole('button', { name: 'Pause artwork', exact: true }).click();
   await page.evaluate(() => monitor.feedUntil(80));
   assert.equal(await page.evaluate(() => manuscript.segments.length), captureCount, 'paused artwork does not grow');
+  const pausedUpdates = await page.evaluate(start => monitor.metricUpdates.slice(start), beforePauseUpdates);
+  assert.ok(pausedUpdates.length >= 4 && pausedUpdates.some(update => update.good), 'quality-gated metrics continue once a second while artwork is paused');
+  assert.ok(pausedUpdates.every(update => update.values.join() === update.expected.join()), 'paused-art readouts still match computed metrics');
+  assert.ok(new Set(pausedUpdates.filter(update => update.good).map(update => update.values.join())).size > 1, 'real estimates visibly change while artwork is paused');
   assert.match(await page.locator('#pause-note').innerText(), /measurement continues/);
   await page.getByRole('button', { name: 'Resume artwork', exact: true }).click();
-  await page.evaluate(() => monitor.feedUntil(Infinity));
+  // Keep this export/manual-finish check below automatic completion; the
+  // dedicated WebKit session test exercises the full 180 active seconds.
+  await page.evaluate(() => monitor.feedUntil(180));
   const expected = await page.evaluate(() => {
     const beats = monitor.getTachogram({ goodOnly: true, hrvOnly: true }).filter(p => p.valid);
     const report = PPG.hrv.analyzeHRV(beats);

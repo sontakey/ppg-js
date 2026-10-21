@@ -44,6 +44,11 @@ function resetManuscript() {
 }
 function acceptPaintWindow(metrics) {
   if (!Number.isFinite(metrics.t) || metrics.t <= manuscript.lastWindow) return;
+  // Readouts use overlapping one-second analyses. Keep whole five-second
+  // paint segments so the manuscript never repeats overlapping waveforms,
+  // and retain pending samples until their own paint decision arrives.
+  const paintInterval = monitor?.engine?.opts?.windowSec || 5;
+  if (manuscript.lastWindow >= 0 && metrics.t - manuscript.lastWindow < paintInterval - 1e-6) return;
   manuscript.lastWindow = metrics.t;
   const window = monitor?.engine?.lastWindow;
   const start = window?.windowStartSec;
@@ -1142,6 +1147,9 @@ function startSession() {
   if (monitor) { monitor.destroy(); monitor = null; }
   monitor = new PPGMonitor(null, {
     ui: { enabled: false },
+    // Recompute accepted HR and rolling 60-second HRV once a second; the
+    // five-second signal window, quality gate and filter edge guard stay intact.
+    signal: { hopSec: 1 },
     debug: { persistLastSession: true }, // powers the debug menu's "share last log"
     wakeLock: true, // keep the screen on for the 3-minute protocol
     motion: true, // accelerometer motion gate (asks permission on iOS)

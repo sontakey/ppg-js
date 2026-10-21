@@ -25,21 +25,23 @@ function dropFrames(samples, frac, seed = 7) { let x = seed; const rnd = () => {
 // --- 1. Precision: zero-HRV signal at 24/30/60 fps, clean and with 10% dropped frames.
 // Fractional channel means (like a real ROI average) -> RMSSD floor must stay under 15 ms;
 // whole-count quantised means -> under 22 ms. Dropped frames must not raise it by more than 5 ms.
-for (const fps of [24, 30, 60]) {
-  for (const quantize of [false, true]) {
-    const { samples, groundTruth } = generatePpgSamples({ durationSec: 120, hr: 70, fps, fpsJitter: 0.1, seed: 3, quantize });
-    const clean = run(samples);
-    const dropped = run(dropFrames(samples, 0.1));
-    const accClean = clean.engine.getTachogram({ goodOnly: true }).filter(d => d.valid).map(d => d.ibiMs);
-    const accDrop = dropped.engine.getTachogram({ goodOnly: true }).filter(d => d.valid).map(d => d.ibiMs);
-    const rC = rmssdOf(accClean), rD = rmssdOf(accDrop);
-    const bound = quantize ? 22 : 15;
-    assert.ok(accClean.length >= 0.75 * groundTruth.ibisMs.length, `${fps}fps: accepted ${accClean.length} of ${groundTruth.ibisMs.length} beats`);
-    assert.ok(rC <= bound, `${fps}fps quant=${quantize}: zero-HRV RMSSD floor ${rC.toFixed(1)} > ${bound} ms`);
-    assert.ok(rD <= rC + 5, `${fps}fps quant=${quantize}: 10% dropped frames raised RMSSD from ${rC.toFixed(1)} to ${rD.toFixed(1)}`);
-    const hrs = clean.windows.filter(w => w.quality.good).map(w => w.heartRate);
-    assert.ok(hrs.length > 0 && hrs.every(h => Math.abs(h - 70) <= 1), `${fps}fps: HR ${hrs.join(',')} within 1 bpm`);
-    console.log(`[engine precision ${fps}fps ${quantize ? 'int ' : 'frac'}] beats=${accClean.length}/${groundTruth.ibisMs.length} rmssd clean=${rC.toFixed(1)} dropped=${rD.toFixed(1)} floorEst=${clean.windows.filter(w => w.quality.good).slice(-1)[0].rmssdFloorMs.toFixed(1)}: PASS`);
+for (const hopSec of [5, 1]) {
+  for (const fps of [24, 30, 60]) {
+    for (const quantize of [false, true]) {
+      const { samples, groundTruth } = generatePpgSamples({ durationSec: 120, hr: 70, fps, fpsJitter: 0.1, seed: 3, quantize });
+      const clean = run(samples, { hopSec });
+      const dropped = run(dropFrames(samples, 0.1), { hopSec });
+      const accClean = clean.engine.getTachogram({ goodOnly: true }).filter(d => d.valid).map(d => d.ibiMs);
+      const accDrop = dropped.engine.getTachogram({ goodOnly: true }).filter(d => d.valid).map(d => d.ibiMs);
+      const rC = rmssdOf(accClean), rD = rmssdOf(accDrop);
+      const bound = quantize ? 22 : 15;
+      assert.ok(accClean.length >= 0.75 * groundTruth.ibisMs.length, `${fps}fps: accepted ${accClean.length} of ${groundTruth.ibisMs.length} beats`);
+      assert.ok(rC <= bound, `${fps}fps quant=${quantize}: zero-HRV RMSSD floor ${rC.toFixed(1)} > ${bound} ms`);
+      assert.ok(rD <= rC + 5, `${fps}fps quant=${quantize}: 10% dropped frames raised RMSSD from ${rC.toFixed(1)} to ${rD.toFixed(1)}`);
+      const hrs = clean.windows.filter(w => w.quality.good).map(w => w.heartRate);
+      assert.ok(hrs.length > 0 && hrs.every(h => Math.abs(h - 70) <= 1), `${fps}fps: HR ${hrs.join(',')} within 1 bpm`);
+      console.log(`[engine precision ${hopSec}s hop ${fps}fps ${quantize ? 'int ' : 'frac'}] beats=${accClean.length}/${groundTruth.ibisMs.length} rmssd clean=${rC.toFixed(1)} dropped=${rD.toFixed(1)} floorEst=${clean.windows.filter(w => w.quality.good).slice(-1)[0].rmssdFloorMs.toFixed(1)}: PASS`);
+    }
   }
 }
 

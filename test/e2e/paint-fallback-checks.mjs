@@ -15,7 +15,7 @@ async function installReplay(page, log) {
     window.PPGMonitor = class extends PPG.PPGMonitor {
       constructor(host, options) {
         super(host, options);
-        this.engine = new PPG.PpgEngine(log.meta?.engineConfig?.engine || {});
+        this.engine = new PPG.PpgEngine({ ...log.meta?.engineConfig?.engine, ...options.signal });
         this.video = document.createElement('video');
         this.torchSupported = true; this.torchState = 'on';
         this.currentMetrics = { fingerState: 'NO_FINGER' }; this.i = 0;
