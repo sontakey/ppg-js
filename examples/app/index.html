@@ -24,9 +24,8 @@
   <!-- READY -->
   <section id="screen-ready" class="screen" data-screen="ready">
   <div class="content">
-    <p class="ready-eyebrow">3-minute analysis</p>
-    <h1>HRV Spot Check</h1>
-    <p class="lead">A fingertip scan of your heart rate and heart-rate variability, right from your phone's camera.</p>
+    <h1>Pulse<br> on Paper<span class="blue-period">.</span></h1>
+    <p class="lead">Three minutes. A portrait of your pulse.</p>
     <ol class="ready-steps">
       <li class="ready-step">
         <span class="ready-step-num">1</span>
@@ -45,15 +44,28 @@
       <li class="ready-step">
         <span class="ready-step-num">3</span>
         <span class="ready-step-text">
-          <strong>Wait for the ring to complete.</strong>
-          Keep your finger in place until the countdown ring finishes.
+          <strong>Watch your pulse become a painting.</strong>
+          Clear signal leaves a deeper blue stroke. Your HRV Spot Check report follows.
         </span>
       </li>
     </ol>
     <p class="disclaimer">Not a medical device. For personal curiosity only, not diagnosis or treatment.</p>
   </div>
-  <button id="btn-start" class="btn-primary" type="button">Start</button>
-  <p id="desktop-note" class="disclaimer" hidden>Open on your phone. HRV Spot Check needs a rear camera and flash. Open this page on your phone to begin.</p>
+  <button id="btn-start" class="btn-primary paint-start" type="button"><span>Begin pulse capture</span><svg class="paint-start-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15m-6-6 6 6-6 6"/></svg></button>
+  <aside id="desktop-phone-panel" class="phone-panel" aria-labelledby="phone-panel-title" hidden>
+    <div class="phone-panel-copy">
+      <p class="phone-panel-kicker">A small moment. Just for you.</p>
+      <h2 id="phone-panel-title">Bring your<br>pulse to paper.</h2>
+      <p>This experience begins on your phone, using its rear camera and flash to find your pulse.</p>
+      <p class="phone-panel-instruction">Open your phone’s camera and scan the code. Then settle in for three quiet minutes.</p>
+    </div>
+    <figure class="phone-panel-code">
+      <div class="phone-qr-paper"><img id="phone-qr" width="246" height="246" alt="QR code to open Pulse on Paper at chatppg.com/ppg-js-demo"></div>
+      <figcaption>Scan to begin on your phone</figcaption>
+    </figure>
+    <a class="phone-panel-link" href="https://chatppg.com/ppg-js-demo">chatppg.com/ppg-js-demo <span aria-hidden="true">↗</span></a>
+    <p class="phone-panel-disclaimer">Not a medical device. For personal curiosity only, not diagnosis or treatment.</p>
+  </aside>
 </section>
 
   <!-- PLACEMENT -->
@@ -74,25 +86,19 @@
   <!-- MEASURING -->
   <section id="screen-measuring" class="screen" data-screen="measuring" hidden>
     <div class="content measuring-content">
-      <div class="hr-hero">
-        <span id="hr-value" class="hr-value">--</span>
-        <span class="hr-unit">bpm</span>
-      </div>
-      <p id="session-countdown" class="session-countdown">3:00</p>
-      <div class="quality-pill" id="quality-pill">
-        <span id="quality-dot" class="quality-dot"></span>
-        <span id="quality-text">Settling</span>
-      </div>
-      <div class="secondary-row">
+      <div class="capture-heading"><h1>Pulse<br>on Paper</h1><p class="lead">Three minutes. A portrait of your pulse.</p></div>
+      <div class="painting-status"><div class="quality-pill" id="quality-pill"><span id="quality-dot" class="quality-dot"></span><div role="status" aria-live="polite" aria-atomic="true"><strong id="painting-state">Waiting for clear signal</strong><span id="quality-text">Settling</span></div></div><p id="session-countdown" class="session-countdown">3:00</p></div>
+      <div class="manuscript-frame"><canvas id="manuscript" width="1000" height="840" aria-label="Your pulse manuscript. Deeper blue represents better measured recording quality."></canvas><p id="manuscript-empty">Your first brushstroke is on its way.<br><span>Hold still while we check the signal.</span></p></div>
+      <p class="pigment-note">Deeper blue reflects clearer signal.</p>
+      <details class="live-details"><summary>Live measurements</summary><p class="report-note">Each stroke follows your measured pulse, appearing after its five-second signal check. Blue depth describes recording quality, not health.</p><div class="hr-hero"><span id="hr-value" class="hr-value">--</span><span class="hr-unit">bpm</span></div>      <div class="secondary-row">
         <div class="secondary-metric"><span class="sm-label">RMSSD</span><span id="rmssd-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
         <div class="secondary-metric"><span class="sm-label">SDNN</span><span id="sdnn-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
         <div class="secondary-metric"><span class="sm-label">Breathing</span><span id="resp-value" class="sm-value sm-value-small">--</span></div>
       </div>
       <p id="rmssd-floor" class="rmssd-floor" aria-live="polite"></p>
-      <canvas id="wave-canvas" class="wave-canvas" width="600" height="120" aria-hidden="true"></canvas>
-      <canvas id="tacho-canvas" class="tacho-canvas" width="600" height="60" aria-hidden="true"></canvas>
+<canvas id="wave-canvas" class="wave-canvas" width="600" height="120" aria-hidden="true"></canvas>      <canvas id="tacho-canvas" class="tacho-canvas" width="600" height="60" aria-hidden="true"></canvas></details>
     </div>
-    <button id="btn-stop" class="btn-secondary" type="button">Stop</button>
+    <div class="painting-actions"><button id="btn-pause" class="btn-secondary" type="button">Pause artwork</button><button id="btn-stop" class="btn-primary" type="button">Finish painting</button></div><p id="pause-note" class="disclaimer">3-minute recording · Not a medical device</p>
   </section>
 
   <!-- SUMMARY / HRV REPORT -->
@@ -101,15 +107,20 @@
       <!-- rendered entirely by renderReport() in app.js -->
     </div>
     <div class="summary-actions no-print">
-      <button id="btn-save-report" class="btn-secondary btn-bordered" type="button">Save report</button>
+      <button id="btn-save-report" class="btn-primary" type="button">Save report</button>
+      <button id="btn-save-manuscript" class="btn-secondary" type="button">Save manuscript</button>
       <button id="btn-save-log" class="btn-secondary btn-bordered" type="button">Save debug log</button>
-      <button id="btn-again" class="btn-primary" type="button">Measure again</button>
+      <button id="btn-again" class="btn-secondary" type="button">Measure again</button>
     </div>
   </section>
+
+  <footer class="project-attribution" aria-label="Project credits"><span>A project by <a href="https://chatppg.com">ChatPPG</a></span><span aria-hidden="true">·</span><span>Powered by <a href="https://chatppg.com/ppg-js">ppg-js</a></span></footer>
 
   <div id="video-container" class="video-container" hidden></div>
 </div>
 
+<svg class="paint-filter-defs" aria-hidden="true" width="0" height="0"><defs><filter id="paint-edge" x="-10%" y="-35%" width="120%" height="170%"><feTurbulence type="fractalNoise" baseFrequency=".035 .12" numOctaves="3" seed="8" result="grain"/><feDisplacementMap in="SourceGraphic" in2="grain" scale="8" xChannelSelector="R" yChannelSelector="G"/><feGaussianBlur stdDeviation=".45"/></filter></defs></svg>
+<canvas id="entry-pigment" aria-hidden="true" hidden></canvas>
 <script src="../demo/dist/ppg.global.js"></script>
 <script>window.PPGMonitor = PPG.PPGMonitor;</script>
 <script src="app.js"></script>

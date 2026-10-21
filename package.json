@@ -76,6 +76,9 @@
     "test": "npm run typecheck && node test/run-all.js",
     "test:unit": "node test/run-all.js",
     "test:e2e": "node test/e2e/fake-camera.mjs",
+    "test:app": "node test/e2e/pulse-on-paper.mjs",
+    "test:paint-performance": "node test/e2e/paint-performance.mjs",
+    "test:paint-fallbacks": "node test/e2e/paint-fallback-checks.mjs",
     "replay": "tsx tools/replay.js",
     "prepublishOnly": "npm run build && npm test"
   },
@@ -106,10 +109,11 @@
     "url": "git+https://github.com/sontakey/ppg-js.git"
   },
   "devDependencies": {
+    "playwright": "^1.56.1",
+    "three": "0.186.1",
     "tsup": "^8.5.1",
     "tsx": "^4.23.13",
-    "typescript": "^5.9.3",
-    "playwright": "^1.56.1"
+    "typescript": "^5.9.3"
   },
   "homepage": "https://github.com/sontakey/ppg-js#readme",
   "bugs": {
