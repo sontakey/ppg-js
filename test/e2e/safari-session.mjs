@@ -237,13 +237,16 @@ try {
   console.log('SESSION_START', new Date().toISOString());
   await page.locator('#btn-start').click();
   await page.waitForFunction(() => !document.getElementById('screen-summary').hidden, null, { timeout: timeoutSeconds * 1000 });
+  // The report is available immediately; wait for its decorative finish wash
+  // before screenshot/viewport changes so we test completion, not cancellation.
+  await page.waitForFunction(() => entryTransition === null);
   evidence.session = await page.evaluate(() => {
     const beats = monitor.getTachogram({ goodOnly: true, hrvOnly: true }).filter(point => point.valid);
     const report = PPG.hrv.analyzeHRV(beats);
     return { ...window.__sessionMetrics, samples: monitor.fedSamples, consumedSamples: monitor.i, acceptedSegments: manuscript.segments.length,
       measuringSeconds: elapsedMeasuringMs / 1000, countdown: document.getElementById('session-countdown').textContent,
       expected: { hr: report.timeDomain.meanHR.toFixed(0), rmssd: report.timeDomain.rmssd.toFixed(1), sdnn: report.timeDomain.sdnn.toFixed(1), beats: report.meta.nBeats },
-      gpu: window.__paintGpuStats, fonts: { dmSans: document.fonts.check('16px "DM Sans"'), waterBrush: document.fonts.check('72px "Water Brush"') } };
+      gpu: window.__paintGpuStats, brush: window.__pulseBrushStats, fonts: { dmSans: document.fonts.check('16px "DM Sans"'), waterBrush: document.fonts.check('72px "Water Brush"') } };
   });
   assert.ok(evidence.session.measuringSeconds >= 180, 'automatic countdown completed180s of MEASURING');
   assert.ok(evidence.session.measuringSeconds <= 181.1, 'display tick stops within one normal interval of180active seconds');
@@ -269,6 +272,7 @@ try {
   assert.equal(evidence.session.gpu.backend, 'webgpu');
   assert.equal(evidence.session.gpu.ready, true);
   assert.ok(evidence.session.gpu.surfaces.manuscript.frames > 0 && evidence.session.acceptedSegments > 0, 'actual accepted waveform was painted');
+  assert.ok(evidence.session.brush.history.some(item => item.kind === 'finish' && item.reason === 'complete'), 'automatic report brush reveal completes');
   assert.ok(evidence.session.fonts.dmSans && evidence.session.fonts.waterBrush);
   const values = await page.locator('.report-heroes strong').allTextContents();
   for (const [index, key] of ['hr', 'rmssd', 'sdnn'].entries()) assert.ok(values[index].includes(evidence.session.expected[key]), `report ${key} agrees with actual engine`);
