@@ -15,6 +15,28 @@ addEventListener('pageshow', event => { if (event.persisted) { paintPageActive =
 // Pulse on Paper stores only accepted, measured waveform segments in memory.
 // A window is painted after its quality decision, never speculatively.
 const manuscript = { pending: [], segments: [], lastWindow: -1, paused: false, frame: 0, raster: null, viewFirstRow: 0, scroll: null };
+// A continuous pigment journey follows capture time, never the row index or
+// an HRV value. OKLab keeps the cool mixtures luminous between pigment anchors.
+const pigmentAnchors = [[40,85,255],[118,84,184],[40,85,255],[28,138,142]].map(rgb => {
+  const [r,g,b] = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+  const l = Math.cbrt(.4122214708*r+.5363325363*g+.0514459929*b);
+  const m = Math.cbrt(.2119034982*r+.6806995451*g+.1073969566*b);
+  const s = Math.cbrt(.0883024619*r+.2817188376*g+.6299787005*b);
+  return [.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s,.0259040371*l+.7827717662*m-.808675766*s];
+});
+function pigmentAt(t, quality = 1) {
+  const phase = t / 1.65 + .28*Math.sin(t*.73) + .13*Math.sin(t*1.91);
+  const step = Math.floor(phase), fraction = phase-step, mix = fraction*fraction*(3-2*fraction);
+  const a = pigmentAnchors[((step%4)+4)%4], b = pigmentAnchors[(((step+1)%4)+4)%4];
+  const lab = a.map((v,i) => v+(b[i]-v)*mix);
+  lab[0] -= .055*Math.max(0,Math.min(1,quality));
+  lab[1] *= 1.28; lab[2] *= 1.28;
+  const [L,A,B] = lab;
+  const l = (L+.3963377774*A+.2158037573*B)**3;
+  const m = (L-.1055613458*A-.0638541728*B)**3;
+  const s = (L-.0894841775*A-1.291485548*B)**3;
+  return [4.0767416621*l-3.3077115913*m+.2309699292*s,-1.2684380046*l+2.6097574011*m-.3413193965*s,-.0041960863*l-.7034186147*m+1.707614701*s].map(v => Math.round(255*Math.max(0,Math.min(1,v <= .0031308 ? 12.92*v : 1.055*v**(1/2.4)-.055))));
+}
 function animateManuscript() {
   cancelAnimationFrame(manuscript.frame);
   let previous = performance.now();
@@ -140,7 +162,8 @@ function paintManuscriptRaster(canvas, compact = false, all = false, layer = nul
   const start = manuscript.segments[0].points[0].t;
   const end = manuscript.segments.at(-1).points.at(-1).t;
   const rowSeconds = 5, totalRows = Math.floor((end-start)/rowSeconds)+1;
-  const rows = layout?.rows ?? (all ? totalRows : compact ? 2 : 4);
+  const selectedRows = layout?.rowIndices;
+  const rows = selectedRows?.length ?? layout?.rows ?? (all ? totalRows : compact ? 2 : 4);
   const firstRow = layout?.firstRow ?? (all ? 0 : Math.max(0,totalRows-rows));
   const rowH = H/rows, margin = W*.025;
   const rand = n => { const x = Math.sin(n*127.1+311.7)*43758.5453; return x-Math.floor(x); };
@@ -148,28 +171,41 @@ function paintManuscriptRaster(canvas, compact = false, all = false, layer = nul
     if (layer === 'base' && segment === manuscript.segments.at(-1)) continue;
     if (layer === 'latest' && segment !== manuscript.segments.at(-1)) continue;
     const q = segment.score;
-    const color = [Math.round(29-24*q), Math.round(133-81*q), Math.round(248-51*q)];
     const visible = all || compact || layer ? segment.points.length : Math.ceil(segment.points.length * (segment.reveal ?? 1));
     const paths = [];
     let path = [], lastRow = -1;
     for (let i=0; i<visible; i++) {
       const p=segment.points[i], row=Math.floor((p.t-start)/rowSeconds);
-      if (row<firstRow || row>=firstRow+rows) continue;
+      const displayRow = selectedRows ? selectedRows.indexOf(row) : row-firstRow;
+      if (displayRow<0 || displayRow>=rows) continue;
       if (row !== lastRow || (i && p.t-segment.points[i-1].t>.15)) {
         if(path.length) paths.push(path);
         path=[]; lastRow=row;
       }
+      const color = pigmentAt(p.t,q);
       path.push({x:margin+((p.t-start)%rowSeconds)/rowSeconds*(W-2*margin),
-        y:(row-firstRow)*rowH+rowH*(.79-p.v*.57), seed:Math.floor(p.t*1000)});
+        y:displayRow*rowH+rowH*(.79-p.v*.57), t:p.t, color, depositColor:color.map(v=>Math.round(v*.84)).join(','),
+        wet:.30+.70*(.5+.5*Math.sin(p.t*8.1+Math.sin(p.t*1.7)))**2, seed:Math.floor(p.t*1000)});
     }
     if(path.length) paths.push(path);
     const width=Math.min(29,rowH*.16);
     for(const points of paths) {
       if(points.length<2) continue;
+      const gradient = ctx.createLinearGradient(points[0].x,0,points.at(-1).x,0);
+      const coreGradient = ctx.createLinearGradient(points[0].x,0,points.at(-1).x,0);
+      // Bounded stops are prepared only with a new immutable raster. Animation
+      // reveals cached color through the existing GPU/Canvas2D compositor.
+      const stride = Math.max(1,Math.floor(points.length/24));
+      points.forEach((p,i) => {
+        if(i%stride!==0 && i!==points.length-1) return;
+        const stop=(p.x-points[0].x)/(points.at(-1).x-points[0].x);
+        gradient.addColorStop(stop,`rgb(${p.color.join(',')})`);
+        coreGradient.addColorStop(stop,`rgb(${p.color.map(v=>Math.round(v*.78)).join(',')})`);
+      });
       // Irregular pigment ribbons follow the measured centerline exactly. Their
       // edges vary at paper-grain scale, without moving or inventing pulse peaks.
       // Filled washes avoid the parallel, round-capped bands of a marker stroke.
-      const ribbon = (upper, lower, alpha, tint, salt) => {
+      const ribbon = (upper, lower, alpha, salt) => {
         ctx.beginPath();
         points.forEach((p,i) => {
           const tooth = .56 + rand(p.seed + salt) * .72;
@@ -178,16 +214,16 @@ function paintManuscriptRaster(canvas, compact = false, all = false, layer = nul
         });
         for(let i=points.length-1;i>=0;i--) {
           const p=points[i], tooth=.60+rand(p.seed+salt+29)*.8;
-          ctx.lineTo(p.x,p.y+width*lower*tooth);
+          ctx.lineTo(p.x,p.y+width*lower*tooth*p.wet);
         }
-        ctx.closePath();ctx.fillStyle=`rgba(${tint.join(',')},${alpha})`;ctx.fill();
+        ctx.closePath();ctx.fillStyle=gradient;ctx.globalAlpha=alpha*(.72+q*.28);ctx.fill();ctx.globalAlpha=1;
       };
       const widthScale = .78 + q*.22;
-      ribbon(.44*widthScale,1.62,.09,[73,153,247],17);
-      ribbon(.37*widthScale,1.22,.16,[38,132,241],31);
-      ribbon(.31*widthScale,.84,.24,[18,109,237],47);
-      ribbon(.25*widthScale,.45,.30,color,63);
-      ribbon(.17*widthScale,.20,.34,color,79);
+      ribbon(.44*widthScale,1.62,.09,17);
+      ribbon(.37*widthScale,1.22,.16,31);
+      ribbon(.31*widthScale,.84,.24,47);
+      ribbon(.25*widthScale,.45,.30,63);
+      ribbon(.17*widthScale,.20,.34,79);
       // Small translucent deposits overlap into a broken, saturated wet edge.
       // Using the local tangent distributes pigment across the brush width.
       for(let i=1;i<points.length;i++) {
@@ -199,18 +235,18 @@ function paintManuscriptRaster(canvas, compact = false, all = false, layer = nul
           const x=prev.x+dx*along-dy/length*across;
           const y=prev.y+dy*along+dx/length*across;
           const r=1.1+rand(seed+149)*width*.14;
-          ctx.fillStyle=`rgba(${color.join(',')},${.09+rand(seed+151)*.19})`;
+          ctx.fillStyle=`rgba(${p.depositColor},${(.13+rand(seed+151)*.25)*p.wet})`;
           ctx.beginPath();ctx.ellipse(x,y,r,r*(.4+rand(seed+163)*.5),Math.atan2(dy,dx),0,Math.PI*2);ctx.fill();
         }
       }
       // Deterministic pigment flakes, cauliflower edges and tiny paper breaks.
       // Texture and depth remain fixed to capture quality, never to segment age.
       for(const p of points) {
-        for(let k=0;k<9;k++) {
+        for(let k=0;k<4+Math.floor(p.wet*5);k++) {
           const r=rand(p.seed+k*13), side=rand(p.seed+k*23+7);
-          const x=p.x+(r-.5)*11, y=p.y+(side-.22)*width*2.1;
-          const radius=.8+rand(p.seed+k+81)*4.8;
-          ctx.fillStyle=side>.55 ? `rgba(48,139,245,${.06+r*.13})` : `rgba(${color.join(',')},${.07+r*.19})`;
+          const x=p.x+(r-.5)*11, y=p.y+(side-.22)*width*2.1*p.wet;
+          const radius=.8+rand(p.seed+k+81)*5.2*p.wet;
+          ctx.fillStyle=`rgba(${p.color.join(',')},${side>.55 ? .06+r*.13 : .07+r*.19})`;
           ctx.beginPath();
           for(let v=0;v<5;v++) {
             const angle=v*Math.PI*2/5;
@@ -219,11 +255,15 @@ function paintManuscriptRaster(canvas, compact = false, all = false, layer = nul
           }
           ctx.closePath();ctx.fill();
         }
-        if(rand(p.seed+93)>.45) {
-          ctx.fillStyle=`rgba(253,253,254,${.16+rand(p.seed+111)*.35})`;
-          ctx.beginPath();ctx.ellipse(p.x,p.y+(rand(p.seed+112)-.1)*width*1.4,.5+rand(p.seed+113)*1.8,.5+rand(p.seed+114)*1.2,0,0,Math.PI*2);ctx.fill();
+        if(rand(p.seed+93)>.86) {
+          ctx.fillStyle=`rgba(253,251,247,${.35+rand(p.seed+111)*.35})`;
+          ctx.beginPath();ctx.ellipse(p.x,p.y+width*(.4+rand(p.seed+112)*.7)*p.wet,1+rand(p.seed+113)*3.2,1+rand(p.seed+114)*2.4,0,0,Math.PI*2);ctx.fill();
         }
       }
+      // A narrow wet core stays legible over the feathered deposits. Its
+      // centerline is the measured path, shared by live, report and exports.
+      ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
+      ctx.strokeStyle=coreGradient;ctx.lineWidth=width*.14;ctx.lineJoin='round';ctx.globalAlpha=.80+q*.20;ctx.stroke();ctx.globalAlpha=1;
     }
   }
 }
@@ -236,7 +276,7 @@ function saveManuscript() {
   const scale = Math.min(1, 8192 / (rows * 160));
   const canvas=document.createElement('canvas');canvas.width=Math.max(320,Math.round(1200*scale));canvas.height=Math.min(8192,rows*160);
   paintManuscript(canvas,false,true);
-  const ctx=canvas.getContext('2d');ctx.globalCompositeOperation='destination-over';ctx.fillStyle='#fdfdfe';ctx.fillRect(0,0,canvas.width,canvas.height);
+  const ctx=canvas.getContext('2d');ctx.globalCompositeOperation='destination-over';ctx.fillStyle='#fdfbf7';ctx.fillRect(0,0,canvas.width,canvas.height);
   try {
     canvas.toBlob(blob=>{if(!blob){alert('The manuscript could not be saved. Try saving the report instead.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='pulse-on-paper.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
   } catch { alert('The manuscript could not be saved. Try saving the report instead.'); }
@@ -355,6 +395,7 @@ const SESSION_SEC = 180; // fixed 3-minute measuring protocol
 const waveBuf = new Array(180).fill(0); // ~3s at ~60Hz, matches the demo's live strip
 const placementWaveBuf = new Array(180).fill(0); // raw trace shown on the Placement screen too
 let measuringStartedAt = null; // Date.now() ms when MEASURING was first reached this session
+let portraitStartedAt = null;
 let sessionTimerId = null;
 let lastMetrics = null; // last per-window metrics object (for the report's floor/respiration)
 
@@ -921,6 +962,7 @@ function drawReportTachogram(canvas, beats, flagged, correctedMs) {
 // Builds the full scrollable report from accepted beats ({t, ibiMs} or plain ms).
 // Exposed via renderSummary() in the real flow and window.__demoReport() for QA.
 let reportChartObserver;
+let portraitHost = null;
 let redrawReportCharts = () => {};
 window.addEventListener('beforeprint', () => redrawReportCharts());
 window.addEventListener('afterprint', () => redrawReportCharts());
@@ -928,6 +970,8 @@ if (document.fonts) document.fonts.ready.then(() => redrawReportCharts());
 
 function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const el = document.getElementById('report-content');
+  if (portraitHost) window.PulsePortrait?.clear(portraitHost);
+  portraitHost = null;
   el.innerHTML = '';
 
   const beats = acceptedBeats.map(b => (typeof b === 'number' ? { ibiMs: b } : b));
@@ -960,6 +1004,23 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   el.appendChild(header);
   paintManuscript(document.getElementById('report-manuscript'),true);
   document.getElementById('report-manuscript').hidden = !manuscript.segments.length;
+  if (manuscript.segments.length && window.PulsePortrait) {
+    portraitHost = document.createElement('div');
+    // Keep the artwork near the beginning while retaining the full scientific
+    // report and its measured values immediately below it.
+    header.querySelector('.report-date').after(portraitHost);
+    document.getElementById('report-manuscript').hidden = true;
+    void window.PulsePortrait.mount(portraitHost, {
+      segments: manuscript.segments,
+      start: manuscript.segments[0].points[0].t,
+      end: manuscript.segments.at(-1).points.at(-1).t,
+      durationSec: elapsedMeasuringMs / 1000,
+      startedAt: new Date(portraitStartedAt || Date.now()),
+      metrics: { hr: td.ok ? td.meanHR : null, rmssd: td.ok ? td.rmssd : null, sdnn: td.ok ? td.sdnn : null },
+      pigmentAt,
+      paintRows: (canvas, rowIndices) => paintManuscriptRaster(canvas, false, true, null, true, { rowIndices }),
+    });
+  }
 
   // ANS balance card
   const ansCard = document.createElement('div');
@@ -1130,6 +1191,7 @@ function startSession() {
   // Ready-screen UI disable, so this can never be invoked (e.g. via the
   // console or a future button) on desktop and grab getUserMedia there.
   if (!isPhone || sessionStarting) return;
+  if (portraitHost) { window.PulsePortrait?.clear(portraitHost); portraitHost = null; }
   sessionStarting = true;
   const generation = ++sessionGeneration;
   beginEntryTransition();
@@ -1139,6 +1201,7 @@ function startSession() {
   document.querySelector('.live-details').open = false;
   elapsedMeasuringMs = 0; lastMeasuringFrame = null;
   measuringStartedAt = null;
+  portraitStartedAt = null;
   document.getElementById('session-countdown').textContent = fmtCountdown(SESSION_SEC);
   if (sessionTimerId) clearInterval(sessionTimerId);
   sessionTimerId = setInterval(tickSessionCountdown, 1000);
@@ -1162,7 +1225,7 @@ function startSession() {
       lastMetrics = metrics;
       acceptPaintWindow(metrics);
       if (metrics.fingerState === 'MEASURING') {
-        if (measuringStartedAt == null) measuringStartedAt = Date.now();
+        if (measuringStartedAt == null) { measuringStartedAt = Date.now(); portraitStartedAt ??= measuringStartedAt; }
         if (screens.measuring.hidden) showScreen('measuring');
         updateMeasuringScreen(metrics);
       } else {
