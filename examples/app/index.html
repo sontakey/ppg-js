@@ -69,34 +69,49 @@
 </section>
 
   <!-- PLACEMENT -->
-  <section id="screen-placement" class="screen" data-screen="placement" hidden>
-    <div class="content">
-      <div class="camera-preview-wrap" aria-hidden="true">
-        <div id="camera-preview"></div>
-        <svg class="settle-ring-svg" viewBox="0 0 200 200"><circle cx="100" cy="100" r="96" fill="none" stroke="#4fd1c5" stroke-width="4" stroke-dasharray="603" id="settle-ring" stroke-linecap="round" transform="rotate(-90 100 100)"/></svg>
+  <section id="screen-placement" class="screen placement-screen" data-screen="placement" hidden>
+    <div class="content placement-content">
+      <h2 class="placement-title">Find your pulse<span class="blue-period">.</span></h2>
+      <figure class="placement-camera">
+        <div class="camera-preview-wrap">
+          <div id="camera-preview" class="camera-feed" aria-label="Live rear camera preview"></div>
+          <svg class="settle-ring-svg" viewBox="0 0 200 200" aria-hidden="true"><circle cx="100" cy="100" r="96" fill="none" stroke="#1458ff" stroke-width="3" stroke-dasharray="603" id="settle-ring" stroke-linecap="round" transform="rotate(-90 100 100)"/></svg>
+        </div>
+        <figcaption>Live camera · look for a fully red preview</figcaption>
+      </figure>
+      <div class="placement-coaching">
+        <p id="coach-line" class="coach-line" role="status" aria-live="polite">Cover the rear camera and flash gently.</p>
+        <p id="state-line" class="state-line"></p>
       </div>
-      <p id="coach-line" class="coach-line" role="status" aria-live="polite">Cover the lens and flash with your fingertip pad</p>
-      <p id="state-line" class="state-line" aria-hidden="true"></p>
-      <canvas id="placement-wave-canvas" class="wave-canvas wave-canvas-small" width="600" height="60" aria-hidden="true"></canvas>
+      <p class="placement-instructions">Rest your hand on a table. Cover the rear camera <em>and</em> flash with your fingertip, using a light touch. The whole preview should look red.</p>
+      <div class="placement-signal"><span>Finding a steady signal</span><canvas id="placement-wave-canvas" class="wave-canvas wave-canvas-small" width="600" height="80" aria-label="Live pulse signal from your camera"></canvas></div>
       <p id="torch-note" class="torch-note" hidden>This camera has no flash the page can control. Turn on your phone's flashlight yourself (or use a bright lamp), then cover the lens and the light with your fingertip.</p>
+      <p class="placement-reassurance">Breathe normally. Your three minutes begin when the signal settles.</p>
     </div>
-    <button id="btn-cancel-placement" class="btn-secondary btn-bordered" type="button">Cancel</button>
+    <div id="placement-actions" class="placement-actions"><button id="btn-cancel-placement" class="btn-secondary btn-bordered" type="button">Cancel</button></div>
   </section>
 
   <!-- MEASURING -->
-  <section id="screen-measuring" class="screen" data-screen="measuring" hidden>
+  <section id="screen-measuring" class="screen capture-screen" data-screen="measuring" hidden>
     <div class="content measuring-content">
-      <div class="capture-heading"><h2 class="capture-title">Pulse<br>on Paper</h2><p class="lead">Three minutes. A portrait of your pulse.</p></div>
+      <div class="capture-topline"><div class="capture-heading"><h2 class="capture-title">Pulse on Paper</h2></div><figure class="capture-camera"><div id="capture-camera-preview" class="camera-feed" aria-label="Live rear camera preview"></div><figcaption><span aria-hidden="true"></span>Live</figcaption></figure></div>
       <div class="painting-status"><div class="quality-pill" id="quality-pill"><span id="quality-dot" class="quality-dot"></span><div role="status" aria-live="polite" aria-atomic="true"><strong id="painting-state">Waiting for clear signal</strong><span id="quality-text">Settling</span></div></div><p id="session-countdown" class="session-countdown">3:00</p></div>
       <div class="manuscript-frame"><canvas id="manuscript" width="1000" height="840" aria-label="Your pulse manuscript. Deeper blue represents better measured recording quality."></canvas><p id="manuscript-empty">Your first brushstroke is on its way.<br><span>Hold still while we check the signal.</span></p></div>
-      <p class="pigment-note">Deeper blue reflects clearer signal.</p>
-      <details class="live-details"><summary>Live measurements</summary><p class="report-note">Each stroke follows your measured pulse, appearing after its five-second signal check. Blue depth describes recording quality, not health.</p><div class="hr-hero"><span id="hr-value" class="hr-value">--</span><span class="hr-unit">bpm</span></div>      <div class="secondary-row">
-        <div class="secondary-metric"><span class="sm-label">RMSSD</span><span id="rmssd-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
-        <div class="secondary-metric"><span class="sm-label">SDNN</span><span id="sdnn-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
-        <div class="secondary-metric"><span class="sm-label">Breathing</span><span id="resp-value" class="sm-value sm-value-small">--</span></div>
+      <div class="live-metrics" aria-label="Live measurements">
+        <div class="live-metric"><span class="metric-label">Pulse</span><p><span id="hr-value" class="metric-number">--</span><span class="metric-unit">bpm</span></p></div>
+        <div class="live-metric"><span class="metric-label">RMSSD</span><p><span id="rmssd-value" class="metric-number">--</span><span class="metric-unit">ms</span></p></div>
+        <div class="live-metric"><span class="metric-label">SDNN</span><p><span id="sdnn-value" class="metric-number">--</span><span class="metric-unit">ms</span></p></div>
       </div>
-      <p id="rmssd-floor" class="rmssd-floor" aria-live="polite"></p>
-<canvas id="wave-canvas" class="wave-canvas" width="600" height="120" aria-hidden="true"></canvas>      <canvas id="tacho-canvas" class="tacho-canvas" width="600" height="60" aria-hidden="true"></canvas></details>
+      <details class="live-details"><summary>More about your signal</summary>
+        <div class="live-details-body">
+          <p class="live-breathing"><span>Estimated breathing</span><strong id="resp-value">--</strong></p>
+          <p id="rmssd-floor" class="rmssd-floor" aria-live="polite"></p>
+          <p class="report-note">Each stroke follows your measured pulse after its five-second signal check. Deeper blue means clearer recording quality, not better health.</p>
+          <div class="detail-wave"><span>Pulse waveform</span><canvas id="wave-canvas" class="wave-canvas" width="600" height="120" aria-label="Live pulse waveform"></canvas></div>
+          <div class="detail-wave"><span>Beat timing</span><canvas id="tacho-canvas" class="tacho-canvas" width="600" height="60" aria-label="Live beat intervals"></canvas></div>
+          <div id="capture-detail-tools" class="capture-detail-tools"><span>Session tools</span></div>
+        </div>
+      </details>
     </div>
     <div class="painting-actions"><button id="btn-pause" class="btn-secondary" type="button">Pause artwork</button><button id="btn-stop" class="btn-primary" type="button">Finish painting</button></div><p id="pause-note" class="disclaimer">3-minute recording · Not a medical device</p>
   </section>

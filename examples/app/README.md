@@ -120,6 +120,7 @@ loopback preview alone does not test its camera, flash or browser permissions.
 ```sh
 rtk npm test
 rtk npm run test:app
+rtk npm run test:safari-session
 rtk npm run test:paint-performance
 rtk npm run test:paint-fallbacks
 ```
@@ -132,6 +133,30 @@ integration checks, not physical-device or physiological-accuracy validation.
 The graph checks measure actual canvas glyph bounds and overlaps, including large
 power values, constant RR data and minute rollover. Entry checks cover normal and
 reduced motion, duplicate taps, a canceled late camera grant, and permission errors.
+
+`test:safari-session` runs a complete 180-second active measurement in Playwright
+WebKit with iPhone emulation and real-time public-recording replay. It injects a
+camera-frame interruption, main-thread stall and hidden/visible interval, then
+checks recovery, automatic completion, paint cadence, report values and exports.
+Use `PPG_SAFARI_URL` for the deployed app and `PPG_SAFARI_ARTIFACTS` for its evidence
+directory. The recording's final minute is repeated if the session needs more
+input; the evidence records exactly how much was used. Camera I/O is mocked.
+
+The protocol clock counts adjacent processing-frame timestamps only while the
+page is visible. A source or callback-delivery gap over 250 ms earns no time;
+recording resumes from the next fresh frame without catching up missing time.
+The report timing plot retains accepted-beat timestamps and leaves gaps in its
+line across missing intervals. Stopping or destroying a monitor cancels pending
+camera recovery, including streams returned after cancellation.
+
+Capture keeps pulse/RMSSD/SDNN visible below the manuscript, with additional
+signal details in an expandable section. A single live video moves from the
+placement guide to the small upper-right camera preview. Controls remain in
+normal flow with safe-area padding and 44px touch targets. New manuscript rows
+ease into view over 900 ms using at most five cached rows for four visible rows;
+only GPU uniforms or Canvas2D crop coordinates change during scrolling.
+Artwork pause and background suspension preserve animation progress, and reduced
+motion follows each new row immediately.
 
 `test:paint-performance` records entry and live-reveal frame cadence alongside
 real-time engine replay, using native WebGPU and forced WebGL2 at normal and 4× CPU

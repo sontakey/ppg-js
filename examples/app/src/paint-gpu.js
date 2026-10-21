@@ -79,9 +79,11 @@ export async function createPaintGPU() {
   blank.getContext('2d').clearRect(0,0,1,1);
   let base=new CanvasTexture(blank), ink=new CanvasTexture(blank), cached=null;
   base.colorSpace=ink.colorSpace=SRGBColorSpace;
-  const baseNode=texture(base),inkNode=texture(ink), row=uniform(-1), boundary=uniform(0);
+  const row=uniform(-1), boundary=uniform(0), scrollRows=uniform(0), textureRows=uniform(4);
+  const y=float(1).sub(uv().y).mul(4).add(scrollRows);
+  const paperUV=vec2(uv().x,float(1).sub(y.div(textureRows)));
+  const baseNode=texture(base,paperUV),inkNode=texture(ink,paperUV);
   const liveMaterial=new MeshBasicNodeMaterial({transparent:true,depthTest:false,depthWrite:false});
-  const y=float(1).sub(uv().y).mul(4);
   const mask=float(1).sub(step(row.add(1),y)).mul(max(float(1).sub(step(row,y)),float(1).sub(step(boundary,uv().x))));
   liveMaterial.fragmentNode=mix(baseNode,inkNode,mask);
   let live;
@@ -95,10 +97,10 @@ export async function createPaintGPU() {
     beginEntry(w,h,x,y,halfWidth){if(!entry.alive)return false;entry.resize(w,h);size.value.set(w,h);origin.value.set(x,y);half.value=halfWidth;entry.canvas.hidden=false;return true;},
     entry(reachValue,featherValue,alpha){reach.value=reachValue;feather.value=featherValue;opacity.value=alpha;return entry.draw();},
     endEntry(){entry.canvas.hidden=true;},
-    manuscript(raster,rowValue,x){
+    manuscript(raster,rowValue,x,offsetRows=0){
       if(!live.alive){source.style.visibility='';return false;}
       if(cached!==raster){cached=raster;base.dispose();ink.dispose();base=new CanvasTexture(raster.base);ink=new CanvasTexture(raster.ink);base.colorSpace=ink.colorSpace=SRGBColorSpace;baseNode.value=base;inkNode.value=ink;}
-      row.value=rowValue;boundary.value=x;
+      row.value=rowValue;boundary.value=x;scrollRows.value=offsetRows;textureRows.value=raster.rows||4;
       const ok=live.draw();live.canvas.hidden=!ok;source.style.visibility=ok?'hidden':'';return ok;
     },
     clear(){live.canvas.hidden=true;source.style.visibility='';cached=null;},
