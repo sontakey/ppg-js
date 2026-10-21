@@ -9,6 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { webkit, devices } from 'playwright';
 import { instrumentReportGraphText } from './report-graph-checks.mjs';
+import { checkArtwork } from './artwork-checks.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const out = path.resolve(root, process.env.PPG_SAFARI_ARTIFACTS || '.dream-loop/safari-session-check');
@@ -294,6 +295,7 @@ try {
     }
     await page.locator(`#${graph.id}`).locator('..').screenshot({ path: `${out}/${graph.id}-320.png` });
   }
+  evidence.artwork = await checkArtwork(page, out);
   const [download] = await Promise.all([page.waitForEvent('download'), page.locator('#btn-save-manuscript').click()]);
   assert.equal(await download.failure(), null);
   await download.saveAs(`${out}/manuscript.png`);

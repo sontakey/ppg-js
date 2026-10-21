@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
 import { instrumentReportGraphText, checkReportGraphs } from './report-graph-checks.mjs';
 import { checkCaptureEntry } from './capture-entry-checks.mjs';
+import { checkArtwork } from './artwork-checks.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const log = JSON.parse(readFileSync(process.env.PPG_SESSION_LOG || path.join(root, 'test/fixtures/iphone-200s.json'), 'utf8'));
@@ -157,6 +158,7 @@ try {
     await assertViewportFits(page, `report ${width}px`);
   }
   await page.setViewportSize({ width: 390, height: 844 });
+  await checkArtwork(page);
   for (const label of ['Frequency analysis', 'Nonlinear analysis', 'Beat timing & methods']) {
     await page.getByText(label, { exact: true }).click();
   }
