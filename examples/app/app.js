@@ -629,7 +629,7 @@ function setupHiDPICanvas(canvas) {
   return { ctx, W: cssW, H: cssH };
 }
 
-const AXIS_FONT = '13px "DM Sans", sans-serif';
+const AXIS_FONT = '15px "DM Sans", sans-serif';
 const AXIS_COLOR = '#52627c';
 const GRID_COLOR = '#dce3ee';
 
@@ -934,7 +934,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const acceptedIbiMs = beats.map(b => b.ibiMs);
   if (!beats.length) {
     el.innerHTML = `
-      <p class="eyebrow">PULSE ON PAPER</p><h1 class="report-title">Your pulse<br>report<span class="blue-period">.</span></h1><h2>HRV Spot Check</h2>
+      <h1 class="report-title">Your pulse report<span class="blue-period">.</span></h1><p class="eyebrow">PULSE ON PAPER</p><h2>HRV Spot Check</h2>
       <p class="insufficient">No good-quality windows were captured this session — try again with steadier finger placement.</p>
     `;
     return;
@@ -950,7 +950,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const header = document.createElement('div');
   header.className = 'report-card report-header';
   header.innerHTML = `
-    <p class="eyebrow">PULSE ON PAPER</p><h1 class="report-title">Your pulse<br>report<span class="blue-period">.</span></h1>
+    <h1 class="report-title">Your pulse report<span class="blue-period">.</span></h1><p class="eyebrow">PULSE ON PAPER</p>
     <h2>HRV Spot Check</h2><p class="report-date">${new Date().toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})} · ${(durationSec/60).toFixed(1)} min analyzed</p>
     <canvas id="report-manuscript" width="1000" height="260" aria-label="A detail of your captured pulse manuscript"></canvas>
     <p class="report-subtitle">Camera-derived pulse variability</p>
