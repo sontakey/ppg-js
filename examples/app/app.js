@@ -978,7 +978,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const acceptedIbiMs = beats.map(b => b.ibiMs);
   if (!beats.length) {
     el.innerHTML = `
-      <h1 class="report-title">Your pulse report<span class="blue-period">.</span></h1><p class="eyebrow">PULSE ON PAPER</p><h2>HRV Spot Check</h2>
+      <h1 class="report-title">Your pulse report<span class="blue-period">.</span></h1>
       <p class="insufficient">No good-quality windows were captured this session — try again with steadier finger placement.</p>
     `;
     return;
@@ -994,8 +994,8 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const header = document.createElement('div');
   header.className = 'report-card report-header';
   header.innerHTML = `
-    <h1 class="report-title">Your pulse report<span class="blue-period">.</span></h1><p class="eyebrow">PULSE ON PAPER</p>
-    <h2>HRV Spot Check</h2><p class="report-date">${new Date().toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})} · ${(durationSec/60).toFixed(1)} min analyzed</p>
+    <h1 class="report-title">Your pulse report<span class="blue-period">.</span></h1>
+    <p class="report-date">${new Date().toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})} · ${(durationSec/60).toFixed(1)} min analyzed</p>
     <canvas id="report-manuscript" width="1000" height="260" aria-label="A detail of your captured pulse manuscript"></canvas>
     <p class="report-subtitle">Camera-derived pulse variability</p>
     <div class="report-heroes"><div><span>Mean pulse</span><strong>${td.ok?fmt(td.meanHR,0):'--'} <small>bpm</small></strong></div><div><span>RMSSD</span><strong>${td.ok?fmt(td.rmssd,1):'--'} <small>ms</small></strong></div><div><span>SDNN</span><strong>${td.ok?fmt(td.sdnn,1):'--'} <small>ms</small></strong></div></div>
