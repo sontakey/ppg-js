@@ -17,6 +17,9 @@ const MIN_CHANNEL_DC = 40;
 // Frames skipped right after the camera starts (exposure ramp).
 const WARMUP_FRAMES = 30;
 
+// Internal cancellation is lifecycle cleanup, not a user-facing camera error.
+class CameraOperationCancelled extends Error {}
+
 type VideoFrameMetadata = {
   expectedDisplayTime?: number;
   captureTime?: number;
@@ -76,6 +79,8 @@ export class PPGMonitor {
   private _torchCapable = false;
   private _chosenDeviceId: string | null = null;
   private _resuming = false;
+  private _lifecycleGeneration = 0;
+  private _pendingCameraStreams = new Set<MediaStream>();
   private _lastRedMean: number | null = null;
   private _preHiddenRedMean: number | null = null;
   private _trackMutedAt: number | null = null;
@@ -116,7 +121,9 @@ export class PPGMonitor {
 
   /** Request the camera and begin measuring. Rejects with a PPGError. */
   async start(): Promise<void> {
-    if (this.running) this.stop();
+    if (this.running || this.stream || this._pendingCameraStreams.size) this.stop();
+    const generation = ++this._lifecycleGeneration;
+    this._resuming = false;
     try {
       this._preflight();
       // Fresh session state (docs/audit finding B10).
@@ -141,13 +148,19 @@ export class PPGMonitor {
       this.video.muted = true;
       this.video.autoplay = true;
 
-      const opened = await this._openCamera();
+      const opened = await this._openCamera(undefined, generation);
+      if (generation !== this._lifecycleGeneration) {
+        opened.stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       this._adoptCamera(opened);
       this._setupRoi();
 
       const usesRVFC = typeof this.video.requestVideoFrameCallback === 'function';
       const wakeLock = this.options.wakeLock ? await this._acquireWakeLock() : false;
+      if (generation !== this._lifecycleGeneration) return;
       const motion = this.options.motion ? await this._startMotion() : false;
+      if (generation !== this._lifecycleGeneration) return;
 
       this.recorder.start({
         userAgent: this.options.debug.includeUserAgent && typeof navigator !== 'undefined' ? navigator.userAgent : null,
@@ -182,6 +195,7 @@ export class PPGMonitor {
         this.options.onReady(info);
       }
     } catch (error) {
+      if (generation !== this._lifecycleGeneration || error instanceof CameraOperationCancelled) return;
       const err = PPGError.from(error);
       this.running = false;
       if (this.options.onError) this.options.onError(err);
@@ -261,6 +275,8 @@ export class PPGMonitor {
   }
 
   stop(): void {
+    this._lifecycleGeneration++;
+    this._resuming = false;
     this.running = false;
     if (this.animationId != null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(this.animationId);
     this.animationId = null;
@@ -273,6 +289,11 @@ export class PPGMonitor {
     if (this._onPageHide) { window.removeEventListener('pagehide', this._onPageHide); this._onPageHide = null; }
     this._stopMotion();
     void this._releaseWakeLock();
+
+    // A stream may already exist while torch constraints or video metadata are
+    // still pending, before _openCamera() returns it for adoption.
+    for (const stream of this._pendingCameraStreams) stream.getTracks().forEach(track => track.stop());
+    this._pendingCameraStreams.clear();
 
     if (this.stream) {
       this.stream.getTracks().forEach(track => track.stop());
@@ -296,15 +317,18 @@ export class PPGMonitor {
 
   // -------------------------------------------------------------- camera
 
-  private async _getUserMediaWithRetry(constraints: MediaStreamConstraints): Promise<MediaStream> {
+  private async _getUserMediaWithRetry(constraints: MediaStreamConstraints, generation = this._lifecycleGeneration): Promise<MediaStream> {
+    if (generation !== this._lifecycleGeneration) throw new CameraOperationCancelled();
     try {
       return await navigator.mediaDevices.getUserMedia(constraints);
     } catch (err) {
+      if (generation !== this._lifecycleGeneration) throw new CameraOperationCancelled();
       const name = err && typeof err === 'object' && 'name' in err ? String((err as { name: unknown }).name) : '';
       // Android Chrome can report the camera busy for a moment right after
       // a previous stream was stopped; one short retry clears it.
       if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
         await new Promise(r => setTimeout(r, 300));
+        if (generation !== this._lifecycleGeneration) throw new CameraOperationCancelled();
         return navigator.mediaDevices.getUserMedia(constraints);
       }
       throw err;
@@ -322,95 +346,132 @@ export class PPGMonitor {
    * as its own constraint set. Exposure/white-balance/focus locks are
    * applied later, once the finger has settled (see _setLocks).
    */
-  private async _openCamera(deviceId?: string): Promise<OpenedCamera> {
-    let stream: MediaStream;
-    let chosenDeviceId: string | null = deviceId || null;
-    let chosenLabel: string | null = null;
-    let chosenBy = deviceId ? 'resume-same-device' : 'facingMode-fallback';
-    let videoInputsMeta: OpenedCamera['videoInputsMeta'] = [];
-
-    if (deviceId) {
-      stream = await this._getUserMediaWithRetry({ audio: false, video: { deviceId: { exact: deviceId }, ...this._baseVideoConstraints() } });
-    } else {
-      stream = await this._getUserMediaWithRetry({ audio: false, video: { ...this._baseVideoConstraints(), facingMode: this.options.camera.facingMode } });
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        videoInputsMeta = devices.filter(d => d.kind === 'videoinput').map(d => ({ deviceId: d.deviceId.slice(0, 8), label: d.label, kind: d.kind }));
-        const picked = pickBackCamera(devices);
-        if (picked) {
-          chosenDeviceId = picked.deviceId;
-          chosenLabel = picked.label;
-          chosenBy = 'label-match';
-          const initialTrack = stream.getVideoTracks()[0];
-          if (initialTrack.getSettings && initialTrack.getSettings().deviceId !== picked.deviceId) {
-            stream.getTracks().forEach(t => t.stop());
-            stream = await this._getUserMediaWithRetry({ audio: false, video: { deviceId: { exact: picked.deviceId }, ...this._baseVideoConstraints() } });
-          }
-        }
-      } catch (err) {
-        console.warn('Camera lens selection skipped:', err);
-      }
-    }
-
-    const track = stream.getVideoTracks()[0];
-    const capabilities: Record<string, unknown> = (track.getCapabilities ? (track.getCapabilities() as Record<string, unknown>) : {}) || {};
-    const applied: Record<string, unknown> = {};
-    const constraintErrors: Record<string, string> = {};
-    let torchSupported = false;
-    let torchState = 'unknown';
-
-    // Each capability goes in its own `advanced` set: the spec applies a
-    // set only if ALL its members can be satisfied, so bundling torch with
-    // focus/exposure lets one unsupported combination silently drop the
-    // torch (docs/audit finding B1).
-    if (capabilities.torch && this.options.camera.torch) {
-      torchSupported = true;
-      try {
-        await track.applyConstraints({ advanced: [{ torch: true } as MediaTrackConstraintSet] });
-        applied.torch = true;
-      } catch (err) {
-        constraintErrors.torch = String((err as Error)?.message || err);
-      }
-    } else {
-      torchState = 'unsupported';
-    }
-    if (this.options.camera.lockExposure === 'start') {
-      Object.assign(applied, await this._setLocks(track, capabilities, true, constraintErrors));
-      this._exposureLocked = true;
-    }
-    const zoom = this.options.camera.zoom;
-    const zoomCap = capabilities.zoom as { min?: number; max?: number } | undefined;
-    if (zoom && zoomCap && typeof zoomCap.max === 'number' && zoomCap.max >= zoom) {
-      try {
-        await track.applyConstraints({ advanced: [{ zoom } as MediaTrackConstraintSet] });
-        applied.zoom = zoom;
-      } catch (err) {
-        constraintErrors.zoom = String((err as Error)?.message || err);
-      }
-    }
-
-    if (!this.video) throw new PPGError('unknown', 'video element missing');
+  private async _openCamera(deviceId?: string, generation = this._lifecycleGeneration): Promise<OpenedCamera> {
+    let stream: MediaStream | undefined;
     const video = this.video;
-    video.srcObject = stream;
-    await new Promise<void>((resolve) => {
-      let done = false;
-      // Some WebViews never fire loadedmetadata for a live stream.
-      const timer = setTimeout(() => finish(), 3000);
-      const finish = () => { if (done) return; done = true; clearTimeout(timer); resolve(); };
-      video.onloadedmetadata = () => {
-        const p = video.play();
-        if (p && typeof p.catch === 'function') p.catch((e: unknown) => this.recorder.pushEvent({ t: nowMs(), type: 'video_play_rejected', error: String(e) }));
-        finish();
-      };
-    });
+    const ensureCurrent = () => {
+      if (generation !== this._lifecycleGeneration || this.video !== video) throw new CameraOperationCancelled();
+    };
+    const acquire = async (constraints: MediaStreamConstraints) => {
+      const acquired = await this._getUserMediaWithRetry(constraints, generation);
+      stream = acquired;
+      this._pendingCameraStreams.add(acquired);
+      ensureCurrent();
+      return acquired;
+    };
+    try {
+      ensureCurrent();
+      let chosenDeviceId: string | null = deviceId || null;
+      let chosenLabel: string | null = null;
+      let chosenBy = deviceId ? 'resume-same-device' : 'facingMode-fallback';
+      let videoInputsMeta: OpenedCamera['videoInputsMeta'] = [];
 
-    if (torchSupported) {
-      const after = track.getSettings ? (track.getSettings() as Record<string, unknown>) : {};
-      torchState = after.torch === true ? 'on' : 'off';
-      applied.torchSetting = after.torch;
+      if (deviceId) {
+        stream = await acquire({ audio: false, video: { deviceId: { exact: deviceId }, ...this._baseVideoConstraints() } });
+      } else {
+        stream = await acquire({ audio: false, video: { ...this._baseVideoConstraints(), facingMode: this.options.camera.facingMode } });
+        try {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          ensureCurrent();
+          videoInputsMeta = devices.filter(d => d.kind === 'videoinput').map(d => ({ deviceId: d.deviceId.slice(0, 8), label: d.label, kind: d.kind }));
+          const picked = pickBackCamera(devices);
+          if (picked) {
+            chosenDeviceId = picked.deviceId;
+            chosenLabel = picked.label;
+            chosenBy = 'label-match';
+            const initialTrack = stream.getVideoTracks()[0];
+            if (initialTrack.getSettings && initialTrack.getSettings().deviceId !== picked.deviceId) {
+              stream.getTracks().forEach(t => t.stop());
+              this._pendingCameraStreams.delete(stream);
+              stream = await acquire({ audio: false, video: { deviceId: { exact: picked.deviceId }, ...this._baseVideoConstraints() } });
+            }
+          }
+        } catch (err) {
+          ensureCurrent();
+          console.warn('Camera lens selection skipped:', err);
+        }
+      }
+
+      const track = stream.getVideoTracks()[0];
+      const capabilities: Record<string, unknown> = (track.getCapabilities ? (track.getCapabilities() as Record<string, unknown>) : {}) || {};
+      const applied: Record<string, unknown> = {};
+      const constraintErrors: Record<string, string> = {};
+      let torchSupported = false;
+      let torchState = 'unknown';
+
+      // Each capability goes in its own `advanced` set: the spec applies a
+      // set only if ALL its members can be satisfied, so bundling torch with
+      // focus/exposure lets one unsupported combination silently drop the
+      // torch (docs/audit finding B1).
+      if (capabilities.torch && this.options.camera.torch) {
+        torchSupported = true;
+        try {
+          await track.applyConstraints({ advanced: [{ torch: true } as MediaTrackConstraintSet] });
+          ensureCurrent();
+          applied.torch = true;
+        } catch (err) {
+          ensureCurrent();
+          constraintErrors.torch = String((err as Error)?.message || err);
+        }
+      } else {
+        torchState = 'unsupported';
+      }
+      if (this.options.camera.lockExposure === 'start') {
+        Object.assign(applied, await this._setLocks(track, capabilities, true, constraintErrors));
+        ensureCurrent();
+        this._exposureLocked = true;
+      }
+      const zoom = this.options.camera.zoom;
+      const zoomCap = capabilities.zoom as { min?: number; max?: number } | undefined;
+      if (zoom && zoomCap && typeof zoomCap.max === 'number' && zoomCap.max >= zoom) {
+        try {
+          await track.applyConstraints({ advanced: [{ zoom } as MediaTrackConstraintSet] });
+          ensureCurrent();
+          applied.zoom = zoom;
+        } catch (err) {
+          ensureCurrent();
+          constraintErrors.zoom = String((err as Error)?.message || err);
+        }
+      }
+
+      ensureCurrent();
+      if (!video) throw new PPGError('unknown', 'video element missing');
+      video.srcObject = stream;
+      await new Promise<void>((resolve) => {
+        let done = false;
+        // Some WebViews never fire loadedmetadata for a live stream.
+        const timer = setTimeout(() => finish(), 3000);
+        const finish = () => { if (done) return; done = true; clearTimeout(timer); resolve(); };
+        video.onloadedmetadata = () => {
+          if (generation !== this._lifecycleGeneration) { finish(); return; }
+          const p = video.play();
+          if (p && typeof p.catch === 'function') p.catch((e: unknown) => {
+            if (generation === this._lifecycleGeneration) this.recorder.pushEvent({ t: nowMs(), type: 'video_play_rejected', error: String(e) });
+          });
+          finish();
+        };
+      });
+      ensureCurrent();
+
+      if (torchSupported) {
+        const after = track.getSettings ? (track.getSettings() as Record<string, unknown>) : {};
+        torchState = after.torch === true ? 'on' : 'off';
+        applied.torchSetting = after.torch;
+      }
+
+      return { stream, track, chosenDeviceId, chosenLabel, chosenBy, videoInputsMeta, capabilities, applied, constraintErrors, torchSupported, torchState };
+    } catch (error) {
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        if (video?.srcObject === stream) {
+          try { video.pause(); } catch { /* no-op */ }
+          video.srcObject = null;
+        }
+      }
+      throw error;
+    } finally {
+      if (stream) this._pendingCameraStreams.delete(stream);
     }
-
-    return { stream, track, chosenDeviceId, chosenLabel, chosenBy, videoInputsMeta, capabilities, applied, constraintErrors, torchSupported, torchState };
   }
 
   /**
@@ -458,15 +519,19 @@ export class PPGMonitor {
 
   private _bindTrackHandlers(track: MediaStreamTrack): void {
     this._trackMutedAt = null;
+    const isCurrentTrack = () => this.running && this.stream?.getVideoTracks()[0] === track;
     track.onended = () => {
+      if (!isCurrentTrack()) return;
       this.recorder.pushEvent({ t: nowMs(), type: 'track_ended' });
       void this._resumeCamera('track_onended');
     };
     track.onmute = () => {
+      if (!isCurrentTrack()) return;
       this._trackMutedAt = nowMs();
       this.recorder.pushEvent({ t: nowMs(), type: 'track_muted' });
     };
     track.onunmute = () => {
+      if (!isCurrentTrack()) return;
       const mutedMs = this._trackMutedAt != null ? nowMs() - this._trackMutedAt : 0;
       this._trackMutedAt = null;
       if (mutedMs > 1500) {
@@ -514,7 +579,8 @@ export class PPGMonitor {
 
   /** Re-acquire the same camera after an interruption ended or muted the track. */
   async _resumeCamera(trigger: string): Promise<void> {
-    if (this._resuming || !this.stream) return;
+    if (this._resuming || !this.running || !this.stream) return;
+    const generation = this._lifecycleGeneration;
     this._resuming = true;
     this.recorder.pushEvent({ t: nowMs(), type: 'camera_resuming', trigger });
     this.currentMetrics.guidanceMessage = 'Resuming camera';
@@ -523,8 +589,13 @@ export class PPGMonitor {
     let ok = false;
     let error: string | null = null;
     try {
+      if (generation !== this._lifecycleGeneration) return;
       this.stream.getTracks().forEach(t => t.stop());
-      const opened = await this._openCamera(this._chosenDeviceId || undefined);
+      const opened = await this._openCamera(this._chosenDeviceId || undefined, generation);
+      if (generation !== this._lifecycleGeneration) {
+        opened.stream.getTracks().forEach(track => track.stop());
+        return;
+      }
       this._adoptCamera(opened);
       this._bindTrackHandlers(opened.track);
       this._setupRoi();
@@ -539,12 +610,15 @@ export class PPGMonitor {
       if (this.running && this.video && !this.video.requestVideoFrameCallback && this.animationId == null) this._scheduleNextFrame();
       ok = true;
     } catch (err) {
+      if (generation !== this._lifecycleGeneration || err instanceof CameraOperationCancelled) return;
       error = String((err as Error)?.message || err);
       console.error('Camera resume failed:', err);
       if (this.options.onError) this.options.onError(PPGError.from(err));
     } finally {
-      this._resuming = false;
-      this.recorder.pushEvent({ t: nowMs(), type: 'camera_resumed', trigger, ok, ...(error ? { error } : {}) });
+      if (generation === this._lifecycleGeneration) {
+        this._resuming = false;
+        this.recorder.pushEvent({ t: nowMs(), type: 'camera_resumed', trigger, ok, ...(error ? { error } : {}) });
+      }
     }
   }
 
@@ -572,35 +646,41 @@ export class PPGMonitor {
   // ------------------------------------------------------- wake lock / motion
 
   private async _acquireWakeLock(): Promise<boolean> {
+    const generation = this._lifecycleGeneration;
     const nav = typeof navigator !== 'undefined' ? (navigator as Navigator & { wakeLock?: { request: (t: 'screen') => Promise<WakeLockSentinelLike> } }) : null;
     if (!nav || !nav.wakeLock) return false;
     try {
-      this.wakeLockSentinel = await nav.wakeLock.request('screen');
+      const sentinel = await nav.wakeLock.request('screen');
+      if (generation !== this._lifecycleGeneration) { await sentinel.release(); return false; }
+      this.wakeLockSentinel = sentinel;
       this.wakeLockActive = true;
-      this.wakeLockSentinel.addEventListener?.('release', () => { this.wakeLockActive = false; });
+      sentinel.addEventListener?.('release', () => { if (this.wakeLockSentinel === sentinel) this.wakeLockActive = false; });
       this.recorder.pushEvent({ t: nowMs(), type: 'wake_lock', ok: true });
       return true;
     } catch (err) {
+      if (generation !== this._lifecycleGeneration) return false;
       this.recorder.pushEvent({ t: nowMs(), type: 'wake_lock', ok: false, error: String((err as Error)?.message || err) });
       return false;
     }
   }
 
   private async _releaseWakeLock(): Promise<void> {
-    if (this.wakeLockSentinel) {
-      try { await this.wakeLockSentinel.release(); } catch { /* no-op */ }
-    }
+    const sentinel = this.wakeLockSentinel;
     this.wakeLockSentinel = null;
     this.wakeLockActive = false;
+    if (sentinel) {
+      try { await sentinel.release(); } catch { /* no-op */ }
+    }
   }
 
   private async _startMotion(): Promise<boolean> {
+    const generation = this._lifecycleGeneration;
     if (typeof window === 'undefined' || typeof DeviceMotionEvent === 'undefined') return false;
     const DME = DeviceMotionEvent as unknown as { requestPermission?: () => Promise<'granted' | 'denied'> };
     try {
       if (typeof DME.requestPermission === 'function') {
         const res = await DME.requestPermission();
-        if (res !== 'granted') return false;
+        if (res !== 'granted' || generation !== this._lifecycleGeneration) return false;
       }
     } catch { return false; }
     this._onMotion = (e: DeviceMotionEvent) => {

@@ -14,25 +14,29 @@ addEventListener('pageshow', event => { if (event.persisted) { paintPageActive =
 
 // Pulse on Paper stores only accepted, measured waveform segments in memory.
 // A window is painted after its quality decision, never speculatively.
-const manuscript = { pending: [], segments: [], lastWindow: -1, paused: false, frame: 0, raster: null };
+const manuscript = { pending: [], segments: [], lastWindow: -1, paused: false, frame: 0, raster: null, viewFirstRow: 0, scroll: null };
 function animateManuscript() {
   cancelAnimationFrame(manuscript.frame);
   let previous = performance.now();
   const draw = now => {
     if (manuscript.paused || document.getElementById('screen-measuring').hidden) return;
-    if (document.hidden) { manuscript.frame = requestAnimationFrame(draw); return; }
+    if (document.hidden) { previous = now; manuscript.frame = requestAnimationFrame(draw); return; }
     const segment = manuscript.segments.at(-1);
     if (!segment) return;
-    segment.reveal = Math.min(1, segment.reveal + (now - previous) / 4400);
+    const delta = now - previous;
+    const activeDelta = delta > 250 ? 0 : Math.max(0, delta);
+    segment.reveal = Math.min(1, segment.reveal + activeDelta / 4400);
+    if (manuscript.scroll) manuscript.scroll.elapsed += activeDelta;
     previous = now;
     paintManuscript(document.getElementById('manuscript'));
-    if (segment.reveal < 1) manuscript.frame = requestAnimationFrame(draw);
+    if (segment.reveal < 1 || manuscript.scroll) manuscript.frame = requestAnimationFrame(draw);
   };
   manuscript.frame = requestAnimationFrame(draw);
 }
 function resetManuscript() {
   cancelAnimationFrame(manuscript.frame);
   manuscript.pending = []; manuscript.segments = []; manuscript.lastWindow = -1; manuscript.paused = false;
+  manuscript.viewFirstRow = 0; manuscript.scroll = null;
   document.getElementById('btn-pause').textContent = 'Pause artwork';
   document.getElementById('pause-note').textContent = '3-minute recording · Not a medical device';
   document.getElementById('manuscript-empty').hidden = false;
@@ -73,44 +77,57 @@ function acceptPaintWindow(metrics) {
   animateManuscript();
 }
 function paintManuscript(canvas, compact = false, all = false) {
-  // Report/export are one-shot draws. The live surface keeps just two viewport-
-  // sized layers, so the animation-frame reveal never rebuilds thousands of pigment marks
+  // Report/export are one-shot draws. Live layers retain at most one extra row
+  // for scrolling, so animation never rebuilds thousands of pigment marks
   // while the same main thread is collecting camera samples.
   if (compact || all) { paintManuscriptRaster(canvas, compact, all); return; }
   const ctx = canvas.getContext('2d'), W = canvas.width, H = canvas.height;
   const latest = manuscript.segments.at(-1);
-  if (!latest) { ctx.clearRect(0, 0, W, H); manuscript.raster = null; paintGPU?.clear(); return; }
-  let raster = manuscript.raster;
-  if (!raster || raster.latest !== latest || raster.count !== manuscript.segments.length || raster.width !== W || raster.height !== H) {
-    const base = raster?.base || document.createElement('canvas');
-    const ink = raster?.ink || document.createElement('canvas');
-    for (const layer of [base, ink]) { layer.width = W; layer.height = H; }
-    paintManuscriptRaster(base, false, false, 'base');
-    ink.getContext('2d').drawImage(base, 0, 0);
-    paintManuscriptRaster(ink, false, false, 'latest', false);
-    raster = manuscript.raster = { base, ink, latest, count: manuscript.segments.length, width: W, height: H };
-  }
-  const visible = Math.ceil(latest.points.length * (latest.reveal ?? 1));
-  if (visible < 2) { if (paintGPU?.manuscript(raster, -1, 0)) return; ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.base, 0, 0); return; }
-  if (visible >= latest.points.length) { if (paintGPU?.manuscript(raster, 4, 1)) return; ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.ink, 0, 0); return; }
+  if (!latest) { ctx.clearRect(0, 0, W, H); manuscript.raster = null; manuscript.viewFirstRow = 0; manuscript.scroll = null; paintGPU?.clear(); return; }
   const start = manuscript.segments[0].points[0].t;
   const end = latest.points.at(-1).t;
-  const firstRow = Math.max(0, Math.floor((end - start) / 5) + 1 - 4);
+  const targetFirstRow = Math.max(0, Math.floor((end - start) / 5) + 1 - 4);
+  let raster = manuscript.raster;
+  if (!raster || raster.latest !== latest || raster.count !== manuscript.segments.length || raster.width !== W || raster.height !== H) {
+    const firstRow = Math.max(0, targetFirstRow - 1), rows = targetFirstRow ? 5 : 4;
+    const from = Math.max(firstRow, Math.min(manuscript.viewFirstRow, targetFirstRow));
+    manuscript.scroll = from < targetFirstRow && !matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? { from, to: targetFirstRow, elapsed: 0 } : null;
+    manuscript.viewFirstRow = manuscript.scroll ? from : targetFirstRow;
+    const base = raster?.base || document.createElement('canvas');
+    const ink = raster?.ink || document.createElement('canvas');
+    for (const layer of [base, ink]) { layer.width = W; layer.height = H * rows / 4; }
+    paintManuscriptRaster(base, false, false, 'base', true, { firstRow, rows });
+    ink.getContext('2d').drawImage(base, 0, 0);
+    paintManuscriptRaster(ink, false, false, 'latest', false, { firstRow, rows });
+    raster = manuscript.raster = { base, ink, latest, firstRow, rows, count: manuscript.segments.length, width: W, height: H };
+  }
+  if (manuscript.scroll) {
+    const scroll = manuscript.scroll, t = Math.min(1, scroll.elapsed / 900);
+    const eased = t * t * (3 - 2 * t);
+    manuscript.viewFirstRow = scroll.from + (scroll.to - scroll.from) * eased;
+    if (t >= 1) manuscript.scroll = null;
+  }
+  const offsetRows = manuscript.viewFirstRow - raster.firstRow;
+  const rowH = H / 4, offsetY = offsetRows * rowH, margin = W * .025;
+  const drawLayer = layer => ctx.drawImage(layer, 0, offsetY, W, H, 0, 0, W, H);
+  const visible = Math.ceil(latest.points.length * (latest.reveal ?? 1));
+  if (visible < 2) { if (paintGPU?.manuscript(raster, -1, 0, offsetRows)) return; ctx.clearRect(0, 0, W, H); drawLayer(raster.base); return; }
+  if (visible >= latest.points.length) { if (paintGPU?.manuscript(raster, raster.rows, 1, offsetRows)) return; ctx.clearRect(0, 0, W, H); drawLayer(raster.ink); return; }
   const through = latest.points[visible - 1];
-  const row = Math.floor((through.t - start) / 5) - firstRow;
-  if (row < 0) { if (paintGPU?.manuscript(raster, -1, 0)) return; ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.base, 0, 0); return; }
-  const rowH = H / 4, margin = W * .025;
+  const row = Math.floor((through.t - start) / 5) - raster.firstRow;
+  if (row < 0) { if (paintGPU?.manuscript(raster, -1, 0, offsetRows)) return; ctx.clearRect(0, 0, W, H); drawLayer(raster.base); return; }
   const x = margin + ((through.t - start) % 5) / 5 * (W - 2 * margin);
-  if (paintGPU?.manuscript(raster, row, x / W)) return;
-  ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.base, 0, 0);
+  if (paintGPU?.manuscript(raster, row, x / W, offsetRows)) return;
+  ctx.clearRect(0, 0, W, H); drawLayer(raster.base);
   // Time advances left to right within each manuscript row. Clipping the
   // immutable layer retains all timestamp gaps and the original pigment depth.
   ctx.save(); ctx.beginPath();
-  if (row > 0) ctx.rect(0, 0, W, row * rowH);
-  ctx.rect(0, row * rowH, x, rowH);
-  ctx.clip(); ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.ink, 0, 0); ctx.restore();
+  if (row > 0) ctx.rect(0, -offsetY, W, row * rowH);
+  ctx.rect(0, row * rowH - offsetY, x, rowH);
+  ctx.clip(); ctx.clearRect(0, 0, W, H); drawLayer(raster.ink); ctx.restore();
 }
-function paintManuscriptRaster(canvas, compact = false, all = false, layer = null, clear = true) {
+function paintManuscriptRaster(canvas, compact = false, all = false, layer = null, clear = true, layout = null) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   if (clear) ctx.clearRect(0,0,W,H);
@@ -118,8 +135,8 @@ function paintManuscriptRaster(canvas, compact = false, all = false, layer = nul
   const start = manuscript.segments[0].points[0].t;
   const end = manuscript.segments.at(-1).points.at(-1).t;
   const rowSeconds = 5, totalRows = Math.floor((end-start)/rowSeconds)+1;
-  const rows = all ? totalRows : compact ? 2 : 4;
-  const firstRow = all ? 0 : Math.max(0,totalRows-rows);
+  const rows = layout?.rows ?? (all ? totalRows : compact ? 2 : 4);
+  const firstRow = layout?.firstRow ?? (all ? 0 : Math.max(0,totalRows-rows));
   const rowH = H/rows, margin = W*.025;
   const rand = n => { const x = Math.sin(n*127.1+311.7)*43758.5453; return x-Math.floor(x); };
   for (const segment of manuscript.segments) {
@@ -289,7 +306,7 @@ function beginEntryTransition() {
     }
     if (elapsed >= 900 && !transition.revealed) {
       transition.revealed = true;
-      for (const key in screens) screens[key].hidden = key !== transition.screen;
+      showScreen(transition.screen);
     }
     if (elapsed >= 1520) { clearEntryTransition(); return; }
     transition.frame = requestAnimationFrame(paint);
@@ -304,6 +321,24 @@ function showScreen(name) {
     return;
   }
   for (const key in screens) screens[key].hidden = key !== name;
+  document.getElementById('app').dataset.activeScreen = name;
+  syncScreenChrome(name);
+}
+
+function syncScreenChrome(name) {
+  // Keep one real camera video: moving it between visible hosts preserves the
+  // capture source and avoids another stream or a colorized preview surrogate.
+  const target = document.getElementById(name === 'measuring' ? 'capture-camera-preview' : 'camera-preview');
+  if ((name === 'placement' || name === 'measuring') && monitor?.video && monitor.video.parentElement !== target) {
+    target.replaceChildren(monitor.video);
+    monitor.video.setAttribute('aria-hidden', 'true');
+    const playback = monitor.video.play();
+    if (playback?.catch) playback.catch(() => {});
+  }
+  const tools = name === 'measuring' ? document.getElementById('capture-detail-tools')
+    : name === 'placement' ? document.getElementById('placement-actions')
+    : document.querySelector('.project-attribution');
+  tools.append(document.getElementById('btn-debug-menu'));
 }
 
 let monitor = null;
@@ -331,8 +366,8 @@ function drawWaveOn(canvasId, buf) {
   const canvas = document.getElementById(canvasId);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = '#2855ff';
-  ctx.lineWidth = 2;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
   ctx.beginPath();
   const n = buf.length;
   // Values are detrended AC (a few counts out of ~190, i.e. ~0.01), so
@@ -346,6 +381,11 @@ function drawWaveOn(canvasId, buf) {
     const y = canvas.height - pad - ((buf[i] - lo) / span) * (canvas.height - 2 * pad);
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   }
+  ctx.strokeStyle = 'rgba(20,88,255,.09)';
+  ctx.lineWidth = 7;
+  ctx.stroke();
+  ctx.strokeStyle = '#1458ff';
+  ctx.lineWidth = 2;
   ctx.stroke();
 }
 
@@ -394,14 +434,14 @@ function updatePlacementScreen(metrics) {
     // Bounced out of MEASURING mid-protocol (lift/drift) - the 3-minute
     // countdown is paused (see tickSessionCountdown), not reset; coach the
     // user to resume rather than showing the normal placement copy.
-    coachEl.textContent = 'Keep your finger on';
+    coachEl.textContent = 'Let’s find your pulse again.';
     ring.style.strokeDashoffset = String(circumference);
   } else if (metrics.fingerState === 'SETTLING') {
-    coachEl.textContent = `Hold still... ${Math.ceil(remaining)}s`;
+    coachEl.textContent = `Signal found. Hold still for ${Math.max(0, Math.ceil(remaining))}s.`;
     const frac = 1 - Math.min(1, remaining / settleSec());
     ring.style.strokeDashoffset = String(circumference * (1 - frac));
   } else {
-    coachEl.textContent = metrics.guidanceMessage || 'Cover the lens and flash with your fingertip pad';
+    coachEl.textContent = metrics.guidanceMessage || 'Cover the rear camera and flash gently.';
     ring.style.strokeDashoffset = String(circumference);
   }
   document.getElementById('torch-note').hidden = monitor ? monitor.torchSupported !== false : true;
@@ -411,15 +451,16 @@ function updatePlacementScreen(metrics) {
   // the ring silently reset (see job 3).
   const stateEl = document.getElementById('state-line');
   const reason = monitor && monitor.engine && monitor.engine.fingerState ? monitor.engine.fingerState.lastReason : null;
-  stateEl.textContent = STATE_TEXT[metrics.fingerState] ? `${STATE_TEXT[metrics.fingerState]}${REASON_TEXT[reason] ? ' · ' + REASON_TEXT[reason] : ''}` : '';
+  stateEl.textContent = measuringStartedAt != null ? 'Your recording waits while the signal returns.'
+    : STATE_TEXT[metrics.fingerState] ? `${STATE_TEXT[metrics.fingerState]}${REASON_TEXT[reason] ? ' · ' + REASON_TEXT[reason] : ''}` : '';
   drawPlacementWave();
 }
 
 function updateMeasuringScreen(metrics) {
   const good = metrics.quality && metrics.quality.good;
-  document.getElementById('hr-value').textContent = good ? Math.round(metrics.heartRate) : '--';
-  document.getElementById('rmssd-value').textContent = good ? Math.round(metrics.rmssd) : '--';
-  document.getElementById('sdnn-value').textContent = good ? Math.round(metrics.sdnn) : '--';
+  document.getElementById('hr-value').textContent = good && Number.isFinite(metrics.heartRate) ? Math.round(metrics.heartRate) : '--';
+  document.getElementById('rmssd-value').textContent = good && Number.isFinite(metrics.rmssd) ? Math.round(metrics.rmssd) : '--';
+  document.getElementById('sdnn-value').textContent = good && Number.isFinite(metrics.sdnn) ? Math.round(metrics.sdnn) : '--';
   const floorEl = document.getElementById('rmssd-floor');
   if (floorEl) floorEl.textContent = good && metrics.rmssdFloorMs ? `Estimated timing-noise floor: ${Math.round(metrics.rmssdFloorMs)} ms` : '';
   const respEl = document.getElementById('resp-value');
@@ -446,29 +487,41 @@ function updateMeasuringScreen(metrics) {
 
 // Fixed 3-minute protocol: starts counting down the moment MEASURING is
 // first reached, pauses (holds the last value) while the state drops back
-// out of MEASURING (lift/drift), and auto-stops at 0:00. Ticked on a plain
-// 1s interval rather than off onQualityUpdate, so the countdown updates
-// smoothly even across ~5s metric windows.
+// out of MEASURING (lift/drift), and auto-stops at 0:00. Only fresh camera
+// frames earn time; the 1s display interval never advances the protocol.
 function fmtCountdown(sec) {
   const s = Math.max(0, Math.ceil(sec));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
-let elapsedMeasuringMs = 0, lastTimerTick = Date.now();
+let elapsedMeasuringMs = 0;
+let lastMeasuringFrame = null;
+const MAX_MEASURING_FRAME_GAP_MS = 250;
+function advanceSessionClock(time, isProcessing) {
+  const now = performance.now();
+  if (!isProcessing || measuringStartedAt == null || document.visibilityState !== 'visible' || !Number.isFinite(time)) {
+    lastMeasuringFrame = null;
+    return;
+  }
+  if (lastMeasuringFrame) {
+    const sampleDelta = (time - lastMeasuringFrame.time) * 1000;
+    const deliveryDelta = now - lastMeasuringFrame.deliveredAt;
+    if (sampleDelta <= 0) return; // Duplicate/out-of-order frames cannot move the anchor backwards.
+    // A muted camera can retain MEASURING. Neither that stale state nor a
+    // queued callback after a suspension earns the missing interval.
+    if (sampleDelta > 0 && sampleDelta <= MAX_MEASURING_FRAME_GAP_MS && deliveryDelta >= 0 && deliveryDelta <= MAX_MEASURING_FRAME_GAP_MS) {
+      elapsedMeasuringMs += sampleDelta;
+    }
+  }
+  lastMeasuringFrame = { time, deliveredAt: now };
+}
+document.addEventListener('visibilitychange', () => { lastMeasuringFrame = null; });
 function tickSessionCountdown() {
-  const now = Date.now(), delta = now-lastTimerTick; lastTimerTick=now;
   const el = document.getElementById('session-countdown');
   if (measuringStartedAt == null) {
     el.textContent = fmtCountdown(SESSION_SEC);
     return;
   }
-  const inMeasuring = monitor && monitor.getMetrics && monitor.getMetrics().fingerState === 'MEASURING';
-  if (!inMeasuring) {
-    // Paused: countdown label holds its last value; updatePlacementScreen
-    // shows "Keep your finger on" while bounced out of MEASURING.
-    return;
-  }
-  elapsedMeasuringMs += Math.min(delta, 1500);
   const elapsedSec = elapsedMeasuringMs / 1000;
   const remaining = SESSION_SEC - elapsedSec;
   el.textContent = fmtCountdown(remaining);
@@ -775,15 +828,21 @@ function drawPoincare(canvas, nl, flagged) {
 
 }
 
-function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
+function drawReportTachogram(canvas, beats, flagged, correctedMs) {
   const { ctx, W, H } = setupHiDPICanvas(canvas);
+  const ibiMs = beats.map(b => typeof b === 'number' ? b : b.ibiMs);
   if (!ibiMs.length) return;
   const dataMin = Math.min(...ibiMs), dataMax = Math.max(...ibiMs) || Math.min(...ibiMs) + 1;
   const span = Math.max(dataMax - dataMin, 5);
   const midpoint = (dataMin + dataMax) / 2;
   const { min, max } = chartDomain(midpoint - span * 0.6, midpoint + span * 0.6, 3, 1);
-  const times = [0];
-  for (let i = 0; i < ibiMs.length; i++) times.push(times[times.length - 1] + ibiMs[i] / 1000);
+  const timestamped = beats.every(b => Number.isFinite(b.t));
+  const origin = timestamped ? beats[0].t - ibiMs[0] / 1000 : 0;
+  let cumulative = 0;
+  const times = beats.map((b, i) => {
+    cumulative += ibiMs[i] / 1000;
+    return timestamped ? b.t - origin : cumulative;
+  });
   const totalSec = times[times.length - 1];
 
   const labels = Array.from({ length: 4 }, (_, t) => (min + (max - min) * t / 3).toFixed(0));
@@ -806,9 +865,10 @@ function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
   }
   const nTicks = W < 360 ? 3 : 5;
   for (let t = 0; t <= nTicks; t++) {
-    const sec = Math.round((totalSec / nTicks) * t);
+    const positionSec = (totalSec / nTicks) * t;
+    const sec = Math.round(positionSec);
     const mm = Math.floor(sec / 60), ss = sec % 60;
-    chartTick(ctx, `${mm}:${String(ss).padStart(2, '0')}`, xOf(sec), padT + plotH + 10, W);
+    chartTick(ctx, `${mm}:${String(ss).padStart(2, '0')}`, xOf(positionSec), padT + plotH + 10, W);
   }
 
   // corrected-vs-raw dashed segment where a beat was corrected
@@ -833,7 +893,11 @@ function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
   ctx.beginPath();
   ibiMs.forEach((v, i) => {
     const x = xOf(times[i]), y = yOf(v);
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    // A beat's IBI describes the interval immediately before it, not all
+    // elapsed time since the previous accepted window. Leave missing time
+    // blank instead of connecting across rejected/lost signal.
+    const gap = i > 0 && timestamped && times[i] - times[i - 1] > ibiMs[i] / 1000 + 0.1;
+    if (i === 0 || gap) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   });
   ctx.stroke();
 
@@ -1001,7 +1065,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
     <p class="report-note">Orange dots mark beats flagged as artifacts (&gt;20% deviation from local median) and corrected for frequency analysis.</p>
   `;
   el.appendChild(tachoCard);
-  drawReportTachogram(document.getElementById('report-tacho-canvas'), acceptedIbiMs, result.meta.flagged, PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
+  drawReportTachogram(document.getElementById('report-tacho-canvas'), beats, result.meta.flagged, PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
 
   // Footer
   const footer = document.createElement('div');
@@ -1037,7 +1101,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
     details.addEventListener('toggle',()=>{ if(!details.open)return;
       if(card===fdCard && fd.ok) drawPSD(document.getElementById('psd-canvas'),fd);
       if(card===nlCard && nl.ok) drawPoincare(document.getElementById('poincare-canvas'),nl,result.meta.flagged);
-      if(card===tachoCard) drawReportTachogram(document.getElementById('report-tacho-canvas'),acceptedIbiMs,result.meta.flagged,PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
+      if(card===tachoCard) drawReportTachogram(document.getElementById('report-tacho-canvas'),beats,result.meta.flagged,PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
     });
   }
   redrawReportCharts = () => {
@@ -1046,7 +1110,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
     const tacho = document.getElementById('report-tacho-canvas');
     if (psd?.clientWidth && fd.ok) drawPSD(psd, fd);
     if (poincare?.clientWidth && nl.ok) drawPoincare(poincare, nl, result.meta.flagged);
-    if (tacho?.clientWidth) drawReportTachogram(tacho, acceptedIbiMs, result.meta.flagged, PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
+    if (tacho?.clientWidth) drawReportTachogram(tacho, beats, result.meta.flagged, PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
   };
   reportChartObserver?.disconnect();
   if (typeof ResizeObserver !== 'undefined') {
@@ -1067,7 +1131,8 @@ function startSession() {
   showScreen('placement');
   resetWaveBuffer();
   resetManuscript();
-  elapsedMeasuringMs = 0; lastTimerTick = Date.now();
+  document.querySelector('.live-details').open = false;
+  elapsedMeasuringMs = 0; lastMeasuringFrame = null;
   measuringStartedAt = null;
   document.getElementById('session-countdown').textContent = fmtCountdown(SESSION_SEC);
   if (sessionTimerId) clearInterval(sessionTimerId);
@@ -1102,13 +1167,14 @@ function startSession() {
     },
     onSignalUpdate: ({ time, value, isProcessing }) => {
       if (generation !== sessionGeneration) return;
+      advanceSessionClock(time, isProcessing);
       if (isProcessing && !manuscript.paused && Number.isFinite(value)) manuscript.pending.push({ t:time, v:value });
       if (manuscript.pending.length > 1800) manuscript.pending.shift();
       waveBuf.push(value);
       waveBuf.shift();
       placementWaveBuf.push(value);
       placementWaveBuf.shift();
-      if (!screens.measuring.hidden) drawWave();
+      if (!screens.measuring.hidden && document.querySelector('.live-details').open) drawWave();
       if (!screens.placement.hidden) drawPlacementWave();
     },
     onError: (err) => {
@@ -1126,8 +1192,7 @@ function startSession() {
   currentMonitor.start().then(() => {
     pendingMonitorStarts.delete(currentMonitor);
     if (generation !== sessionGeneration) { currentMonitor.destroy(); return; }
-    const host = document.getElementById('camera-preview');
-    host.replaceChildren(currentMonitor.video);
+    syncScreenChrome(screens.measuring.hidden ? 'placement' : 'measuring');
   }).catch((err) => {
     pendingMonitorStarts.delete(currentMonitor);
     if (generation !== sessionGeneration) { currentMonitor.destroy(); return; }
@@ -1138,6 +1203,7 @@ function startSession() {
 }
 
 function stopSession() {
+  lastMeasuringFrame = null;
   if (sessionTimerId) { clearInterval(sessionTimerId); sessionTimerId = null; }
   measuringStartedAt = null;
   if (monitor) {
@@ -1156,9 +1222,14 @@ if (!isPhone) {
   document.getElementById('screen-ready').classList.add('desktop-ready');
   document.getElementById('desktop-phone-panel').hidden = false;
 }
+syncScreenChrome('ready');
+document.querySelector('.live-details').addEventListener('toggle', event => {
+  if (event.currentTarget.open) { drawWave(); drawTachogram(); }
+});
 document.getElementById('btn-start').addEventListener('click', startSession);
 document.getElementById('btn-cancel-placement').addEventListener('click', () => {
   sessionGeneration++;
+  lastMeasuringFrame = null;
   clearEntryTransition();
   if (sessionTimerId) { clearInterval(sessionTimerId); sessionTimerId=null; }
   if (monitor) {
@@ -1322,7 +1393,7 @@ window.__demoState = function (name) {
     showScreen('measuring');
     resetWaveBuffer();
   resetManuscript();
-  elapsedMeasuringMs = 0; lastTimerTick = Date.now();
+  elapsedMeasuringMs = 0; lastMeasuringFrame = null;
     for (let i = 0; i < waveBuf.length; i++) waveBuf[i] = 0.5 + 0.3 * Math.sin(i / 6);
     drawWave();
     monitor = monitor || { getTachogram: () => Array.from({ length: 40 }, (_, i) => ({ ibiMs: 800 + 40 * Math.sin(i / 3), valid: i % 7 !== 0, good: true })) };

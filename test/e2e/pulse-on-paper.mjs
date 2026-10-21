@@ -95,6 +95,18 @@ try {
     await page.setViewportSize({ width, height: 844 });
     await assertViewportFits(page, `capture ${width}px`);
   }
+  // Follow the next manuscript row without a jump or a growing live bitmap.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  const scrollStart = await page.evaluate(() => {
+    monitor.feedUntil(75);
+    return { ...manuscript.scroll, row: manuscript.viewFirstRow, cacheRows: manuscript.raster.rows };
+  });
+  assert.ok(scrollStart.to > scrollStart.from, 'next row starts a downward manuscript follow');
+  await page.waitForFunction(() => manuscript.scroll && manuscript.viewFirstRow > manuscript.scroll.from && manuscript.viewFirstRow < manuscript.scroll.to);
+  await page.waitForFunction(() => !manuscript.scroll);
+  assert.equal(await page.evaluate(() => manuscript.viewFirstRow), scrollStart.to, 'scroll settles at the next row');
+  assert.ok(scrollStart.cacheRows <= 5, 'live cache holds at most four visible rows plus one scrolling row');
+  await page.emulateMedia({ reducedMotion: 'reduce' });
   const captureCount = await page.evaluate(() => manuscript.segments.length);
   await page.getByRole('button', { name: 'Pause artwork', exact: true }).click();
   await page.evaluate(() => monitor.feedUntil(80));
@@ -162,19 +174,16 @@ try {
   assert.equal(attribution.liveRegion, 'status');
 
   const timing = await page.evaluate(() => {
-    const originalNow = Date.now;
-    let time = 1000, state = 'MEASURING';
-    Date.now = () => time;
-    monitor = { getMetrics: () => ({ fingerState: state }) };
-    measuringStartedAt = 1; elapsedMeasuringMs = 0; lastTimerTick = time;
-    time += 1000; tickSessionCountdown();
-    state = 'SETTLING';
-    for (let i = 0; i < 40; i++) { time += 1000; tickSessionCountdown(); }
+    measuringStartedAt = 1; elapsedMeasuringMs = 0; lastMeasuringFrame = null;
+    for (let i = 0; i <= 50; i++) advanceSessionClock(i / 50, true);
+    tickSessionCountdown();
+    advanceSessionClock(1.02, false);
+    for (let i = 0; i < 40; i++) tickSessionCountdown();
     const held = elapsedMeasuringMs;
-    state = 'MEASURING'; time += 1000; tickSessionCountdown();
+    for (let i = 0; i <= 50; i++) advanceSessionClock(41 + i / 50, true);
+    tickSessionCountdown();
     const resumed = elapsedMeasuringMs;
-    Date.now = originalNow;
-    return { held, resumed };
+    return { held: Math.round(held), resumed: Math.round(resumed) };
   });
   assert.deepEqual(timing, { held: 1000, resumed: 2000 }, 'finger-loss time is excluded from countdown');
   await page.evaluate(() => { monitor = { getSessionSummary: () => ({ goodFraction: 0 }) }; renderReport([], undefined, null); showScreen('summary'); });
