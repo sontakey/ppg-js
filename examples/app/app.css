@@ -763,7 +763,8 @@ h1,.capture-title{font-size:clamp(54px,9vw,92px);line-height:.92;letter-spacing:
 }
 
 /* A painted invitation on devices outside the existing phone camera gate.
-   Decoration never touches the QR matrix or its white quiet zone. */
+   The QR image owns its uninterrupted four-module paper quiet zone. The
+   surrounding wash paints once; the scan pattern itself never moves. */
 #screen-ready.desktop-ready { max-width:1000px; gap:20px; justify-content:center; padding-top:46px; padding-bottom:36px; }
 .desktop-ready > .content { flex:0; gap:4px; }
 #screen-ready.desktop-ready h1 { font-size:88px; line-height:.98; }
@@ -773,20 +774,28 @@ h1,.capture-title{font-size:clamp(54px,9vw,92px);line-height:.92;letter-spacing:
 #screen-ready #btn-start[hidden], .phone-panel[hidden] { display:none; }
 .phone-panel { position:relative; isolation:isolate; display:grid; grid-template-columns:1fr 246px; column-gap:48px; row-gap:18px; padding:48px 48px 28px; margin-top:10px; }
 .phone-panel::before, .phone-panel::after { content:""; position:absolute; pointer-events:none; z-index:-1; }
-.phone-panel::before { inset:0 -10px 58px; background:radial-gradient(ellipse at 3% 24%,#c7dcfa 0%,transparent 50%),radial-gradient(ellipse at 88% 68%,#9ebff0a6 0%,transparent 53%),linear-gradient(112deg,#e6effcb3,#d4e5fc99 52%,#ecf4ff); filter:url(#paint-edge); transform:rotate(-.7deg); animation:phone-paint-in 1.25s ease-out both; }
-.phone-panel::after { inset:auto 12px 65px 8%; height:14px; background:linear-gradient(90deg,transparent,#709ee459 20%,#3d7bc94d 75%,transparent); filter:url(#paint-edge); transform:rotate(.5deg); animation:phone-paint-in 1.5s ease-out both; }
-.phone-panel-kicker { font-size:11px; font-weight:650; letter-spacing:.13em; text-transform:uppercase; color:#42618d; margin:0 0 16px; }
+.phone-panel::before { inset:-20px -10px 44px; background:url('./assets/phone-wash.webp') center/100% 100% no-repeat; transform:rotate(-.7deg); animation:phone-paint-in 1.25s ease-out both; }
+.phone-panel::after { content:none; }
+.phone-panel-kicker { font-size:11px; font-weight:650; letter-spacing:.13em; text-transform:uppercase; color:#193553; margin:0 0 16px; }
 .phone-panel h2 { font-family:"DM Sans",sans-serif; font-weight:550; font-size:clamp(28px,4vw,38px); line-height:1.15; letter-spacing:-.035em; color:#214b87; margin:0 0 18px; }
-.phone-panel-copy > p:not(.phone-panel-kicker) { max-width:360px; font-size:16px; line-height:1.65; color:#3d5271; margin:0 0 12px; }
+.phone-panel-copy > p:not(.phone-panel-kicker) { max-width:360px; font-size:16px; line-height:1.65; color:#193553; margin:0 0 12px; }
 .phone-panel-copy > .phone-panel-instruction { font-size:14px!important; }
 .phone-panel-code { margin:0; align-self:center; text-align:center; }
-.phone-qr-paper { background:#fff; padding:8px; box-shadow:0 3px 20px #3e649d0d; }
-.phone-qr-paper img { display:block; width:100%; height:auto; }
-.phone-panel-code figcaption { color:#385782; font-size:12px; margin-top:14px; line-height:1.5; }
-.phone-panel-link { justify-self:start; color:#254f8c; font-size:13px; text-decoration-color:#8aa8d1; text-underline-offset:4px; overflow-wrap:anywhere; }
+.phone-qr-paper { position:relative; isolation:isolate; }
+.phone-qr-paper::before, .phone-qr-paper::after { content:""; position:absolute; pointer-events:none; z-index:-1; }
+.phone-qr-paper::before { inset:-34px -24px; background:url('./assets/phone-wash.webp') center/100% 100% no-repeat; mask-image:radial-gradient(ellipse at 50% 52%,#000 45%,#0009 60%,transparent 74%); transform:rotate(-3deg); animation:qr-wash-in 1.25s cubic-bezier(.16,.65,.25,1) both; }
+.phone-qr-paper::after { content:none; }
+.phone-qr-paper img { display:block; position:relative; width:100%; height:auto; border-radius:1px; }
+.phone-panel-code figcaption { color:#193553; font-size:12px; margin-top:25px; line-height:1.5; }
+.phone-panel-link { justify-self:start; color:#193553; font-size:13px; text-decoration-color:#58769e; text-underline-offset:4px; overflow-wrap:anywhere; }
 .phone-panel-link span { margin-left:8px; }
-.phone-panel-disclaimer { grid-column:1/-1; font-size:11px; color:var(--muted); line-height:1.6; text-align:center; margin:36px 0 0; }
+.phone-panel-disclaimer { grid-column:1/-1; font-size:11px; color:#193553; line-height:1.6; text-align:center; margin:36px 0 0; }
 @keyframes phone-paint-in { from { clip-path:inset(0 100% 0 0); opacity:.25; } to { clip-path:inset(0 -3% 0 -3%); opacity:1; } }
+@keyframes qr-wash-in {
+  0% { clip-path:polygon(-8% -8%,-8% -8%,-10% 22%,-8% 46%,-10% 72%,-8% 108%,-8% 108%); opacity:.25; }
+  64% { clip-path:polygon(-8% -8%,82% -8%,91% 22%,80% 46%,92% 72%,84% 108%,-8% 108%); opacity:.85; }
+  100% { clip-path:polygon(-8% -8%,108% -8%,110% 22%,108% 46%,110% 72%,108% 108%,-8% 108%); opacity:1; }
+}
 @media(max-width:749px) {
   #screen-ready.desktop-ready { padding:36px 26px 24px; }
   #screen-ready.desktop-ready h1 { font-size:68px; }
@@ -795,7 +804,7 @@ h1,.capture-title{font-size:clamp(54px,9vw,92px);line-height:.92;letter-spacing:
   .phone-panel-link { justify-self:center; }
   .phone-panel-disclaimer { margin-top:24px; }
 }
-@media(prefers-reduced-motion:reduce) { .phone-panel::before, .phone-panel::after { animation:none; } }
+@media(prefers-reduced-motion:reduce) { .phone-panel::before, .phone-panel::after, .phone-qr-paper::before, .phone-qr-paper::after { animation:none; } }
 
 /* Capture stays on the paper: a real camera thumbnail, readable measurements,
    and controls with their own space below the artwork. */

@@ -1,7 +1,7 @@
 // App-only GPU compositor. Scientific waveform geometry remains the measured,
 // immutable raster; only the temporal reveal and entry diffusion run on GPU.
 import { WebGPURenderer, Scene, OrthographicCamera, Mesh, PlaneGeometry, MeshBasicNodeMaterial, CanvasTexture, Vector2, SRGBColorSpace, NoToneMapping } from 'three/webgpu';
-import { Fn, uv, uniform, vec2, vec3, vec4, float, floor, fract, sin, dot, mix, max, abs, length, clamp, texture, step } from 'three/tsl';
+import { Fn, uv, uniform, vec2, vec3, vec4, float, floor, fract, sin, dot, mix, max, abs, clamp, texture, step } from 'three/tsl';
 const diagnostics = window.__paintGpuStats = window.__pulsePaintGPU = { ready: false, backend: 'loading', frames: 0, frameMs: 0, maxFrameMs: 0, pixelBudget: 850000, surfaces: {} };
 const hash = Fn(([p]) => fract(sin(dot(p, vec2(127.1,311.7)).add(19.3)).mul(43758.5453)));
 const noise = Fn(([p]) => {
@@ -50,27 +50,52 @@ async function surface(name, material) {
   };
 }
 export async function createPaintGPU() {
-  const size=uniform(new Vector2(1,1)), origin=uniform(new Vector2()), half=uniform(0), reach=uniform(0), feather=uniform(16), opacity=uniform(1);
+  const size=uniform(new Vector2(1,1)), origin=uniform(new Vector2()), travel=uniform(0), settling=uniform(0), opacity=uniform(1);
   const entryMaterial=new MeshBasicNodeMaterial({transparent:true,depthTest:false,depthWrite:false});
   entryMaterial.fragmentNode=Fn(()=>{
-    const p=vec2(uv().x,float(1).sub(uv().y)).mul(size);
-    const cloud=noise(p.div(96)), bloom=noise(p.div(29)), grain=noise(p.div(5)), tooth=hash(floor(p));
-    const delta=vec2(max(abs(p.x.sub(origin.x)).sub(half),0),p.y.sub(origin.y));
-    const travel=length(delta).mul(float(1).add(cloud.sub(.5).mul(.19)).add(bloom.sub(.5).mul(.075))).add(grain.sub(.5).mul(13)).add(tooth.sub(.5).mul(3));
-    const wet=clamp(reach.sub(travel).div(feather),0,1);
-    const depth=cloud.mul(.52).add(bloom.mul(.32)).add(grain.mul(.12)).add(tooth.mul(.04));
-    // Nested low-opacity deposits pool at the same irregular wet front.
-    // Reusing the absorption field avoids extra noise/texture samples per pixel.
-    const rimDistance=abs(wet.sub(.68).add(grain.sub(.5).mul(.07)));
-    const broad=max(float(1).sub(rimDistance.mul(3.5)),0);
-    const middle=max(float(1).sub(rimDistance.mul(7)),0);
-    const fine=max(float(1).sub(rimDistance.mul(18)),0);
-    const deposit=float(1).sub(float(1).sub(broad.mul(.12)).mul(float(1).sub(middle.mul(.16))).mul(float(1).sub(fine.mul(.21))));
-    const edge=deposit.mul(2.3), pool=max(depth.sub(.46),0).mul(70);
-    const rgb=vec3(float(31).add(depth.mul(54)).sub(edge.mul(17)),float(82).add(depth.mul(84)).sub(edge.mul(25)).sub(pool),float(216).add(depth.mul(37)).sub(edge.mul(14)).sub(pool.mul(.4))).div(255);
-    const body=wet.mul(wet).mul(float(3).sub(wet.mul(2))).mul(float(.72).add(depth.mul(.16)));
-    const alpha=float(1).sub(float(1).sub(body).mul(float(1).sub(deposit)));
-    return vec4(rgb,alpha.mul(opacity));
+    const p=vec2(uv().x,float(1).sub(uv().y)).mul(size), x=p.x.div(size.x);
+    // Stationary paper fields are shared by all three passes: pigment never
+    // boils or swims, and the fragment cost does not grow with the brush path.
+    const cloud=noise(p.div(91)), bloom=noise(p.div(27)), grain=noise(p.div(5)), tooth=hash(floor(p));
+    const cobalt=vec3(.13,.27,.78), iris=vec3(.44,.28,.66), teal=vec3(.07,.49,.51);
+    const colorPhase=x.mul(4.3).add(p.y.div(size.y).mul(2.7)).add(cloud.mul(.6));
+    const pigment=mix(mix(cobalt,iris,sin(colorPhase).mul(.5).add(.5)),teal,sin(colorPhase.add(2.2)).mul(.5).add(.5).mul(.62));
+    const ink=vec3(0).toVar(), coverage=float(0).toVar(), painted=float(0).toVar();
+    // Three overlapping, curved passes reverse direction as a loaded brush
+    // travels up the paper. Width changes represent pressure, not radial scale.
+    for(let i=0;i<3;i++) {
+      const along=i%2 ? float(1).sub(x) : x;
+      const local=clamp(travel.sub(i*.22).div(.52),0,1);
+      const bend=sin(x.mul(5.6).add(i*1.7)).mul(.035).sub(x.mul(.045));
+      const center=i===0 ? origin.y.div(size.y).add(bend) : float(.92-i*.39).add(bend);
+      const pressure=sin(x.mul(4.8).add(i*.8)).mul(.035).add(.183);
+      const across=p.y.div(size.y).sub(center);
+      const edgeNoise=cloud.sub(.5).mul(.023).add(bloom.sub(.5).mul(.012)).add(grain.sub(.5).mul(.006));
+      const edge=pressure.sub(abs(across)).add(edgeNoise);
+      const widthMask=clamp(edge.mul(size.y).div(float(7).add(settling.mul(9))),0,1);
+      const tipPressure=max(float(1).sub(across.div(pressure).mul(across.div(pressure))),0);
+      const bristleTip=sin(across.mul(size.y).mul(.16).add(cloud.mul(4))).mul(.007);
+      const head=local.mul(1.34).sub(.20).sub(along).add(tipPressure.mul(.09)).add(bristleTip).add(edgeNoise.mul(1.4));
+      const headMask=clamp(head.mul(size.x).div(17),0,1).mul(step(.001,local));
+      const wet=widthMask.mul(headMask);
+      painted.assign(max(painted,wet));
+      const pooled=max(float(1).sub(abs(edge.mul(size.y).sub(8)).div(14)),0).mul(.17)
+        .add(max(float(1).sub(abs(head.mul(size.x).sub(11)).div(21)),0).mul(.11));
+      // Pigment collects in irregular paper pockets. No periodic rib pattern:
+      // evenly spaced ridges read as fabric rather than a natural brush.
+      const pigmentCloud=cloud.mul(.60).add(bloom.mul(.32)).add(grain.mul(.08));
+      const trailingWash=max(float(1).sub(max(head,0).mul(1.25)),.28);
+      const paperBreaks=float(1).sub(max(tooth.sub(.81),0).mul(.65));
+      const alpha=wet.mul(float(.27).add(pigmentCloud.mul(.25)).add(pooled)).mul(paperBreaks).mul(trailingWash).mul(opacity);
+      const color=pigment.mul(float(1).sub(pooled.mul(1.9))).add(grain.sub(.5).mul(.07));
+      ink.assign(color.mul(alpha).add(ink.mul(float(1).sub(alpha))));
+      coverage.assign(alpha.add(coverage.mul(float(1).sub(alpha))));
+    }
+    // The incoming UI is already live underneath. Unpainted paper shields it
+    // until the gesture passes, avoiding an outgoing/incoming screen flash.
+    const paperAlpha=float(1).sub(painted).mul(opacity).mul(float(1).sub(coverage));
+    const combined=coverage.add(paperAlpha);
+    return vec4(ink.add(vec3(.992,.984,.969).mul(paperAlpha)).div(max(combined,.001)),combined);
   })();
   const entry=await surface('entry',entryMaterial);
   Object.assign(entry.canvas.style,{position:'fixed',inset:'0',width:'100%',height:'100%',pointerEvents:'none',zIndex:'1000'});document.body.append(entry.canvas);
@@ -94,8 +119,8 @@ export async function createPaintGPU() {
   const observer=new ResizeObserver(resizeLive);observer.observe(source);resizeLive();
   diagnostics.ready=true;
   return {
-    beginEntry(w,h,x,y,halfWidth){if(!entry.alive)return false;entry.resize(w,h);size.value.set(w,h);origin.value.set(x,y);half.value=halfWidth;entry.canvas.hidden=false;return true;},
-    entry(reachValue,featherValue,alpha){reach.value=reachValue;feather.value=featherValue;opacity.value=alpha;return entry.draw();},
+    beginEntry(w,h,x,y){if(!entry.alive)return false;entry.resize(w,h);size.value.set(w,h);origin.value.set(x,y);travel.value=0;settling.value=0;opacity.value=0;entry.canvas.hidden=false;return true;},
+    entry(progress,dry,alpha){travel.value=progress;settling.value=dry;opacity.value=alpha;return entry.draw();},
     endEntry(){entry.canvas.hidden=true;},
     manuscript(raster,rowValue,x,offsetRows=0){
       if(!live.alive){source.style.visibility='';return false;}

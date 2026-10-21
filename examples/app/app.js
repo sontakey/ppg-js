@@ -8,7 +8,7 @@ function warmPaintGPU() {
 }
 if ('requestIdleCallback' in window) requestIdleCallback(warmPaintGPU, { timeout: 1600 });
 else setTimeout(warmPaintGPU, 300);
-addEventListener('pagehide', () => { paintPageActive = false; paintWarmGeneration++; paintGPU?.dispose(); paintGPU = null; paintManuscript(document.getElementById('manuscript')); });
+addEventListener('pagehide', () => { clearEntryTransition('pagehide'); paintPageActive = false; paintWarmGeneration++; paintGPU?.dispose(); paintGPU = null; paintManuscript(document.getElementById('manuscript')); });
 addEventListener('paintgpulost', () => paintManuscript(document.getElementById('manuscript')));
 addEventListener('pageshow', event => { if (event.persisted) { paintPageActive = true; warmPaintGPU(); } });
 
@@ -298,73 +298,175 @@ let sessionStarting = false;
 let sessionGeneration = 0;
 const pendingMonitorStarts = new Set();
 
-function clearEntryTransition() {
-  if (!entryTransition) return;
-  cancelAnimationFrame(entryTransition.frame);
-  entryTransition = null;
+// Diagnostics describe browser animation cadence and CPU submission only;
+// they deliberately make no claim about physical-phone or GPU execution time.
+const brushStats = window.__pulseBrushStats = { active: false, history: [], fallbackPixelBudget: 650000, timingScope: 'requestAnimationFrame intervals; desktop replay is not physical-device performance' };
+const brushMotion = matchMedia('(prefers-reduced-motion: reduce)');
+function clearEntryTransition(reason = 'complete') {
+  const transition = entryTransition;
+  if (transition) {
+    cancelAnimationFrame(transition.frame);
+    const intervals = transition.intervals.slice().sort((a,b) => a-b);
+    const total = intervals.reduce((sum,dt) => sum+dt,0);
+    brushStats.history.push({ kind: transition.kind, renderer: transition.gpu ? 'gpu' : 'canvas2d', reason,
+      frames: transition.frames, elapsedMs: Math.round(performance.now()-transition.began),
+      fps: total ? Math.round(intervals.length / total * 100000) / 100 : null,
+      p95FrameMs: intervals.length ? intervals[Math.floor((intervals.length-1)*.95)] : null,
+      over33ms: intervals.filter(dt=>dt>33.34).length, pixels: transition.pixels });
+    if (brushStats.history.length > 12) brushStats.history.shift();
+    transition.rasters?.forEach(layer => { layer.width=layer.height=1; if(layer.revealMask)layer.revealMask.width=layer.revealMask.height=1; });
+  }
+  entryTransition = null; brushStats.active = false;
   paintGPU?.endEntry();
   document.getElementById('entry-pigment').hidden = true;
   document.getElementById('btn-start').removeAttribute('aria-busy');
 }
 
-// A layered pigment front, born at the pressed button. Camera permission is
-// requested in the original click; this only stages the visual reveal.
-function beginEntryTransition() {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const canvas = document.getElementById('entry-pigment');
-  const rect = document.getElementById('btn-start').getBoundingClientRect();
-  const w = innerWidth, h = innerHeight, dpr = Math.min(devicePixelRatio || 1, 2);
-  canvas.width = w * dpr; canvas.height = h * dpr;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return;
-  const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-  const radius = Math.hypot(Math.max(x, w-x), Math.max(y, h-y)) * 1.35;
-  // The prepared GPU performs the pigment field and diffusion per fragment.
-  // A late bundle or unsupported device uses a cheap wash, never a CPU pixel loop
-  // in the camera permission gesture.
-  let gpu = paintGPU?.beginEntry(w,h,x,y,Math.max(0,(rect.width-rect.height)/2));
-  const transition = { frame: 0, screen: 'placement', began: performance.now() };
-  entryTransition = transition;
-  canvas.hidden = false;
-  document.getElementById('btn-start').setAttribute('aria-busy', 'true');
-  function paint(now) {
-    if (entryTransition !== transition) return;
-    if (document.hidden) { transition.frame = requestAnimationFrame(paint); return; }
-    const elapsed = now - transition.began;
-    const spread = Math.min(1, elapsed / 900);
-    const eased = 1 - Math.pow(1-spread, 2.2);
-    const alpha = elapsed > 960 ? Math.max(0, 1-(elapsed-960)/560) : 1;
-    const reach = rect.height / 2 + radius * eased;
-    const feather = 16 + 20 * eased;
-    if (gpu) {
-      gpu = paintGPU?.entry(reach, feather, alpha);
-      // Keep the transparent fallback surface present until the transition ends;
-      // its hidden state is the public lifecycle marker for both renderers.
+// The Canvas fallback caches its pigment once, after the camera request has
+// already happened. Animation clips three immutable washes; there are no pixel
+// loops, SVG filters, DOM snapshots or regenerated noise on the capture thread.
+function prepareBrushRasters(w,h,originY,scale) {
+  const random = n => { const value=Math.sin(n*127.1+311.7)*43758.5453;return value-Math.floor(value); };
+  const noise=(t,seed)=>{const a=Math.floor(t),f=t-a,s=f*f*(3-2*f);return random(a+seed)*(1-s)+random(a+1+seed)*s;};
+  const smoothPath=points=>{
+    const path=new Path2D(),n=points.length;
+    path.moveTo((points[n-1].x+points[0].x)/2,(points[n-1].y+points[0].y)/2);
+    for(let j=0;j<n;j++) {const p=points[j],next=points[(j+1)%n];path.quadraticCurveTo(p.x,p.y,(p.x+next.x)/2,(p.y+next.y)/2);}
+    path.closePath();return path;
+  };
+  return Array.from({length:3},(_,i)=>{
+    const layer=document.createElement('canvas');layer.width=Math.round(w*scale);layer.height=Math.round(h*scale);
+    const ctx=layer.getContext('2d');ctx.scale(scale,scale);
+    const gradient=ctx.createLinearGradient(0,h*(.92-i*.39),w,h*.12);
+    gradient.addColorStop(0,'#3159c8');gradient.addColorStop(.38,'#7452aa');gradient.addColorStop(.73,'#268b91');gradient.addColorStop(1,'#3356c6');
+    const center=x=>(i===0?originY:h*(.92-i*.39))+h*(Math.sin(x/w*5.6+i*1.7)*.035-x/w*.045);
+    const pressure=x=>h*(.183+Math.sin(x/w*4.8+i*.8)*.035);
+    const edge=(x,side)=>center(x)+side*pressure(x)+(noise(x/w*8,i*71+side*13)-.5)*h*.011+(noise(x/w*31,i*43+side*17)-.5)*h*.005;
+    const outline=inset=>{
+      const points=[];
+      for(let j=0;j<=96;j++) {const x=(j/96*1.04-.02)*w;points.push({x,y:edge(x,-1)+inset});}
+      for(let j=96;j>=0;j--) {const x=(j/96*1.04-.02)*w;points.push({x,y:edge(x,1)-inset});}
+      return smoothPath(points);
+    };
+    layer.brushPath=outline(0);
+    // Cache a 3px capillary edge for the reveal too. Rendering only a shadow
+    // (the solid source is translated outside this bitmap) softly crosses the
+    // boundary on both sides; no blur/filter is evaluated during animation.
+    const mask=layer.revealMask=document.createElement('canvas');
+    mask.width=layer.width;mask.height=layer.height;
+    const maskCtx=mask.getContext('2d'),offset=w+32;
+    maskCtx.setTransform(scale,0,0,scale,offset*scale,0);
+    maskCtx.fillStyle='#fff';maskCtx.shadowColor='#fff';
+    maskCtx.shadowBlur=3*scale;maskCtx.shadowOffsetX=-offset*scale;
+    maskCtx.fill(layer.brushPath);
+    ctx.fillStyle=gradient;
+    // Shared smooth contours prevent independent polygon layers from forming
+    // a sawtooth edge. Tiny feathering lives outside the main brush silhouette.
+    for(const [inset,alpha] of [[-4,.04],[-1.5,.07],[0,.28],[2,.08]]) {ctx.globalAlpha=alpha;ctx.fill(outline(inset));}
+    ctx.save();ctx.clip(layer.brushPath);
+    // Local wet pigment blooms vary in size and density, fixed in paper space.
+    // These are prepared once; the live fallback only blits the cached wash.
+    for(let k=0;k<24;k++) {
+      const x=random(k*17+i*91)*w,y=center(x)+(random(k*29+i+5)-.5)*pressure(x)*1.8;
+      const radius=18+random(k+71)*58;
+      const cloud=ctx.createRadialGradient(x,y,1,x,y,radius);
+      cloud.addColorStop(0,k%3===0?'rgba(54,53,124,.10)':'rgba(253,251,247,.16)');cloud.addColorStop(1,'rgba(253,251,247,0)');
+      ctx.fillStyle=cloud;ctx.globalAlpha=1;ctx.fillRect(x-radius,y-radius,radius*2,radius*2);
     }
-    if (!gpu) {
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      ctx.globalAlpha = alpha;
-      canvas.hidden = false;
-      ctx.fillStyle = '#477beb';
-      ctx.beginPath();ctx.ellipse(x,y,reach+rect.width/3,reach,0,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle=gradient;
+    // Only a handful of broken, unequal bristle traces; never a full-width comb.
+    for(let k=0;k<7;k++) {
+      const from=random(k*19+i)*w*.7,to=Math.min(w,from+w*(.10+random(k+47)*.23));
+      const across=(random(k+53)-.5)*1.8;ctx.beginPath();
+      for(let j=0;j<=12;j++) {const x=from+(to-from)*j/12,y=center(x)+across*pressure(x)+noise(j*.14,k+31)*2;if(j)ctx.lineTo(x,y);else ctx.moveTo(x,y);}
+      ctx.globalAlpha=.025+random(k+71)*.025;ctx.lineWidth=.4+random(k+101)*.5;ctx.stroke();
     }
-    if (elapsed >= 900 && !transition.revealed) {
-      transition.revealed = true;
-      showScreen(transition.screen);
+    ctx.fillStyle='#455582';
+    for(let k=0;k<120;k++) {
+      const x=random(k*17+i)*w,y=center(x)+(random(k*29+i+5)-.5)*pressure(x)*1.92;
+      const radius=.35+random(k+13)*1.1;
+      ctx.globalAlpha=.018+random(k+101)*.035;ctx.beginPath();ctx.ellipse(x,y,radius,radius*.7,0,0,Math.PI*2);ctx.fill();
     }
-    if (elapsed >= 1520) { clearEntryTransition(); return; }
-    transition.frame = requestAnimationFrame(paint);
-  }
-  transition.frame = requestAnimationFrame(paint);
+    ctx.restore();ctx.globalAlpha=1;
+    return layer;
+  });
 }
 
-function showScreen(name) {
-  if (name === 'ready') { clearEntryTransition(); sessionStarting = false; }
-  if (entryTransition && !entryTransition.revealed && name !== 'ready') {
-    entryTransition.screen = name;
-    return;
+function drawBrushFallback(transition,progress,alpha) {
+  const { ctx,w,h,dpr,originY }=transition;
+  transition.rasters ||= prepareBrushRasters(w,h,originY,dpr);
+  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);ctx.globalAlpha=alpha;
+  ctx.fillStyle='#fdfbf7';ctx.fillRect(0,0,w,h);
+  for(let i=0;i<3;i++) {
+    const local=Math.max(0,Math.min(1,(progress-i*.22)/.52));if(!local)continue;
+    const head=(-.20+local*1.34)*w, reverse=i%2;
+    const tipX=reverse?w-head:head;
+    const tipCenter=(i===0?originY:h*(.92-i*.39))+h*(Math.sin(tipX/w*5.6+i*1.7)*.035-tipX/w*.045);
+    const tipWidth=h*(.183+Math.sin(tipX/w*4.8+i*.8)*.035);
+    ctx.save();ctx.beginPath();
+    ctx.moveTo(reverse?w:0,0);
+    // A small, deterministic bristle fringe follows the travelling brush tip.
+    for(let y=0;y<=h+12;y+=12) {
+      const pressure=Math.max(0,1-((y-tipCenter)/tipWidth)**2);
+      const edge=head+pressure*w*.09+Math.sin(y*.061+i)*5+Math.sin(y*.17)*2;
+      ctx.lineTo(reverse?w-edge:edge,y);
+    }
+    ctx.lineTo(reverse?w:0,h);ctx.closePath();ctx.clip();
+    ctx.globalCompositeOperation='destination-out';ctx.globalAlpha=1;ctx.drawImage(transition.rasters[i].revealMask,0,0,w,h);
+    ctx.globalCompositeOperation='source-over';ctx.globalAlpha=alpha*Math.max(.30,1-local*.62);
+    ctx.drawImage(transition.rasters[i],0,0,w,h);ctx.restore();
   }
+  ctx.globalAlpha=1;
+}
+
+// Screen state changes immediately. This noninteractive, purely visual wash
+// cannot delay camera permission, signal callbacks, recovery, or report data.
+function beginEntryTransition({ kind='entry', originElement } = {}) {
+  clearEntryTransition('replaced');
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches || document.hidden || !paintPageActive) return;
+  const canvas=document.getElementById('entry-pigment');
+  const rect=(originElement||document.getElementById('btn-start')).getBoundingClientRect();
+  const w=innerWidth,h=innerHeight,dpr=Math.min(devicePixelRatio||1,1.5,Math.sqrt(brushStats.fallbackPixelBudget/(w*h)));
+  const originY=kind==='entry' ? Math.max(h*.66,Math.min(h*.94,rect.top+rect.height/2)) : h*.90;
+  // Do not create/upload fallback textures inside this gesture.
+  canvas.width=Math.max(1,Math.round(w*dpr));canvas.height=Math.max(1,Math.round(h*dpr));
+  const ctx=canvas.getContext('2d');if(!ctx)return;
+  const gpu=paintGPU?.beginEntry(w,h,rect.left+rect.width/2,originY) || false;
+  const transition={ frame:0, began:performance.now(), kind, gpu, ctx,w,h,dpr,originY,
+    pixels:gpu ? window.__paintGpuStats?.surfaces.entry.pixels : canvas.width*canvas.height,
+    frames:0,previous:0,intervals:[], duration:kind==='entry'?1320:1000 };
+  entryTransition=transition;brushStats.active=true;canvas.hidden=false;
+  if(kind==='entry')document.getElementById('btn-start').setAttribute('aria-busy','true');
+  function paint(now) {
+    if(entryTransition!==transition)return;
+    if(document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches) { clearEntryTransition(document.hidden?'hidden':'reduced-motion');return; }
+    if(Math.abs(innerWidth-w)>2 || Math.abs(innerHeight-h)>2) {clearEntryTransition('resize');return;}
+    const elapsed=now-transition.began, time=elapsed/transition.duration;
+    if(time>=1) {clearEntryTransition();return;}
+    if(transition.previous)transition.intervals.push(now-transition.previous);
+    transition.previous=now;transition.frames++;
+    // The brush accelerates into a pass, slows under pressure, then the pigment
+    // gently dries away. The texture itself remains fixed throughout the move.
+    const travelTime=Math.min(1,time/.69), progress=travelTime*travelTime*(3-2*travelTime);
+    const dry=Math.max(0,Math.min(1,(time-.57)/.43));
+    const fade=1-dry*dry*(3-2*dry), alpha=fade*(kind==='entry'?.96:kind==='finish'?.65:.42);
+    if(transition.gpu)transition.gpu=paintGPU?.entry(progress,dry,alpha) || false;
+    if(!transition.gpu) {transition.pixels=canvas.width*canvas.height;drawBrushFallback(transition,progress,alpha);}
+    transition.frame=requestAnimationFrame(paint);
+  }
+  transition.frame=requestAnimationFrame(paint);
+}
+brushMotion.addEventListener?.('change',()=>{if(matchMedia('(prefers-reduced-motion: reduce)').matches)clearEntryTransition('reduced-motion');});
+document.addEventListener('visibilitychange',()=>{if(document.hidden)clearEntryTransition('hidden');});
+
+function showScreen(name, { brush } = {}) {
+  const previous=document.getElementById('app').dataset.activeScreen;
+  if(name==='ready') {clearEntryTransition('ready');sessionStarting=false;}
+  // Recovery coaching must remain immediately visible when a finger is lifted.
+  if(name==='placement' && previous==='measuring')clearEntryTransition('recovery');
+  if(brush==='return')beginEntryTransition({kind:'return',originElement:document.getElementById('btn-again')});
+  else if(name==='summary' && previous==='measuring')beginEntryTransition({kind:'finish',originElement:document.getElementById('btn-stop')});
+  else if(name==='measuring' && previous==='placement' && !entryTransition)beginEntryTransition({kind:'capture',originElement:document.getElementById('placement-wave-canvas')});
   for (const key in screens) screens[key].hidden = key !== name;
   document.getElementById('app').dataset.activeScreen = name;
   syncScreenChrome(name);
@@ -1336,7 +1438,7 @@ document.getElementById('btn-save-manuscript').addEventListener('click', () => {
 document.getElementById('btn-stop').addEventListener('click', stopSession);
 document.getElementById('btn-again').addEventListener('click', () => {
   if (monitor) { monitor.destroy(); monitor = null; }
-  showScreen('ready');
+  showScreen('ready', {brush:'return'});
 });
 document.getElementById('btn-save-log').addEventListener('click', () => {
   closeDebugSheet();

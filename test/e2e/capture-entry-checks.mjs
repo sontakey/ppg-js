@@ -50,6 +50,7 @@ export async function checkCaptureEntry(browser, url) {
     await page.evaluate(() => document.getElementById('btn-start').click());
     assert.equal(await page.evaluate(() => window.__entryTest.starts), 1, 'rapid duplicate start is ignored');
     assert.equal(await page.evaluate(() => window.__entryTest.gesture), true, 'camera starts inside the user gesture');
+    assert.equal(await page.locator('#screen-placement').isVisible(), true, 'placement state is live immediately beneath the nonblocking visual wash');
     if (reducedMotion === 'no-preference') {
       assert.equal(await page.evaluate(() => entryTransition !== null), true, 'pigment transition starts');
       assert.equal(await page.locator('#btn-start').getAttribute('aria-busy'), 'true', 'entry action announces the transition');
@@ -80,6 +81,52 @@ export async function checkCaptureEntry(browser, url) {
     assert.equal(await page.locator('#screen-ready').isVisible(), true, 'denial returns to ready');
     assert.equal(await page.evaluate(() => entryTransition), null, 'denial clears the pigment transition');
     assert.equal(await page.locator('#btn-start').getAttribute('aria-busy'), null, 'denial clears the busy state');
+    // Screen state, interruptions and accessible controls stay independent of
+    // the optional paint. These exercise the production transitions, not mocks.
+    if (reducedMotion === 'no-preference') {
+      await page.evaluate(() => { beginEntryTransition(); showScreen('placement'); showScreen('measuring'); });
+      assert.equal(await page.locator('#screen-measuring').isVisible(), true, 'capture state is never postponed by an entry wash');
+      await page.evaluate(() => showScreen('placement'));
+      assert.equal(await page.evaluate(() => entryTransition), null, 'finger recovery immediately removes any obscuring wash');
+      await page.evaluate(() => showScreen('measuring'));
+      assert.equal(await page.evaluate(() => entryTransition?.kind), 'capture', 'accepted signal uses a lighter brush pass');
+      await page.waitForFunction(() => entryTransition === null);
+      await page.evaluate(() => showScreen('summary'));
+      assert.equal(await page.evaluate(() => entryTransition?.kind), 'finish', 'report arrives through a finishing wash');
+      assert.equal(await page.locator('#screen-summary').isVisible(), true, 'report is live before its visual wash ends');
+      await page.locator('#btn-again').click();
+      assert.equal(await page.locator('#screen-ready').isVisible(), true, 'measure again works while the finishing wash is active');
+      assert.equal(await page.evaluate(() => entryTransition?.kind), 'return', 'a new gesture replaces the old transition');
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+      await page.waitForFunction(() => entryTransition === null);
+      assert.equal(await page.locator('#entry-pigment').isHidden(), true, 'changing motion preference clears the active overlay');
+      await page.emulateMedia({ reducedMotion: 'no-preference' });
+      await page.waitForFunction(() => !matchMedia('(prefers-reduced-motion: reduce)').matches);
+      await page.evaluate(() => beginEntryTransition());
+      assert.equal(await page.evaluate(() => entryTransition !== null), true, 'motion preference restoration permits a fresh transition');
+      await page.setViewportSize({ width: 400, height: 844 });
+      await page.waitForFunction(() => entryTransition === null);
+      assert.equal(await page.evaluate(() => __pulseBrushStats.history.at(-1).reason), 'resize', 'rotation or viewport resize cancels stale canvas dimensions');
+      await page.evaluate(() => {
+        beginEntryTransition();
+        Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      assert.equal(await page.evaluate(() => entryTransition), null, 'hidden documents cancel visual work immediately');
+      await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
+      assert.equal(await page.locator('#screen-ready').isVisible(), true, 'visibility recovery preserves the authoritative screen');
+      await page.evaluate(() => {
+        beginEntryTransition();
+        window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+      });
+      assert.equal(await page.evaluate(() => entryTransition), null, 'pagehide cancels animation before disposing GPU surfaces');
+      assert.equal(await page.locator('#entry-pigment').isHidden(), true, 'pagehide leaves no stale visual overlay');
+      await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
+      assert.equal(await page.evaluate(() => paintPageActive), true, 'back-forward cache restoration permits later paint warmup');
+      const diagnostics=await page.evaluate(() => __pulseBrushStats);
+      assert.ok(diagnostics.history.every(item => item.elapsedMs >= 0), 'transition timing records real lifecycle outcomes');
+      assert.equal(diagnostics.active, false, 'no animation remains scheduled after interruption');
+    }
     assert.deepEqual(errors, [], 'entry flow has no runtime errors');
     const video = page.video();
     await context.close();
