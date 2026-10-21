@@ -776,7 +776,7 @@ h1,.capture-title{font-size:clamp(54px,9vw,92px);line-height:.92;letter-spacing:
 .phone-panel::before { inset:0 -10px 58px; background:radial-gradient(ellipse at 3% 24%,#c7dcfa 0%,transparent 50%),radial-gradient(ellipse at 88% 68%,#9ebff0a6 0%,transparent 53%),linear-gradient(112deg,#e6effcb3,#d4e5fc99 52%,#ecf4ff); filter:url(#paint-edge); transform:rotate(-.7deg); animation:phone-paint-in 1.25s ease-out both; }
 .phone-panel::after { inset:auto 12px 65px 8%; height:14px; background:linear-gradient(90deg,transparent,#709ee459 20%,#3d7bc94d 75%,transparent); filter:url(#paint-edge); transform:rotate(.5deg); animation:phone-paint-in 1.5s ease-out both; }
 .phone-panel-kicker { font-size:11px; font-weight:650; letter-spacing:.13em; text-transform:uppercase; color:#42618d; margin:0 0 16px; }
-.phone-panel h2 { font-family:"Water Brush",cursive; font-synthesis:none; font-weight:400; font-size:56px; line-height:1.08; color:#214b87; margin:0 0 18px; padding-bottom:.12em; }
+.phone-panel h2 { font-family:"DM Sans",sans-serif; font-weight:550; font-size:clamp(28px,4vw,38px); line-height:1.15; letter-spacing:-.035em; color:#214b87; margin:0 0 18px; }
 .phone-panel-copy > p:not(.phone-panel-kicker) { max-width:360px; font-size:16px; line-height:1.65; color:#3d5271; margin:0 0 12px; }
 .phone-panel-copy > .phone-panel-instruction { font-size:14px!important; }
 .phone-panel-code { margin:0; align-self:center; text-align:center; }
@@ -791,8 +791,6 @@ h1,.capture-title{font-size:clamp(54px,9vw,92px);line-height:.92;letter-spacing:
   #screen-ready.desktop-ready { padding:36px 26px 24px; }
   #screen-ready.desktop-ready h1 { font-size:68px; }
   .phone-panel { grid-template-columns:1fr; padding:34px 24px 22px; gap:22px; }
-  .phone-panel h2 { font-size:49px; }
-  .phone-panel h2 br { display:none; }
   .phone-panel-code { width:228px; max-width:100%; justify-self:center; }
   .phone-panel-link { justify-self:center; }
   .phone-panel-disclaimer { margin-top:24px; }

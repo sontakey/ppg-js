@@ -4,6 +4,16 @@
   padding: 16px 0 12px;
   min-width: 0;
 }
+/* The standalone artwork carries the brush headline on this screen. */
+#screen-summary .report-header:has(.pulse-portrait) .report-title {
+  font-family: "DM Sans", sans-serif;
+  font-weight: 550;
+  font-size: clamp(32px, 6vw, 48px);
+  line-height: 1.15;
+  letter-spacing: -.035em;
+  padding: 0;
+  margin: 0 0 12px;
+}
 .portrait-preview { margin: 0; min-width: 0; }
 .portrait-preview canvas {
   display: block;
