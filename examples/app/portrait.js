@@ -194,27 +194,33 @@
 
   async function mount(container, options = {}) {
     clear(container);
+    if (options.shareButton) options.shareButton.disabled = true;
+    if (options.saveButton) options.saveButton.disabled = true;
     const composition = prepare(options);
     if (!composition.rows.length || typeof options.paintRows !== 'function') { container.hidden = true; return null; }
     container.hidden = false;
     const section = document.createElement('section'); section.className = 'pulse-portrait';
     section.setAttribute('aria-label', 'Your pulse artwork');
-    section.innerHTML = `<figure class="portrait-preview"><canvas width="1080" height="1350" role="img"></canvas><figcaption>Selected moments from your recording. Your full manuscript is available below.</figcaption></figure>
+    section.innerHTML = `<figure class="portrait-preview"><canvas width="1080" height="1350" role="img"></canvas><figcaption>Selected moments from your recording. Your full manuscript is available in the menu.</figcaption></figure>
       <label class="portrait-options"><input type="checkbox" disabled><span>Include pulse and HRV metrics in artwork</span></label>
-      <div class="portrait-actions"><button type="button" class="btn-primary portrait-share" disabled>Share artwork</button><button type="button" class="btn-secondary portrait-save" disabled>Save artwork</button></div>
       <p class="portrait-status" role="status" aria-live="polite">Preparing your artwork…</p>`;
     container.append(section);
     const canvas = section.querySelector('canvas'), checkbox = section.querySelector('input');
-    const share = section.querySelector('.portrait-share'), save = section.querySelector('.portrait-save');
+    const share = options.shareButton, save = options.saveButton;
     const status = section.querySelector('.portrait-status');
     const duration = durationLabel(options.durationSec), date = dateLabel(options.startedAt);
-    const state = { canvas, section, composition, options, includeMetrics: false, blob: null, file: null, renderVersion: 0, disposed: false, urls: new Set() };
+    const state = { canvas, section, composition, options, includeMetrics: false, blob: null, file: null, sharing: false, renderVersion: 0, disposed: false, urls: new Set() };
+    const syncActions = () => {
+      if (share) share.disabled = !state.file || state.sharing || state.disposed;
+      if (save) save.disabled = !state.blob || state.disposed;
+    };
+    syncActions();
     instances.set(container, state);
     canvas.setAttribute('aria-label', `Pulse on Paper. Selected moments from ${duration} of recorded pulse${date ? ` on ${date}` : ''}. Metrics excluded from artwork.`);
 
     const render = () => {
       const version = ++state.renderVersion;
-      state.blob = null; state.file = null; share.disabled = true; save.disabled = true;
+      state.blob = null; state.file = null; syncActions();
       const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, WIDTH, HEIGHT); ctx.drawImage(state.paper, 0, 0);
       ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = INK;
       ctx.font = '400 136px "Water Brush", cursive';
@@ -245,10 +251,10 @@
       state.ready = new Promise(resolve => {
         canvas.toBlob(blob => {
           if (state.disposed || version !== state.renderVersion) { resolve(null); return; }
-          if (!blob) { checkbox.disabled = true; status.textContent = 'The artwork could not be prepared. Your full manuscript is still available below.'; resolve(null); return; }
+          if (!blob) { checkbox.disabled = true; status.textContent = 'The artwork could not be prepared. Your full manuscript is still available in the menu.'; resolve(null); return; }
           state.blob = blob;
           state.file = new File([blob], 'pulse-on-paper.png', { type: 'image/png' });
-          share.disabled = false; save.disabled = false; status.textContent = ''; resolve(blob);
+          syncActions(); status.textContent = ''; resolve(blob);
         }, 'image/png');
       });
       return state.ready;
@@ -263,25 +269,31 @@
       setTimeout(() => { URL.revokeObjectURL(url); state.urls.delete(url); }, 60000);
       status.textContent = 'Artwork download started.';
     };
-    save.addEventListener('click', download);
-    share.addEventListener('click', () => {
-      if (!state.file) return;
+    const shareArtwork = () => {
+      if (!state.file || state.sharing || state.disposed) return;
       const data = { files: [state.file], title: 'Pulse on Paper' };
       let supported = false;
       try { supported = typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare(data); } catch { /* Use the independent download path. */ }
       if (!supported) { download(); return; }
-      share.disabled = true;
+      state.sharing = true; syncActions();
       // Invoke synchronously within the tap, using the already prepared file.
       try {
         Promise.resolve(navigator.share(data)).then(() => {
           if (!state.disposed) status.textContent = 'Artwork shared.';
         }).catch(error => {
-          if (!state.disposed) status.textContent = error?.name === 'AbortError' ? '' : 'Sharing is unavailable. Use Save artwork to keep your portrait.';
-        }).finally(() => { if (!state.disposed) share.disabled = false; });
+          if (!state.disposed) status.textContent = error?.name === 'AbortError' ? '' : 'Sharing is unavailable. Choose Save artwork from the menu to keep your portrait.';
+        }).finally(() => { state.sharing = false; if (!state.disposed) syncActions(); });
       } catch (error) {
-        share.disabled = false; status.textContent = error?.name === 'AbortError' ? '' : 'Sharing is unavailable. Use Save artwork to keep your portrait.';
+        state.sharing = false; syncActions(); status.textContent = error?.name === 'AbortError' ? '' : 'Sharing is unavailable. Choose Save artwork from the menu to keep your portrait.';
       }
-    });
+    };
+    save?.addEventListener('click', download);
+    share?.addEventListener('click', shareArtwork);
+    state.releaseActions = () => {
+      save?.removeEventListener('click', download);
+      share?.removeEventListener('click', shareArtwork);
+      syncActions();
+    };
     checkbox.addEventListener('change', () => {
       state.includeMetrics = checkbox.checked; status.textContent = 'Preparing your artwork…'; render();
     });
@@ -295,7 +307,7 @@
       await render();
       return state;
     } catch {
-      if (!state.disposed) { checkbox.disabled = true; status.textContent = 'The artwork could not be prepared. Your full manuscript is still available below.'; }
+      if (!state.disposed) { checkbox.disabled = true; status.textContent = 'The artwork could not be prepared. Your full manuscript is still available in the menu.'; }
       return null;
     }
   }
@@ -304,6 +316,7 @@
     for (const [target, state] of instances) {
       if (container && container !== target) continue;
       state.disposed = true; state.renderVersion++;
+      state.releaseActions?.();
       state.urls.forEach(url => URL.revokeObjectURL(url)); state.urls.clear();
       target.replaceChildren(); instances.delete(target);
     }

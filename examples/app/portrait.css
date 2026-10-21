@@ -38,24 +38,6 @@
   margin: 0;
   accent-color: #2855ff;
 }
-.portrait-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
-}
-.portrait-actions button {
-  font-family: "DM Sans", sans-serif;
-  min-width: 0;
-  min-height: 52px;
-  padding: 12px;
-  font-size: 16px;
-  font-weight: 600;
-  line-height: 1.4;
-  border-radius: 26px;
-  white-space: normal;
-  touch-action: manipulation;
-}
-.portrait-actions button:disabled { opacity: .6; cursor: wait; }
 .portrait-status {
   min-height: 24px;
   margin: 12px 0 0;
@@ -64,12 +46,9 @@
   color: #445775;
 }
 .portrait-options input:focus-visible { outline: 3px solid #2855ff; outline-offset: 4px; }
-@media (max-width: 360px) {
-  .portrait-actions { gap: 8px; }
-  .portrait-actions button { padding: 12px 8px; font-size: 15px; }
-}
+.portrait-status:empty { display: none; }
 @media print {
-  .portrait-options, .portrait-actions, .portrait-status { display: none; }
+  .portrait-options, .portrait-status { display: none; }
   .pulse-portrait { break-inside: avoid; }
   .portrait-preview canvas { box-shadow: none; }
 }

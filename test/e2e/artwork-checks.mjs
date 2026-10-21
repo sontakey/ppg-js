@@ -6,6 +6,33 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
+export async function openReportMenu(page) {
+  if (!await page.locator('#debug-sheet').isVisible()) await page.locator('#btn-debug-menu').click();
+  await page.locator('#debug-sheet').waitFor({ state: 'visible' });
+}
+
+export async function closeReportMenu(page) {
+  if (await page.locator('#debug-sheet').isVisible()) await page.locator('#btn-debug-close').click();
+}
+
+async function checkReportActions(page) {
+  const actions = page.locator('#screen-summary .summary-actions');
+  assert.deepEqual(await actions.locator('button').allTextContents(), ['Share artwork', 'Measure again'], 'report dock contains only Share artwork and Measure again');
+  assert.equal(await page.getByRole('button', { name: 'Share artwork', exact: true, includeHidden: true }).count(), 1, 'report contains one Share artwork action');
+  assert.equal(await page.locator('.portrait-actions').count(), 0, 'artwork has no duplicate inline action row');
+  assert.equal(await actions.locator('#btn-share-artwork.btn-primary').count(), 1, 'Share artwork is the primary report action');
+  assert.equal(await actions.getByRole('button', { name: 'Save report', exact: true }).count(), 0, 'Save report is absent from the floating dock');
+}
+
+export async function checkEmptyArtworkActions(page) {
+  await checkReportActions(page);
+  assert.equal(await page.locator('#btn-share-artwork').isDisabled(), true, 'an empty report cannot share nonexistent artwork');
+  await openReportMenu(page);
+  try {
+    assert.equal(await page.locator('#debug-sheet #btn-save-artwork').isDisabled(), true, 'an empty report cannot save nonexistent artwork');
+  } finally { await closeReportMenu(page); }
+}
+
 export async function checkReportDockViewport(page) {
   const result = await page.evaluate(async () => {
     const originalViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport');
@@ -66,12 +93,16 @@ export async function checkReportDockViewport(page) {
 
 export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFACTS) {
   await page.waitForFunction(() => window.PulsePortrait?.getState()?.ready);
+  await checkReportActions(page);
+  assert.equal(await page.locator('#btn-share-artwork').isEnabled(), true, 'floating Share artwork becomes available when its PNG is ready');
   const preparation = await page.evaluate(async () => {
     const host = document.createElement('div');
     host.style.cssText = 'position:fixed;left:-10000px;width:500px';
     document.body.append(host);
     const fonts = document.fonts;
     const originalLoad = Object.getOwnPropertyDescriptor(fonts, 'load');
+    const shareButton = document.createElement('button');
+    const saveButton = document.createElement('button');
     let releaseFonts;
     const fontGate = new Promise(resolve => { releaseFonts = resolve; });
     try {
@@ -82,13 +113,21 @@ export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFA
         durationSec: elapsedMeasuringMs / 1000,
         startedAt: new Date(portraitStartedAt || Date.now()),
         pigmentAt,
+        shareButton, saveButton,
         paintRows: (canvas, rowIndices) => paintManuscriptRaster(canvas, false, true, null, true, { rowIndices }),
       });
       const checkbox = host.querySelector('.portrait-options input');
-      const disabledWhilePreparing = checkbox.disabled;
+      const disabledWhilePreparing = checkbox.disabled && shareButton.disabled && saveButton.disabled;
       releaseFonts([]);
-      await mounting;
-      return { disabledWhilePreparing, enabledWhenReady: !checkbox.disabled && PulsePortrait.getState(host).ready };
+      const state = await mounting;
+      const enabledWhenReady = !checkbox.disabled && !shareButton.disabled && !saveButton.disabled && PulsePortrait.getState(host).ready;
+      checkbox.click();
+      const disabledWhileRegenerating = shareButton.disabled && saveButton.disabled;
+      await state.ready;
+      const enabledAfterRegenerating = !shareButton.disabled && !saveButton.disabled && PulsePortrait.getState(host).ready;
+      PulsePortrait.clear(host);
+      const disabledAfterClear = shareButton.disabled && saveButton.disabled;
+      return { disabledWhilePreparing, enabledWhenReady, disabledWhileRegenerating, enabledAfterRegenerating, disabledAfterClear };
     } finally {
       releaseFonts([]);
       if (originalLoad) Object.defineProperty(fonts, 'load', originalLoad); else delete fonts.load;
@@ -96,8 +135,11 @@ export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFA
       host.remove();
     }
   });
-  assert.equal(preparation.disabledWhilePreparing, true, 'metrics toggle is unavailable until artwork resources exist');
-  assert.equal(preparation.enabledWhenReady, true, 'metrics toggle becomes available after artwork preparation');
+  assert.equal(preparation.disabledWhilePreparing, true, 'metrics toggle and external artwork actions are unavailable until artwork resources exist');
+  assert.equal(preparation.enabledWhenReady, true, 'metrics toggle and external artwork actions become available after preparation');
+  assert.equal(preparation.disabledWhileRegenerating, true, 'external artwork actions wait for regenerated PNG pixels');
+  assert.equal(preparation.enabledAfterRegenerating, true, 'external artwork actions become available after regeneration');
+  assert.equal(preparation.disabledAfterClear, true, 'clearing a portrait disables its external artwork controls');
   const canvas = page.locator('.portrait-preview canvas');
   const checkbox = page.locator('.portrait-options input');
   const originalViewport = page.viewportSize();
@@ -176,18 +218,22 @@ export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFA
         overflow: document.documentElement.scrollWidth > innerWidth,
         canvasSupportText: canvasWidth / 1080 * 60,
         labels: [...section.querySelectorAll('p,figcaption,label,button')].map(element => ({ font: parseFloat(getComputedStyle(element).fontSize), height: element.getBoundingClientRect().height })),
-        actionHeights: [...section.querySelectorAll('button')].map(button => button.getBoundingClientRect().height),
+        actionHeights: [...document.querySelectorAll('#screen-summary .summary-actions button')].map(button => button.getBoundingClientRect().height),
       };
     });
     assert.equal(layout.overflow, false, `portrait fits ${width}px viewport`);
     assert.ok(layout.canvasSupportText >= 14, `artwork labels remain at least 14px at ${width}px viewport`);
     assert.ok(layout.labels.every(label => label.font >= 14), `portrait supporting labels remain at least 14px at ${width}px viewport`);
-    assert.ok(layout.actionHeights.every(height => height >= 44), 'portrait actions retain touch target height');
+    assert.ok(layout.actionHeights.length === 2 && layout.actionHeights.every(height => height >= 44), 'floating report actions retain touch target height');
   }
   await checkReportDockViewport(page);
   await page.setViewportSize(originalViewport);
 
-  const [saved] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Save artwork', exact: true }).click()]);
+  await openReportMenu(page);
+  assert.equal(await page.locator('#debug-sheet').getByRole('button', { name: 'Save report', exact: true }).count(), 1, 'scientific report export is available in the menu');
+  assert.equal(await page.locator('#debug-sheet #btn-save-artwork').isEnabled(), true, 'ready artwork can be saved from the menu');
+  const [saved] = await Promise.all([page.waitForEvent('download'), page.locator('#debug-sheet').getByRole('button', { name: 'Save artwork', exact: true }).click()]);
+  await closeReportMenu(page);
   assert.equal(await saved.failure(), null, 'artwork download succeeds');
   assert.equal(saved.suggestedFilename(), 'pulse-on-paper.png', 'artwork filename');
   const png = readFileSync(await saved.path());
@@ -215,6 +261,7 @@ export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFA
         keys: Object.keys(data).sort(), title: data.title, name: file.name, type: file.type, size: file.size,
         digest: [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join(''),
       });
+      await new Promise(resolve => { window.__portraitShareResolve = resolve; });
     } });
   });
   try {
@@ -226,11 +273,14 @@ export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFA
     assert.equal(shared.type, 'image/png');
     assert.equal(shared.size, png.length);
     assert.equal(shared.digest, hash(png), 'native sharing uses the same cached PNG as Save artwork');
+    assert.equal(await page.locator('#btn-share-artwork').isDisabled(), true, 'floating Share artwork is disabled while the native share operation is pending');
+    await page.evaluate(() => window.__portraitShareResolve());
     await page.waitForFunction(() => document.querySelector('.portrait-status').textContent === 'Artwork shared.');
+    await page.waitForFunction(() => !document.querySelector('#btn-share-artwork').disabled);
 
     await page.evaluate(() => Object.defineProperty(navigator, 'share', { configurable: true, value: () => Promise.reject(new DOMException('Cancelled', 'AbortError')) }));
     await page.getByRole('button', { name: 'Share artwork', exact: true }).click();
-    await page.waitForFunction(() => !document.querySelector('.portrait-share').disabled && document.querySelector('.portrait-status').textContent === '');
+    await page.waitForFunction(() => !document.querySelector('#btn-share-artwork').disabled && document.querySelector('.portrait-status').textContent === '');
     assert.equal(await page.locator('.portrait-status').textContent(), '', 'cancelling the native share sheet is quiet');
 
     await page.evaluate(() => Object.defineProperty(navigator, 'canShare', { configurable: true, value: () => false }));
@@ -239,14 +289,38 @@ export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFA
     assert.equal(hash(readFileSync(await fallback.path())), hash(png), 'fallback download preserves the artwork');
   } finally {
     await page.evaluate(() => {
+      window.__portraitShareResolve?.();
       for (const name of ['canShare', 'share']) {
         const descriptor = window.__portraitShareOriginal[name];
         if (descriptor) Object.defineProperty(navigator, name, descriptor); else delete navigator[name];
       }
-      delete window.__portraitShareOriginal; delete window.__portraitShareCalls;
+      delete window.__portraitShareOriginal; delete window.__portraitShareCalls; delete window.__portraitShareResolve;
     });
   }
-  assert.equal(await page.getByRole('button', { name: 'Save report', exact: true }).count(), 1, 'scientific report export stays separate');
+  assert.equal(await page.locator('#debug-sheet #btn-save-report').count(), 1, 'scientific report export stays separate in the menu');
   assert.equal(await page.getByRole('button', { name: 'Measure again', exact: true }).count(), 1, 'report retains a separate new-measurement action');
+  await page.evaluate(() => {
+    window.__artworkOriginalPrint = Object.getOwnPropertyDescriptor(window, 'print');
+    Object.defineProperty(window, 'print', { configurable: true, value: () => {
+      window.__artworkPrint = {
+        menuHidden: document.getElementById('debug-sheet').hidden,
+        detailsOpen: [...document.querySelectorAll('.report-disclosure,.time-details,.ans-methods')].every(details => details.open),
+      };
+      window.dispatchEvent(new Event('afterprint'));
+    } });
+  });
+  try {
+    await openReportMenu(page);
+    await page.locator('#debug-sheet').getByRole('button', { name: 'Save report', exact: true }).click();
+    await page.waitForFunction(() => window.__artworkPrint);
+    assert.deepEqual(await page.evaluate(() => window.__artworkPrint), { menuHidden: true, detailsOpen: true }, 'Save report closes the options menu before printing the complete report');
+  } finally {
+    await page.evaluate(() => {
+      if (window.__artworkOriginalPrint) Object.defineProperty(window, 'print', window.__artworkOriginalPrint);
+      else delete window.print;
+      delete window.__artworkOriginalPrint; delete window.__artworkPrint;
+    });
+    await closeReportMenu(page);
+  }
   return { width: 1080, height: 1350, selectedRows: captured.state.selectedRows, durationSec: captured.state.durationSec, bytes: png.length, nativeShareScope: 'mocked browser API only' };
 }

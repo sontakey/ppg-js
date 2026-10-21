@@ -384,6 +384,10 @@ function syncScreenChrome(name) {
     : name === 'placement' ? document.getElementById('placement-actions')
     : document.querySelector('.project-attribution');
   tools.append(document.getElementById('btn-debug-menu'));
+  const report = name === 'summary';
+  document.getElementById('report-menu-actions').hidden = !report;
+  document.getElementById('btn-debug-menu').setAttribute('aria-label', report ? 'Report options' : 'More options');
+  document.getElementById('debug-sheet').setAttribute('aria-label', report ? 'Report options' : 'More options');
 }
 
 let monitor = null;
@@ -972,6 +976,9 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const el = document.getElementById('report-content');
   if (portraitHost) window.PulsePortrait?.clear(portraitHost);
   portraitHost = null;
+  document.getElementById('btn-share-artwork').disabled = true;
+  document.getElementById('btn-save-artwork').disabled = true;
+  document.getElementById('btn-save-manuscript').disabled = !manuscript.segments.length;
   el.innerHTML = '';
 
   const beats = acceptedBeats.map(b => (typeof b === 'number' ? { ibiMs: b } : b));
@@ -1011,6 +1018,8 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
     header.querySelector('.report-date').after(portraitHost);
     document.getElementById('report-manuscript').hidden = true;
     void window.PulsePortrait.mount(portraitHost, {
+      shareButton: document.getElementById('btn-share-artwork'),
+      saveButton: document.getElementById('btn-save-artwork'),
       segments: manuscript.segments,
       start: manuscript.segments[0].points[0].t,
       end: manuscript.segments.at(-1).points.at(-1).t,
@@ -1319,16 +1328,22 @@ document.getElementById('btn-pause').addEventListener('click', () => {
   document.getElementById('pause-note').textContent=manuscript.paused?'Artwork paused. Your 3-minute measurement continues.':'3-minute recording · Not a medical device';
   if(lastMetrics) updateMeasuringScreen(lastMetrics);
 });
-document.getElementById('btn-save-manuscript').addEventListener('click', saveManuscript);
+document.getElementById('btn-save-artwork').addEventListener('click', () => closeDebugSheet());
+document.getElementById('btn-save-manuscript').addEventListener('click', () => {
+  closeDebugSheet();
+  saveManuscript();
+});
 document.getElementById('btn-stop').addEventListener('click', stopSession);
 document.getElementById('btn-again').addEventListener('click', () => {
   if (monitor) { monitor.destroy(); monitor = null; }
   showScreen('ready');
 });
 document.getElementById('btn-save-log').addEventListener('click', () => {
+  closeDebugSheet();
   if (monitor) monitor.downloadDebugLog('hrv-spot-check');
 });
 document.getElementById('btn-save-report').addEventListener('click', () => {
+  closeDebugSheet();
   const closed=[...document.querySelectorAll('.report-disclosure, .time-details, .ans-methods')].filter(d=>!d.open);
   closed.forEach(d=>d.open=true);
   window.addEventListener('afterprint',()=>closed.forEach(d=>d.open=false),{once:true});
@@ -1373,17 +1388,35 @@ function debugLogSummary(log) {
   ].join('\n');
 }
 
+let menuReturnFocus = null;
+function menuControls() {
+  return [...document.getElementById('debug-sheet').querySelectorAll('button:not(:disabled), input:not(:disabled)')]
+    .filter(control => control.getClientRects().length);
+}
 function openDebugSheet() {
+  menuReturnFocus = document.getElementById('btn-debug-menu');
   document.getElementById('debug-sheet-backdrop').hidden = false;
   document.getElementById('debug-sheet').hidden = false;
+  document.getElementById('btn-debug-menu').setAttribute('aria-expanded', 'true');
+  menuControls()[0]?.focus({ preventScroll: true });
 }
 function closeDebugSheet() {
   document.getElementById('debug-sheet-backdrop').hidden = true;
   document.getElementById('debug-sheet').hidden = true;
+  document.getElementById('btn-debug-menu').setAttribute('aria-expanded', 'false');
+  menuReturnFocus?.focus({ preventScroll: true });
+  menuReturnFocus = null;
 }
 document.getElementById('btn-debug-menu').addEventListener('click', openDebugSheet);
 document.getElementById('debug-sheet-backdrop').addEventListener('click', closeDebugSheet);
 document.getElementById('btn-debug-close').addEventListener('click', closeDebugSheet);
+document.getElementById('debug-sheet').addEventListener('keydown', event => {
+  if (event.key === 'Escape') { event.preventDefault(); closeDebugSheet(); return; }
+  if (event.key !== 'Tab') return;
+  const controls = menuControls(), first = controls[0], last = controls.at(-1);
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+});
 
 document.getElementById('btn-debug-share').addEventListener('click', async () => {
   const log = getLastSessionLog();
