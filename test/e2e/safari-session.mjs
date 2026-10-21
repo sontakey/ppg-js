@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { webkit, devices } from 'playwright';
 import { instrumentReportGraphText } from './report-graph-checks.mjs';
-import { checkArtwork } from './artwork-checks.mjs';
+import { checkArtwork, openReportMenu } from './artwork-checks.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const out = path.resolve(root, process.env.PPG_SAFARI_ARTIFACTS || '.dream-loop/safari-session-check');
@@ -296,6 +296,7 @@ try {
     await page.locator(`#${graph.id}`).locator('..').screenshot({ path: `${out}/${graph.id}-320.png` });
   }
   evidence.artwork = await checkArtwork(page, out);
+  await openReportMenu(page);
   const [download] = await Promise.all([page.waitForEvent('download'), page.locator('#btn-save-manuscript').click()]);
   assert.equal(await download.failure(), null);
   await download.saveAs(`${out}/manuscript.png`);
@@ -309,6 +310,7 @@ try {
     window.print = () => { window.__printOpened = nodes.map(node => node.open); window.dispatchEvent(new Event('afterprint')); window.__printRestored = nodes.map(node => node.open); };
     return nodes.map(node => node.open);
   });
+  await openReportMenu(page);
   await page.locator('#btn-save-report').click();
   await page.waitForFunction(() => window.__printRestored !== undefined);
   evidence.print = await page.evaluate(() => ({ opened: window.__printOpened, restored: window.__printRestored }));

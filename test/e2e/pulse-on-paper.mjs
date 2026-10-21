@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
 import { instrumentReportGraphText, checkReportGraphs } from './report-graph-checks.mjs';
 import { checkCaptureEntry } from './capture-entry-checks.mjs';
-import { checkArtwork } from './artwork-checks.mjs';
+import { checkArtwork, openReportMenu, checkEmptyArtworkActions } from './artwork-checks.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const log = JSON.parse(readFileSync(process.env.PPG_SESSION_LOG || path.join(root, 'test/fixtures/iphone-200s.json'), 'utf8'));
@@ -165,6 +165,7 @@ try {
   const charts = await page.locator('.report-canvas-wrap canvas').evaluateAll(nodes => nodes.map(c => ({ width: c.width, height: c.height, visible: c.getBoundingClientRect().width > 0 })));
   assert.ok(charts.every(c => c.width > 0 && c.height > 0 && c.visible), 'expanded charts have actual dimensions');
   await checkReportGraphs(page);
+  await openReportMenu(page);
   const [download] = await Promise.all([
     page.waitForEvent('download'),
     page.getByRole('button', { name: 'Save manuscript', exact: true }).click(),
@@ -174,6 +175,7 @@ try {
   assert.equal(png.subarray(1, 4).toString(), 'PNG');
   assert.ok(png.readUInt32BE(16) <= 1200 && png.readUInt32BE(20) <= 8192, 'bounded PNG dimensions');
   await page.evaluate(() => { window.print = () => { window.__printedOpen = [...document.querySelectorAll('.report-disclosure,.time-details,.ans-methods')].every(d => d.open); window.dispatchEvent(new Event('afterprint')); }; });
+  await openReportMenu(page);
   await page.getByRole('button', { name: 'Save report', exact: true }).click();
   await page.waitForFunction(() => window.__printedOpen !== undefined);
   assert.equal(await page.evaluate(() => window.__printedOpen), true, 'print opens all report detail');
@@ -216,6 +218,7 @@ try {
   assert.deepEqual(timing, { held: 1000, resumed: 2000 }, 'finger-loss time is excluded from countdown');
   await page.evaluate(() => { monitor = { getSessionSummary: () => ({ goodFraction: 0 }) }; renderReport([], undefined, null); showScreen('summary'); });
   assert.match(await page.locator('#report-content').innerText(), /No good-quality windows/);
+  await checkEmptyArtworkActions(page);
   assert.deepEqual(errors, [], 'no runtime errors');
   await checkCaptureEntry(browser, url);
   console.log('PASS: Pulse on Paper capture, quality attribution, pause, report, exports, responsive layouts and unavailable-data handling');

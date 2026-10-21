@@ -10,11 +10,17 @@
 <body>
 <div id="app" class="screen-host">
 
-  <!-- DEBUG MENU: '...' trigger + bottom sheet, present on every screen -->
-  <button id="btn-debug-menu" class="debug-menu-trigger" type="button" aria-label="Debug menu">&#8942;</button>
+  <!-- More options: report downloads and session tools. -->
+  <button id="btn-debug-menu" class="debug-menu-trigger" type="button" aria-label="More options" aria-haspopup="dialog" aria-controls="debug-sheet" aria-expanded="false">&#8942;</button>
   <div id="debug-sheet-backdrop" class="debug-sheet-backdrop" hidden></div>
-  <div id="debug-sheet" class="debug-sheet" hidden role="dialog" aria-label="Debug menu">
+  <div id="debug-sheet" class="debug-sheet" hidden role="dialog" aria-modal="true" aria-label="More options">
     <div class="debug-sheet-handle"></div>
+    <div id="report-menu-actions" class="report-menu-actions" aria-label="Report downloads" hidden>
+      <button id="btn-save-artwork" class="btn-secondary btn-bordered" type="button" disabled>Save artwork</button>
+      <button id="btn-save-report" class="btn-secondary btn-bordered" type="button">Save report</button>
+      <button id="btn-save-manuscript" class="btn-secondary btn-bordered" type="button">Save manuscript</button>
+      <button id="btn-save-log" class="btn-secondary btn-bordered" type="button">Save debug log</button>
+    </div>
     <button id="btn-debug-share" class="btn-secondary btn-bordered" type="button">Share last session log</button>
     <button id="btn-debug-copy" class="btn-secondary btn-bordered" type="button">Copy log summary</button>
     <label class="debug-toggle-row"><input type="checkbox" id="chk-live-stats"> Show live stats</label>
@@ -123,12 +129,8 @@
     <div class="content report-content" id="report-content">
       <!-- rendered entirely by renderReport() in app.js -->
     </div>
-    <div class="report-downloads no-print" aria-label="Additional downloads">
-      <button id="btn-save-manuscript" class="btn-secondary" type="button">Save manuscript</button>
-      <button id="btn-save-log" class="btn-secondary btn-bordered" type="button">Save debug log</button>
-    </div>
     <div class="summary-actions mobile-action-dock no-print" aria-label="Report actions">
-      <button id="btn-save-report" class="btn-primary" type="button">Save report</button>
+      <button id="btn-share-artwork" class="btn-primary portrait-share" type="button" disabled>Share artwork</button>
       <button id="btn-again" class="btn-secondary" type="button">Measure again</button>
     </div>
   </section>
