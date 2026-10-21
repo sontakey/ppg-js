@@ -305,11 +305,12 @@ const brushMotion = matchMedia('(prefers-reduced-motion: reduce)');
 function clearEntryTransition(reason = 'complete') {
   const transition = entryTransition;
   if (transition) {
-    cancelAnimationFrame(transition.frame);
+    cancelAnimationFrame(transition.frame);clearTimeout(transition.preparationTimeout);
     const intervals = transition.intervals.slice().sort((a,b) => a-b);
     const total = intervals.reduce((sum,dt) => sum+dt,0);
     brushStats.history.push({ kind: transition.kind, renderer: transition.gpu ? 'gpu' : 'canvas2d', reason,
-      frames: transition.frames, elapsedMs: Math.round(performance.now()-transition.began),
+      frames: transition.frames, elapsedMs: Math.round(performance.now()-transition.created),
+      preparationMs: transition.preparing ? Math.round(performance.now()-transition.created) : transition.preparationMs || 0, preparationTimedOut: transition.preparationTimedOut || false,
       fps: total ? Math.round(intervals.length / total * 100000) / 100 : null,
       p95FrameMs: intervals.length ? intervals[Math.floor((intervals.length-1)*.95)] : null,
       over33ms: intervals.filter(dt=>dt>33.34).length, pixels: transition.pixels });
@@ -421,7 +422,7 @@ function drawBrushFallback(transition,progress,alpha) {
 
 // Screen state changes immediately. This noninteractive, purely visual wash
 // cannot delay camera permission, signal callbacks, recovery, or report data.
-function beginEntryTransition({ kind='entry', originElement } = {}) {
+function beginEntryTransition({ kind='entry', originElement, prepare } = {}) {
   clearEntryTransition('replaced');
   if (matchMedia('(prefers-reduced-motion: reduce)').matches || document.hidden || !paintPageActive) return;
   const canvas=document.getElementById('entry-pigment');
@@ -432,9 +433,10 @@ function beginEntryTransition({ kind='entry', originElement } = {}) {
   canvas.width=Math.max(1,Math.round(w*dpr));canvas.height=Math.max(1,Math.round(h*dpr));
   const ctx=canvas.getContext('2d');if(!ctx)return;
   const gpu=paintGPU?.beginEntry(w,h,rect.left+rect.width/2,originY) || false;
-  const transition={ frame:0, began:performance.now(), kind, gpu, ctx,w,h,dpr,originY,
+  const created=performance.now();
+  const transition={ frame:0, began:created, created, kind, gpu, ctx,w,h,dpr,originY,
     pixels:gpu ? window.__paintGpuStats?.surfaces.entry.pixels : canvas.width*canvas.height,
-    frames:0,previous:0,intervals:[], duration:kind==='entry'?1320:1000 };
+    frames:0,previous:0,intervals:[], preparing:!!prepare, duration:kind==='entry'?1320:1000 };
   entryTransition=transition;brushStats.active=true;canvas.hidden=false;
   if(kind==='entry')document.getElementById('btn-start').setAttribute('aria-busy','true');
   function paint(now) {
@@ -454,7 +456,28 @@ function beginEntryTransition({ kind='entry', originElement } = {}) {
     if(!transition.gpu) {transition.pixels=canvas.width*canvas.height;drawBrushFallback(transition,progress,alpha);}
     transition.frame=requestAnimationFrame(paint);
   }
-  transition.frame=requestAnimationFrame(paint);
+  if(prepare) {
+    // WebKit can synchronously flush/encode the portrait PNG in toBlob(). Keep
+    // this brief prelude static, with report state and controls already live.
+    // Only start the moving brush after that work and the initial report layout.
+    ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='rgba(253,251,247,.65)';ctx.fillRect(0,0,w,h);
+    let released=false;
+    const release=timedOut=>{
+      if(released || entryTransition!==transition)return;released=true;
+      clearTimeout(transition.preparationTimeout);transition.preparationTimedOut=timedOut;
+      transition.frame=requestAnimationFrame(()=>{
+        if(entryTransition!==transition)return;
+        transition.frame=requestAnimationFrame(now=>{
+          if(entryTransition!==transition)return;
+          transition.preparationMs=Math.round(now-transition.created);transition.preparing=false;transition.began=now;
+          ctx.clearRect(0,0,w,h);paint(now);
+        });
+      });
+    };
+    Promise.resolve(prepare).then(()=>release(false),()=>release(false));
+    // A stalled font/network request must never leave the decorative veil up.
+    transition.preparationTimeout=setTimeout(()=>release(true),250);
+  } else transition.frame=requestAnimationFrame(paint);
 }
 brushMotion.addEventListener?.('change',()=>{if(matchMedia('(prefers-reduced-motion: reduce)').matches)clearEntryTransition('reduced-motion');});
 document.addEventListener('visibilitychange',()=>{if(document.hidden)clearEntryTransition('hidden');});
@@ -465,7 +488,7 @@ function showScreen(name, { brush } = {}) {
   // Recovery coaching must remain immediately visible when a finger is lifted.
   if(name==='placement' && previous==='measuring')clearEntryTransition('recovery');
   if(brush==='return')beginEntryTransition({kind:'return',originElement:document.getElementById('btn-again')});
-  else if(name==='summary' && previous==='measuring')beginEntryTransition({kind:'finish',originElement:document.getElementById('btn-stop')});
+  else if(name==='summary' && previous==='measuring')beginEntryTransition({kind:'finish',originElement:document.getElementById('btn-stop'),prepare:reportArtworkReady});
   else if(name==='measuring' && previous==='placement' && !entryTransition)beginEntryTransition({kind:'capture',originElement:document.getElementById('placement-wave-canvas')});
   for (const key in screens) screens[key].hidden = key !== name;
   document.getElementById('app').dataset.activeScreen = name;
@@ -1069,6 +1092,7 @@ function drawReportTachogram(canvas, beats, flagged, correctedMs) {
 // Exposed via renderSummary() in the real flow and window.__demoReport() for QA.
 let reportChartObserver;
 let portraitHost = null;
+let reportArtworkReady = Promise.resolve(null);
 let redrawReportCharts = () => {};
 window.addEventListener('beforeprint', () => redrawReportCharts());
 window.addEventListener('afterprint', () => redrawReportCharts());
@@ -1076,6 +1100,7 @@ if (document.fonts) document.fonts.ready.then(() => redrawReportCharts());
 
 function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const el = document.getElementById('report-content');
+  reportArtworkReady = Promise.resolve(null);
   if (portraitHost) window.PulsePortrait?.clear(portraitHost);
   portraitHost = null;
   document.getElementById('btn-share-artwork').disabled = true;
@@ -1119,7 +1144,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
     // report and its measured values immediately below it.
     header.querySelector('.report-date').after(portraitHost);
     document.getElementById('report-manuscript').hidden = true;
-    void window.PulsePortrait.mount(portraitHost, {
+    reportArtworkReady = window.PulsePortrait.mount(portraitHost, {
       shareButton: document.getElementById('btn-share-artwork'),
       saveButton: document.getElementById('btn-save-artwork'),
       segments: manuscript.segments,

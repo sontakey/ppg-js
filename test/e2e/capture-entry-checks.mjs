@@ -91,12 +91,17 @@ export async function checkCaptureEntry(browser, url) {
       await page.evaluate(() => showScreen('measuring'));
       assert.equal(await page.evaluate(() => entryTransition?.kind), 'capture', 'accepted signal uses a lighter brush pass');
       await page.waitForFunction(() => entryTransition === null);
-      await page.evaluate(() => showScreen('summary'));
+      await page.evaluate(() => {reportArtworkReady=new Promise(resolve=>window.__finishPrepareResolve=resolve);showScreen('summary');});
+      assert.equal(await page.evaluate(() => entryTransition?.preparing), true, 'finish holds a static veil while artwork is being prepared');
       assert.equal(await page.evaluate(() => entryTransition?.kind), 'finish', 'report arrives through a finishing wash');
       assert.equal(await page.locator('#screen-summary').isVisible(), true, 'report is live before its visual wash ends');
       await page.locator('#btn-again').click();
       assert.equal(await page.locator('#screen-ready').isVisible(), true, 'measure again works while the finishing wash is active');
       assert.equal(await page.evaluate(() => entryTransition?.kind), 'return', 'a new gesture replaces the old transition');
+      await page.evaluate(() => window.__finishPrepareResolve());
+      assert.equal(await page.evaluate(() => entryTransition?.kind), 'return', 'late portrait preparation cannot restart a canceled finish transition');
+      await page.evaluate(() => beginEntryTransition({kind:'finish',prepare:new Promise(()=>{})}));
+      assert.equal(await page.evaluate(() => entryTransition?.preparing), true, 'motion preference test starts during static preparation');
       await page.emulateMedia({ reducedMotion: 'reduce' });
       await page.waitForFunction(() => entryTransition === null);
       assert.equal(await page.locator('#entry-pigment').isHidden(), true, 'changing motion preference clears the active overlay');
@@ -116,13 +121,18 @@ export async function checkCaptureEntry(browser, url) {
       await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
       assert.equal(await page.locator('#screen-ready').isVisible(), true, 'visibility recovery preserves the authoritative screen');
       await page.evaluate(() => {
-        beginEntryTransition();
+        beginEntryTransition({kind:'finish',prepare:new Promise(()=>{})});
         window.dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
       });
       assert.equal(await page.evaluate(() => entryTransition), null, 'pagehide cancels animation before disposing GPU surfaces');
       assert.equal(await page.locator('#entry-pigment').isHidden(), true, 'pagehide leaves no stale visual overlay');
       await page.evaluate(() => window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true })));
       assert.equal(await page.evaluate(() => paintPageActive), true, 'back-forward cache restoration permits later paint warmup');
+      await page.evaluate(() => beginEntryTransition({kind:'finish',prepare:new Promise(()=>{})}));
+      await page.waitForFunction(() => entryTransition && !entryTransition.preparing);
+      assert.equal(await page.evaluate(() => entryTransition.preparationTimedOut), true, 'a stalled preparation promise releases the static veil at its bound');
+      await page.waitForFunction(() => entryTransition === null);
+      assert.ok(await page.evaluate(() => __pulseBrushStats.history.at(-1).preparationMs >= 250), 'preparation time is reported separately and remains in total elapsed time');
       const diagnostics=await page.evaluate(() => __pulseBrushStats);
       assert.ok(diagnostics.history.every(item => item.elapsedMs >= 0), 'transition timing records real lifecycle outcomes');
       assert.equal(diagnostics.active, false, 'no animation remains scheduled after interruption');
