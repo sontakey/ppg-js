@@ -6,6 +6,64 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
+export async function checkReportDockViewport(page) {
+  const result = await page.evaluate(async () => {
+    const originalViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport');
+    const originalFocus = document.activeElement;
+    const originalScroll = { x: scrollX, y: scrollY };
+    const editable = document.createElement('input');
+    editable.type = 'text';
+    editable.setAttribute('aria-label', 'Keyboard layout regression probe');
+    editable.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+    const settle = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const snapshot = () => ({
+      reserve: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--mobile-dock-reserve')),
+      inset: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--mobile-viewport-inset')),
+      dockBottom: parseFloat(getComputedStyle(document.querySelector('.summary-actions')).bottom),
+    });
+    const keyboardGap = 350;
+    try {
+      document.activeElement?.blur();
+      window.dispatchEvent(new Event('resize'));
+      await settle();
+      const baseline = snapshot();
+      Object.defineProperty(window, 'visualViewport', {
+        configurable: true,
+        value: { height: innerHeight - keyboardGap, offsetTop: 0, scale: 1 },
+      });
+      window.dispatchEvent(new Event('resize'));
+      await settle();
+      const unfocused = snapshot();
+      document.querySelector('.portrait-options input').focus({ preventScroll: true });
+      await settle();
+      const checkbox = snapshot();
+      document.body.append(editable);
+      editable.focus({ preventScroll: true });
+      await settle();
+      const editing = snapshot();
+      editable.blur();
+      await settle();
+      const blurred = snapshot();
+      return { baseline, unfocused, checkbox, editing, blurred, keyboardGap };
+    } finally {
+      editable.remove();
+      if (originalViewport) Object.defineProperty(window, 'visualViewport', originalViewport);
+      else delete window.visualViewport;
+      if (originalFocus instanceof HTMLElement) originalFocus.focus({ preventScroll: true });
+      window.dispatchEvent(new Event('resize'));
+      await settle();
+      window.scrollTo(originalScroll.x, originalScroll.y);
+    }
+  });
+  assert.equal(result.baseline.inset, 0, 'report starts without keyboard compensation');
+  assert.deepEqual(result.unfocused, result.baseline, 'browser viewport shrink without text focus adds no report whitespace');
+  assert.deepEqual(result.checkbox, result.baseline, 'metrics checkbox cannot activate keyboard compensation');
+  assert.equal(result.editing.inset, result.keyboardGap, 'a focused text field keeps the dock above its keyboard');
+  assert.equal(result.editing.reserve, result.baseline.reserve + result.keyboardGap, 'genuine keyboard focus retains room to scroll the final editable content above the dock');
+  assert.deepEqual(result.blurred, result.baseline, 'focusout clears keyboard compensation even before the visual viewport recovers');
+  return result;
+}
+
 export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFACTS) {
   await page.waitForFunction(() => window.PulsePortrait?.getState()?.ready);
   const preparation = await page.evaluate(async () => {
@@ -126,6 +184,7 @@ export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFA
     assert.ok(layout.labels.every(label => label.font >= 14), `portrait supporting labels remain at least 14px at ${width}px viewport`);
     assert.ok(layout.actionHeights.every(height => height >= 44), 'portrait actions retain touch target height');
   }
+  await checkReportDockViewport(page);
   await page.setViewportSize(originalViewport);
 
   const [saved] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Save artwork', exact: true }).click()]);

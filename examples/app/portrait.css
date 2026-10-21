@@ -1,24 +1,8 @@
 .pulse-portrait {
   --portrait-ink: #15213a;
   color: var(--portrait-ink);
-  padding: 28px 0 12px;
+  padding: 16px 0 12px;
   min-width: 0;
-}
-.portrait-heading h2 {
-  margin: 0 0 12px;
-  font-family: "Water Brush", cursive;
-  font-synthesis: none;
-  font-size: clamp(38px, 8vw, 54px);
-  line-height: 1.2;
-  font-weight: 400;
-  padding-bottom: .12em;
-  width: 100%;
-}
-.portrait-heading p {
-  margin: 0 0 24px;
-  color: #445775;
-  font-size: 16px;
-  line-height: 1.6;
 }
 .portrait-preview { margin: 0; min-width: 0; }
 .portrait-preview canvas {

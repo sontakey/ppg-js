@@ -199,8 +199,7 @@
     container.hidden = false;
     const section = document.createElement('section'); section.className = 'pulse-portrait';
     section.setAttribute('aria-label', 'Your pulse artwork');
-    section.innerHTML = `<div class="portrait-heading"><h2>Your pulse, on paper.</h2><p>A keepsake made from your captured pulse.</p></div>
-      <figure class="portrait-preview"><canvas width="1080" height="1350" role="img"></canvas><figcaption>Selected moments from your recording. Your full manuscript is available below.</figcaption></figure>
+    section.innerHTML = `<figure class="portrait-preview"><canvas width="1080" height="1350" role="img"></canvas><figcaption>Selected moments from your recording. Your full manuscript is available below.</figcaption></figure>
       <label class="portrait-options"><input type="checkbox" disabled><span>Include pulse and HRV metrics in artwork</span></label>
       <div class="portrait-actions"><button type="button" class="btn-primary portrait-share" disabled>Share artwork</button><button type="button" class="btn-secondary portrait-save" disabled>Save artwork</button></div>
       <p class="portrait-status" role="status" aria-live="polite">Preparing your artwork…</p>`;
