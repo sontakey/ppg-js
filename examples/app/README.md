@@ -1,148 +1,176 @@
-# examples/app — third-party dogfood demo
+# Pulse on Paper
 
-A second demo app, separate from `examples/demo/`. It uses ppg-js exactly the way a
-third-party developer would: load the built UMD bundle, construct `PPGMonitor` in
-headless UI mode, and drive your own screens off its callbacks. No framework, no
-build step — `index.html` + `app.js` + `app.css`.
+ChatPPG’s camera-PPG experience turns a recording into a painted manuscript,
+then presents the existing HRV Spot Check analysis in the same visual language:
+near-white paper, Water Brush titles, DM Sans measurements, defined blue pigment and
+quiet scientific context. It is a plain HTML/CSS/JavaScript app using the built
+ppg-js browser bundle plus a lazy app-only GPU compositor, both supplied by
+`npm run build`.
 
-Design informed by `docs/design/inspiration.md` (structure only, not skin — see that
-doc's brand-boundary note).
+A quiet shared footer links to ChatPPG and the ppg-js project website. Water Brush
+is self-hosted under the included SIL Open Font License. Instructions, controls,
+metric values and graph labels retain DM Sans for legibility.
 
-## How this app uses ppg-js
+Desktop visitors see an automatically revealed painted invitation with a crisp QR
+code and a direct link to `https://chatppg.com/ppg-js-demo`. The code keeps its white
+quiet zone and high-contrast modules; only the surrounding pigment animates.
+Desktop capture stays disabled. Phones retain the capture instructions and action.
 
-```js
-// PPGMonitor is the global exported by ../demo/dist/ppg-monitor.min.js (UMD build)
-const monitor = new PPGMonitor(null, {           // null container = headless, no built-in UI
-  ui: { enabled: false },
+## Rendering goal
 
-  onReady: ({ torchSupported }) => {
-    // torchSupported === false on iOS Safari — no flashlight API exists there.
-    // Show your own copy telling the user to turn the flashlight on manually.
-  },
+Target approximately **60 frames per second** during entry and accepted-waveform
+reveal on supported mobile devices, without delaying camera acquisition or changing
+the measured signal. Use current stable Three.js (pinned to **0.186.1**) with its
+WebGPU renderer, TSL shaders and automatic WebGL2 fallback. A version pin makes
+builds reproducible; upgrades require checking both backends again.
 
-  onQualityUpdate: (metrics) => {
-    // Fires once per ~5s processing window. metrics.fingerState is
-    // 'NO_FINGER' | 'SETTLING' | 'MEASURING'. Only trust heartRate/rmssd/sdnn
-    // when metrics.quality.good is true — otherwise show metrics.quality.reason
-    // (or metrics.guidanceMessage, which is the same reason once good).
-    if (metrics.fingerState === 'MEASURING') { /* show HR screen */ }
-    else { /* show placement/settling coaching */ }
-  },
+The app loads and warms the compositor during idle time. It uses one full-screen
+triangle-pair per surface, no antialiasing or postprocessing chain, a maximum 2×
+pixel ratio and an approximately 850,000-pixel budget per surface. Sustained slow
+frames reduce resolution. Only entry diffusion and the reveal of cached pigment
+textures animate; report plots render on demand. Texture generation occurs once
+per accepted window, not once per frame. Hidden pages stop submitting frames.
 
-  onSignalUpdate: ({ value }) => {
-    // Fires every frame (~30-60Hz). `value` is the detrended AC sample —
-    // push it into your own ring buffer and draw it; there's no built-in chart
-    // in headless mode.
-  },
+Reduced-motion mode skips GPU loading and shows accepted strokes immediately.
+Unsupported, blocked, cold or lost GPU contexts retain a lightweight Canvas2D
+path and the same recording controls. GPU assets are separate from the published
+PPG library, which keeps its zero-runtime-dependency contract.
 
-  onError: (err) => { /* getUserMedia failed, permission denied, etc. */ },
-});
+The [Aquarelle reference](https://ramotion.github.io/aquarelle/) informs irregular
+wet fronts; the [watercolor-edge tutorial](https://www.infoworld.com/article/2258656/javascript-tutorial-create-a-watercolor-edge-with-p5js.html)
+informs overlapping translucent pigment and darker edge deposits. The effect is
+implemented in Three.js TSL; decorative noise never displaces waveform samples.
 
-await monitor.start();   // requests camera, throws on failure — wrap in try/catch
-monitor.stop();          // stops the camera stream; safe to call any time
-monitor.getSessionSummary();   // { hr, rmssd, sdnn: {min,median,max}, goodFraction, ... }
-monitor.getTachogram();        // [{ t, ibiMs, valid, reason }], accepted + rejected
-monitor.downloadDebugLog();    // triggers a JSON file download (share sheet on iOS)
+60 fps is a performance target, not a universal device guarantee. Browser replay
+benchmarks must identify the renderer and hardware, and remain separate from
+physical-phone camera/flash/thermal validation.
+
+## Capture and pigment contract
+
+- The phone flow is ready → finger placement → measuring → report. The timer
+  counts three minutes in `MEASURING`; placement and finger-loss time do not count.
+  Desktop camera access remains disabled.
+- Begin pulse capture spreads pigment from the painted button across the viewport
+  before revealing placement. Camera permission is requested in the original
+  gesture; reduced-motion mode skips the transition. Cancellation and permission
+  errors clear the transition, and repeated taps cannot start duplicate sessions.
+- A stroke is accepted only after its approximately five-second analysis window
+  passes the engine’s quality gate. It then reveals over 4.4 seconds, synchronized
+  with the browser’s animation frames. Reduced-motion mode shows accepted strokes
+  immediately. This is a delayed rendering of measured data, not a live prediction.
+  The reveal reuses two viewport-sized pigment layers to leave the main thread
+  available for camera sampling; it does not redraw the texture each frame.
+- Geometry uses `monitor.engine.lastWindow.filtered` from the **selected analysis
+  channel**, with its grid rate and timestamps. The per-frame `onSignalUpdate`
+  callback is red-channel AC: it supplies the presence mask, not the manuscript’s
+  shape. This internal `lastWindow` dependency must be checked when upgrading the
+  engine.
+- Each accepted window is amplitude-normalized for the page. Its composite SQI
+  score controls blue depth; higher quality produces deeper blue. Color describes
+  recording quality, not health, HRV, pulse strength or elapsed time. Stored strokes
+  are never recolored by a later window. Pigment texture is deterministic decoration
+  around the measured waveform.
+- Rejected windows, missing samples and artwork pauses leave gaps. **Pause artwork**
+  freezes the artwork while measurement and the session timer continue. Resume
+  does not fill the paused interval with invented strokes.
+
+The capture canvas shows the latest four five-second rows. The report includes a
+two-row detail; **Save manuscript** exports the full captured timeline as a PNG,
+with bounded canvas dimensions for mobile memory use.
+
+## Report and exports
+
+**Finish painting** stops capture and analyzes valid, HRV-eligible beats from
+accepted windows, retaining their timestamps. The report leads with mean pulse,
+RMSSD, SDNN and recording quality. “Good-signal windows” is the fraction of windows
+that passed the quality gate; it is distinct from the SQI used for pigment depth.
+
+Time-domain, frequency-domain, nonlinear and beat-timing details remain available
+through disclosures. Existing analysis eligibility rules still apply: unavailable
+metrics show their reason or a placeholder, and an empty session asks for another
+recording. No values or artwork are fabricated. ANS estimates remain preliminary
+population comparisons, and the estimated timing-noise floor is explicitly not a
+confidence interval.
+
+All report plots use shared DM Sans labels, measured numeric gutters, separate axis
+titles and consistent round tick increments. They redraw when opened, resized,
+loaded fonts change, or printing begins. Plot colors and wrapping legends use the
+ChatPPG scientific palette; off-scale ANS labels align inside the available width.
+
+**Save report** opens all report details and invokes the browser’s print dialog for
+printing or PDF export, then restores the disclosure state after printing. **Save
+debug log** and the debug menu retain the existing local session-log workflow.
+The app enables last-session persistence in browser local storage; the manuscript
+itself remains in memory until exported or reset.
+
+## Local preview and checks
+
+From the repository root, after installing dependencies:
+
+```sh
+rtk npm run build
+rtk proxy python3 -m http.server 8080 --bind 127.0.0.1
 ```
 
-That's the whole integration surface used by this app — see `app.js` for the real
-callsite (~150 lines total, ~20 of which are the constructor call above).
+Open <http://127.0.0.1:8080/examples/app/index.html>. The build supplies
+`examples/demo/dist/ppg.global.js`, which exposes `PPG` and the monitor used by the
+app. Actual phone capture requires a compatible phone and a secure context; the
+loopback preview alone does not test its camera, flash or browser permissions.
 
-## HRV/ANS report (Kubios-style)
+```sh
+rtk npm test
+rtk npm run test:app
+rtk npm run test:paint-performance
+rtk npm run test:paint-fallbacks
+```
 
-On Stop, the Summary screen is replaced by a full scrollable session report built
-from the session's accepted (good-window) IBIs: time domain (SDNN, RMSSD, pNN50,
-triangular index, TINN), frequency domain (Welch PSD, VLF/LF/HF power, LF/HF,
-n.u., estimated respiration rate), nonlinear (Poincaré SD1/SD2, sample entropy,
-DFA alpha1), and PNS/SNS autonomic-balance indices as z-scores against the Nunan
-et al. (2010) healthy-adult population reference — explicitly labelled a
-population reference, not a diagnosis.
+`test:app` starts its own loopback server and replays the checked-in iPhone fixture
+through the real streaming engine and monitor callback adapter, mocking camera I/O. It checks
+capture, pause behavior, selected-channel quality attribution, report values,
+responsive widths, exports and unavailable-data handling. These are browser
+integration checks, not physical-device or physiological-accuracy validation.
+The graph checks measure actual canvas glyph bounds and overlaps, including large
+power values, constant RR data and minute rollover. Entry checks cover normal and
+reduced motion, duplicate taps, a canceled late camera grant, and permission errors.
 
-All analysis math lives in `the library's `PPG.hrv` module`, a dependency-free plain script
-(attaches `window.HRVAnalysis`, no ESM) so it loads via `<script src>` next to
-`app.js`. It's pure functions on an array of IBIs in ms — no DOM, no ppg-js
-dependency — intentionally placed outside `src/` because `src/` is mid-refactor;
-move it into the library once that lands. See the file's header comment for
-full references (Task Force 1996, Tarvainen 2002, Nunan 2010, Baevsky stress
-index).
+`test:paint-performance` records entry and live-reveal frame cadence alongside
+real-time engine replay, using native WebGPU and forced WebGL2 at normal and 4× CPU
+throttling. It records the actual backend, hardware, resolution and CPU submission
+time in `.dream-loop/gpu-performance/results.json`. It requires those GPU backends
+to be available and does not impose a universal hardware-dependent fps test gate.
+Set `PPG_PERF_URL` to check a hosted preview or `PPG_SESSION_LOG` to replay a private
+recording locally. A 390 × 844 viewport at DPR 3 is mobile emulation, not a phone.
 
-`app.js`'s `renderReport(acceptedIbiMs)` draws the report UI (PSD/Poincaré/
-tachogram on `<canvas>`, no charting library). `window.__demoReport(ibis)` is a
-QA-only hook (like `window.__demoState`) that renders the report from an
-explicit IBI list without a camera session — used by `scratch/screenshot-report.mjs`
-to screenshot it against the real 200s iPhone fixture.
+The 2026-10-21 local benchmark on Apple M4 / Chrome 155 measured 60.00 fps for
+both WebGPU and WebGL2 during 20 seconds of real-time replay. At 4× CPU throttling,
+the same runs measured 59.45 and 59.70 fps, with four longer intervals in each run;
+the p95 frame interval remained 16.7–16.8 ms. This excludes actual camera I/O and
+phone thermals. The fallback suite separately verifies a blocked compositor module
+and real WebGL2 context loss: the visible Canvas2D painting retains its measured
+data and continues accepting new windows.
 
-"Save report" calls `window.print()`; a print stylesheet in `app.css` flips the
-report to a light theme for PDF export.
+On macOS the test uses installed Google Chrome. Elsewhere it uses Playwright’s
+Chromium; `PPG_CHROMIUM` can specify a browser executable. A private recording can
+be used locally without copying it into the repository:
 
-## Event/callback contract we actually relied on
+```sh
+rtk proxy env PPG_SESSION_LOG=/absolute/path/to/session.json npm run test:app
+```
 
-- `onReady({ torchSupported })` — once, after `start()` succeeds.
-- `onQualityUpdate(metrics)` — the only source of truth for finger state, HR, RMSSD,
-  SDNN, and the coaching string. Fires roughly every 5s (one `windowLength` worth of
-  frames), not more often.
-- `onSignalUpdate({ value, time, isProcessing })` — fires every frame; used only for
-  the waveform strip.
-- `onError(err)` — camera/permission failures.
-- No `onFrame` needed for this UI (raw per-frame xMean isn't needed once you have
-  `onSignalUpdate`'s processed value).
+## Files and publication
 
-## Gotchas hit while dogfooding (feeds the library refactor)
+- `index.html`: branded ready, placement, measuring and report screens.
+- `app.js`: monitor integration, pigment renderer, report and export actions.
+- `app.css` and `fonts/`: responsive paper treatment, bundled fonts and print styles.
+- `assets/phone-qr.svg`: offline-generated phone handoff QR, with generation notes.
+- `src/paint-gpu.js`: app-only Three.js TSL source; the build emits `paint-gpu.js`.
+- `../../test/e2e/pulse-on-paper.mjs`: app regression checks.
 
-1. **`metrics.settleRemainingSec` needs `SETTLE_SEC` duplicated in the consumer.**
-   The countdown ring in the placement screen needs to know the *total* settle
-   duration to compute a fraction, but the library only ever reports the
-   *remaining* seconds. We hardcoded `SETTLE_SEC = 6` in `app.js` to match
-   `FingerStateMachine`'s default — if that default ever changes, every consumer's
-   ring animation silently goes wrong. **Ask:** expose the configured `settleSec`
-   (e.g. on the `onReady` payload or as a getter) so consumers don't have to
-   duplicate a constant that already exists inside the library.
-
-2. **No `onSessionEnd`/`onStateChange` callback.** We have to infer "dropped out of
-   MEASURING back to SETTLING" (a lift or big drift) purely by diffing
-   `metrics.fingerState` across `onQualityUpdate` calls in the app. `FingerStateMachine.update()`
-   already returns a `changed` flag internally — it's just never surfaced to the
-   public API. **Ask:** surface state transitions as their own callback
-   (`onStateChange({ state, reason })`) instead of making every consumer inspect fields
-   the library never promises are stable in shape.
-
-3. **`torchSupported` only arrives via `onReady`, not on the monitor instance
-   until after `start()` resolves.** We do stash it as `monitor.torchSupported`
-   (an internal field, not documented in `src/index.js`'s public exports) so the
-   placement screen can re-check it later — that's relying on an implementation
-   detail. **Ask:** either document `monitor.torchSupported` as public, or repeat
-   it in every `onQualityUpdate` payload.
-
-4. **Headless mode has no built-in chart, which is correct and expected**, but the
-   demo has to duplicate a full ring-buffer + canvas draw loop that
-   `UIRenderer`/`RealTimeChart.js` already implement internally for the built-in-UI
-   mode. **Not asking to fix** — headless-by-design is the right call — but worth
-   noting for anyone who wants a "give me a chart element with no other chrome"
-   middle option between full UI and fully headless.
-
-5. **UMD bundle, not ESM.** `examples/demo/dist/ppg-monitor.min.js` attaches
-   `window.PPGMonitor` as a global; there's no ES module build in `dist/` to
-   `import`. A plain `<script src>` tag works fine (used here), but a developer
-   reaching for `import PPGMonitor from '...'` will hit a wall until an ESM build
-   is published alongside the UMD one.
-
-6. **The bundle injects global CSS even in headless mode.** `ppg-monitor.min.js`
-   bundles `src/styles/ppg-monitor.css` (built-in-UI styles) and injects it as a
-   `<style>` tag on load *regardless of `ui.enabled`*, including a `body {
-   background-color:#f3f3f3 }` rule. Because that `<style>` lands in the DOM after
-   our own `<link rel="stylesheet">`, it wins the cascade and silently blows away
-   this app's dark theme. We worked around it with `!important` on `html, body` in
-   `app.css` — a real fix is for the bundle to scope its injected CSS (e.g. under a
-   `.ppg-monitor-ui` class) instead of styling bare `body`, so headless consumers
-   never receive built-in-UI styling at all.
-
-## Files
-
-- `index.html` — 4 screens (ready / placement / measuring / summary), each a
-  `<section>` toggled via `hidden`.
-- `app.js` — the integration code above, plus a `window.__demoState(name)` hook
-  used ONLY for visual QA screenshots (see `docs/design/screens/`); it is not part
-  of the ppg-js API and does nothing in normal use beyond letting QA jump straight
-  to a screen.
-- `app.css` — dark, mobile-first, system font stack, 44px+ touch targets, safe-area
-  padding, respects `prefers-reduced-motion`.
+ChatPPG’s host repository publishes `/ppg-js-demo` by building its `apps/ppg-js`
+Git submodule, publishing its runtime assets under a content-hashed directory in
+`public/ppg-js-demo`, and rewriting asset paths while adding shared styles and metadata.
+The app provides its own quiet attribution without a host navbar. Preserve the
+`../demo/dist/ppg.global.js`, `app.css`, `app.js` references and `HRV Spot Check`
+HTML title expected by that builder. Publishing requires the host to advance its
+submodule revision, handle asset cache invalidation, rebuild and deploy. A local
+change or passing test does not establish that the public site has been updated.

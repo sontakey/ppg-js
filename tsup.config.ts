@@ -4,6 +4,11 @@ const define = { __PPG_VERSION__: JSON.stringify(process.env.npm_package_version
 
 export default defineConfig([
   {
+    entry: { "paint-gpu": "examples/app/src/paint-gpu.js" },
+    format: ["esm"], outDir: "examples/app", minify: true,
+    noExternal: ["three"], splitting: false, treeshake: true,
+  },
+  {
     entry: { index: 'src/index.ts', dsp: 'src/dsp/index.ts', hrv: 'src/hrv/index.ts', sources: 'src/sources/index.ts', engine: 'src/engine.ts' },
     format: ['esm', 'cjs'],
     dts: true,

@@ -1,3 +1,225 @@
+// Resolve from this script, including hosted URLs without a trailing slash.
+const paintBundleURL = new URL('./paint-gpu.js', document.currentScript?.src || location.href);
+let paintGPU = null, paintPageActive = true, paintWarmGeneration = 0;
+function warmPaintGPU() {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const generation = ++paintWarmGeneration;
+  import(paintBundleURL.href).then(module => module.createPaintGPU()).then(gpu => { if (paintPageActive && generation === paintWarmGeneration) paintGPU = gpu; else gpu.dispose(); }).catch(() => {});
+}
+if ('requestIdleCallback' in window) requestIdleCallback(warmPaintGPU, { timeout: 1600 });
+else setTimeout(warmPaintGPU, 300);
+addEventListener('pagehide', () => { paintPageActive = false; paintWarmGeneration++; paintGPU?.dispose(); paintGPU = null; paintManuscript(document.getElementById('manuscript')); });
+addEventListener('paintgpulost', () => paintManuscript(document.getElementById('manuscript')));
+addEventListener('pageshow', event => { if (event.persisted) { paintPageActive = true; warmPaintGPU(); } });
+
+// Pulse on Paper stores only accepted, measured waveform segments in memory.
+// A window is painted after its quality decision, never speculatively.
+const manuscript = { pending: [], segments: [], lastWindow: -1, paused: false, frame: 0, raster: null };
+function animateManuscript() {
+  cancelAnimationFrame(manuscript.frame);
+  let previous = performance.now();
+  const draw = now => {
+    if (manuscript.paused || document.getElementById('screen-measuring').hidden) return;
+    if (document.hidden) { manuscript.frame = requestAnimationFrame(draw); return; }
+    const segment = manuscript.segments.at(-1);
+    if (!segment) return;
+    segment.reveal = Math.min(1, segment.reveal + (now - previous) / 4400);
+    previous = now;
+    paintManuscript(document.getElementById('manuscript'));
+    if (segment.reveal < 1) manuscript.frame = requestAnimationFrame(draw);
+  };
+  manuscript.frame = requestAnimationFrame(draw);
+}
+function resetManuscript() {
+  cancelAnimationFrame(manuscript.frame);
+  manuscript.pending = []; manuscript.segments = []; manuscript.lastWindow = -1; manuscript.paused = false;
+  document.getElementById('btn-pause').textContent = 'Pause artwork';
+  document.getElementById('pause-note').textContent = '3-minute recording · Not a medical device';
+  document.getElementById('manuscript-empty').hidden = false;
+  paintManuscript(document.getElementById('manuscript'));
+}
+function acceptPaintWindow(metrics) {
+  if (!Number.isFinite(metrics.t) || metrics.t <= manuscript.lastWindow) return;
+  manuscript.lastWindow = metrics.t;
+  const window = monitor?.engine?.lastWindow;
+  const start = window?.windowStartSec;
+  if (!Number.isFinite(start)) return;
+  const samples = manuscript.pending.filter(p => p.t <= metrics.t && p.t > start);
+  manuscript.pending = manuscript.pending.filter(p => p.t > metrics.t);
+  if (manuscript.paused || !metrics.quality?.good || !Number.isFinite(metrics.sqi?.score) || samples.length < 3) return;
+  // The live display callback is red-channel AC. Use the actual selected-channel
+  // analysis window so waveform geometry and SQI describe the same measurement.
+  if (!window || window.t !== metrics.t || !window.filtered?.length || !(window.gridHz > 0)) return;
+  const firstGrid = Math.round(start * window.gridHz) / window.gridHz;
+  const points = [];
+  let sampleIndex = 0;
+  for (let i = 0; i < window.filtered.length; i++) {
+    const t = firstGrid + i / window.gridHz;
+    if (t < samples[0].t || t > samples.at(-1).t) continue;
+    while (sampleIndex + 1 < samples.length && samples[sampleIndex + 1].t <= t) sampleIndex++;
+    const next = samples[sampleIndex + 1];
+    // Retain gaps and artwork pauses rather than joining across absent samples.
+    if (next && next.t - samples[sampleIndex].t > .15) continue;
+    const v = window.filtered[i];
+    if (Number.isFinite(v)) points.push({ t, v });
+  }
+  if (points.length < 3) return;
+  const values = points.map(p => p.v), lo = Math.min(...values), hi = Math.max(...values);
+  if (hi - lo < 1e-8) return;
+  manuscript.segments.forEach(segment => { segment.reveal = 1; });
+  manuscript.segments.push({ reveal: matchMedia('(prefers-reduced-motion: reduce)').matches ? 1 : 0, channel: window.selectedChannel, score: Math.max(0, Math.min(1, metrics.sqi.score)), points: points.map(p => ({t:p.t, v:(p.v-lo)/(hi-lo)})) });
+  document.getElementById('manuscript-empty').hidden = true;
+  paintManuscript(document.getElementById('manuscript'));
+  animateManuscript();
+}
+function paintManuscript(canvas, compact = false, all = false) {
+  // Report/export are one-shot draws. The live surface keeps just two viewport-
+  // sized layers, so the animation-frame reveal never rebuilds thousands of pigment marks
+  // while the same main thread is collecting camera samples.
+  if (compact || all) { paintManuscriptRaster(canvas, compact, all); return; }
+  const ctx = canvas.getContext('2d'), W = canvas.width, H = canvas.height;
+  const latest = manuscript.segments.at(-1);
+  if (!latest) { ctx.clearRect(0, 0, W, H); manuscript.raster = null; paintGPU?.clear(); return; }
+  let raster = manuscript.raster;
+  if (!raster || raster.latest !== latest || raster.count !== manuscript.segments.length || raster.width !== W || raster.height !== H) {
+    const base = raster?.base || document.createElement('canvas');
+    const ink = raster?.ink || document.createElement('canvas');
+    for (const layer of [base, ink]) { layer.width = W; layer.height = H; }
+    paintManuscriptRaster(base, false, false, 'base');
+    ink.getContext('2d').drawImage(base, 0, 0);
+    paintManuscriptRaster(ink, false, false, 'latest', false);
+    raster = manuscript.raster = { base, ink, latest, count: manuscript.segments.length, width: W, height: H };
+  }
+  const visible = Math.ceil(latest.points.length * (latest.reveal ?? 1));
+  if (visible < 2) { if (paintGPU?.manuscript(raster, -1, 0)) return; ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.base, 0, 0); return; }
+  if (visible >= latest.points.length) { if (paintGPU?.manuscript(raster, 4, 1)) return; ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.ink, 0, 0); return; }
+  const start = manuscript.segments[0].points[0].t;
+  const end = latest.points.at(-1).t;
+  const firstRow = Math.max(0, Math.floor((end - start) / 5) + 1 - 4);
+  const through = latest.points[visible - 1];
+  const row = Math.floor((through.t - start) / 5) - firstRow;
+  if (row < 0) { if (paintGPU?.manuscript(raster, -1, 0)) return; ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.base, 0, 0); return; }
+  const rowH = H / 4, margin = W * .025;
+  const x = margin + ((through.t - start) % 5) / 5 * (W - 2 * margin);
+  if (paintGPU?.manuscript(raster, row, x / W)) return;
+  ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.base, 0, 0);
+  // Time advances left to right within each manuscript row. Clipping the
+  // immutable layer retains all timestamp gaps and the original pigment depth.
+  ctx.save(); ctx.beginPath();
+  if (row > 0) ctx.rect(0, 0, W, row * rowH);
+  ctx.rect(0, row * rowH, x, rowH);
+  ctx.clip(); ctx.clearRect(0, 0, W, H); ctx.drawImage(raster.ink, 0, 0); ctx.restore();
+}
+function paintManuscriptRaster(canvas, compact = false, all = false, layer = null, clear = true) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  if (clear) ctx.clearRect(0,0,W,H);
+  if (!manuscript.segments.length) return;
+  const start = manuscript.segments[0].points[0].t;
+  const end = manuscript.segments.at(-1).points.at(-1).t;
+  const rowSeconds = 5, totalRows = Math.floor((end-start)/rowSeconds)+1;
+  const rows = all ? totalRows : compact ? 2 : 4;
+  const firstRow = all ? 0 : Math.max(0,totalRows-rows);
+  const rowH = H/rows, margin = W*.025;
+  const rand = n => { const x = Math.sin(n*127.1+311.7)*43758.5453; return x-Math.floor(x); };
+  for (const segment of manuscript.segments) {
+    if (layer === 'base' && segment === manuscript.segments.at(-1)) continue;
+    if (layer === 'latest' && segment !== manuscript.segments.at(-1)) continue;
+    const q = segment.score;
+    const color = [Math.round(29-24*q), Math.round(133-81*q), Math.round(248-51*q)];
+    const visible = all || compact || layer ? segment.points.length : Math.ceil(segment.points.length * (segment.reveal ?? 1));
+    const paths = [];
+    let path = [], lastRow = -1;
+    for (let i=0; i<visible; i++) {
+      const p=segment.points[i], row=Math.floor((p.t-start)/rowSeconds);
+      if (row<firstRow || row>=firstRow+rows) continue;
+      if (row !== lastRow || (i && p.t-segment.points[i-1].t>.15)) {
+        if(path.length) paths.push(path);
+        path=[]; lastRow=row;
+      }
+      path.push({x:margin+((p.t-start)%rowSeconds)/rowSeconds*(W-2*margin),
+        y:(row-firstRow)*rowH+rowH*(.79-p.v*.57), seed:Math.floor(p.t*1000)});
+    }
+    if(path.length) paths.push(path);
+    const width=Math.min(29,rowH*.16);
+    for(const points of paths) {
+      if(points.length<2) continue;
+      // Irregular pigment ribbons follow the measured centerline exactly. Their
+      // edges vary at paper-grain scale, without moving or inventing pulse peaks.
+      // Filled washes avoid the parallel, round-capped bands of a marker stroke.
+      const ribbon = (upper, lower, alpha, tint, salt) => {
+        ctx.beginPath();
+        points.forEach((p,i) => {
+          const tooth = .56 + rand(p.seed + salt) * .72;
+          const y = p.y - width * upper * tooth;
+          if(i) ctx.lineTo(p.x,y); else ctx.moveTo(p.x,y);
+        });
+        for(let i=points.length-1;i>=0;i--) {
+          const p=points[i], tooth=.60+rand(p.seed+salt+29)*.8;
+          ctx.lineTo(p.x,p.y+width*lower*tooth);
+        }
+        ctx.closePath();ctx.fillStyle=`rgba(${tint.join(',')},${alpha})`;ctx.fill();
+      };
+      const widthScale = .78 + q*.22;
+      ribbon(.44*widthScale,1.62,.09,[73,153,247],17);
+      ribbon(.37*widthScale,1.22,.16,[38,132,241],31);
+      ribbon(.31*widthScale,.84,.24,[18,109,237],47);
+      ribbon(.25*widthScale,.45,.30,color,63);
+      ribbon(.17*widthScale,.20,.34,color,79);
+      // Small translucent deposits overlap into a broken, saturated wet edge.
+      // Using the local tangent distributes pigment across the brush width.
+      for(let i=1;i<points.length;i++) {
+        const p=points[i], prev=points[i-1];
+        const dx=p.x-prev.x,dy=p.y-prev.y, length=Math.hypot(dx,dy)||1;
+        for(let j=0;j<4;j++) {
+          const seed=p.seed+j*41;
+          const along=rand(seed+131), across=(rand(seed+137)-.44)*width*.65;
+          const x=prev.x+dx*along-dy/length*across;
+          const y=prev.y+dy*along+dx/length*across;
+          const r=1.1+rand(seed+149)*width*.14;
+          ctx.fillStyle=`rgba(${color.join(',')},${.09+rand(seed+151)*.19})`;
+          ctx.beginPath();ctx.ellipse(x,y,r,r*(.4+rand(seed+163)*.5),Math.atan2(dy,dx),0,Math.PI*2);ctx.fill();
+        }
+      }
+      // Deterministic pigment flakes, cauliflower edges and tiny paper breaks.
+      // Texture and depth remain fixed to capture quality, never to segment age.
+      for(const p of points) {
+        for(let k=0;k<9;k++) {
+          const r=rand(p.seed+k*13), side=rand(p.seed+k*23+7);
+          const x=p.x+(r-.5)*11, y=p.y+(side-.22)*width*2.1;
+          const radius=.8+rand(p.seed+k+81)*4.8;
+          ctx.fillStyle=side>.55 ? `rgba(48,139,245,${.06+r*.13})` : `rgba(${color.join(',')},${.07+r*.19})`;
+          ctx.beginPath();
+          for(let v=0;v<5;v++) {
+            const angle=v*Math.PI*2/5;
+            const px=x+Math.cos(angle)*radius,py=y+Math.sin(angle)*radius*.7;
+            if(v)ctx.lineTo(px,py);else ctx.moveTo(px,py);
+          }
+          ctx.closePath();ctx.fill();
+        }
+        if(rand(p.seed+93)>.45) {
+          ctx.fillStyle=`rgba(253,253,254,${.16+rand(p.seed+111)*.35})`;
+          ctx.beginPath();ctx.ellipse(p.x,p.y+(rand(p.seed+112)-.1)*width*1.4,.5+rand(p.seed+113)*1.8,.5+rand(p.seed+114)*1.2,0,0,Math.PI*2);ctx.fill();
+        }
+      }
+    }
+  }
+}
+function saveManuscript() {
+  if (!manuscript.segments.length) { alert('No accepted waveform was captured to save.'); return; }
+  const first=manuscript.segments[0].points[0].t, last=manuscript.segments.at(-1).points.at(-1).t;
+  const rows = Math.floor((last-first)/5)+1;
+  // Keep the full recorded time axis, while bounding memory on mobile browsers.
+  // Very long interruptions must not allocate an unbounded canvas.
+  const scale = Math.min(1, 8192 / (rows * 160));
+  const canvas=document.createElement('canvas');canvas.width=Math.max(320,Math.round(1200*scale));canvas.height=Math.min(8192,rows*160);
+  paintManuscript(canvas,false,true);
+  const ctx=canvas.getContext('2d');ctx.globalCompositeOperation='destination-over';ctx.fillStyle='#fdfdfe';ctx.fillRect(0,0,canvas.width,canvas.height);
+  try {
+    canvas.toBlob(blob=>{if(!blob){alert('The manuscript could not be saved. Try saving the report instead.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='pulse-on-paper.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+  } catch { alert('The manuscript could not be saved. Try saving the report instead.'); }
+}
+
 // examples/app/app.js — dogfoods ppg-js's public API as a third-party dev would.
 // PPGMonitor and the hrv module are exposed by ../demo/dist/ppg.global.js (IIFE build)
 // as window.PPG.PPGMonitor and window.PPG.hrv.
@@ -9,7 +231,78 @@ const screens = {
   summary: document.getElementById('screen-summary'),
 };
 
+let entryTransition = null;
+let sessionStarting = false;
+let sessionGeneration = 0;
+const pendingMonitorStarts = new Set();
+
+function clearEntryTransition() {
+  if (!entryTransition) return;
+  cancelAnimationFrame(entryTransition.frame);
+  entryTransition = null;
+  paintGPU?.endEntry();
+  document.getElementById('entry-pigment').hidden = true;
+  document.getElementById('btn-start').removeAttribute('aria-busy');
+}
+
+// A layered pigment front, born at the pressed button. Camera permission is
+// requested in the original click; this only stages the visual reveal.
+function beginEntryTransition() {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const canvas = document.getElementById('entry-pigment');
+  const rect = document.getElementById('btn-start').getBoundingClientRect();
+  const w = innerWidth, h = innerHeight, dpr = Math.min(devicePixelRatio || 1, 2);
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
+  const radius = Math.hypot(Math.max(x, w-x), Math.max(y, h-y)) * 1.35;
+  // The prepared GPU performs the pigment field and diffusion per fragment.
+  // A late bundle or unsupported device uses a cheap wash, never a CPU pixel loop
+  // in the camera permission gesture.
+  let gpu = paintGPU?.beginEntry(w,h,x,y,Math.max(0,(rect.width-rect.height)/2));
+  const transition = { frame: 0, screen: 'placement', began: performance.now() };
+  entryTransition = transition;
+  canvas.hidden = false;
+  document.getElementById('btn-start').setAttribute('aria-busy', 'true');
+  function paint(now) {
+    if (entryTransition !== transition) return;
+    if (document.hidden) { transition.frame = requestAnimationFrame(paint); return; }
+    const elapsed = now - transition.began;
+    const spread = Math.min(1, elapsed / 900);
+    const eased = 1 - Math.pow(1-spread, 2.2);
+    const alpha = elapsed > 960 ? Math.max(0, 1-(elapsed-960)/560) : 1;
+    const reach = rect.height / 2 + radius * eased;
+    const feather = 16 + 20 * eased;
+    if (gpu) {
+      gpu = paintGPU?.entry(reach, feather, alpha);
+      // Keep the transparent fallback surface present until the transition ends;
+      // its hidden state is the public lifecycle marker for both renderers.
+    }
+    if (!gpu) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      ctx.globalAlpha = alpha;
+      canvas.hidden = false;
+      ctx.fillStyle = '#477beb';
+      ctx.beginPath();ctx.ellipse(x,y,reach+rect.width/3,reach,0,0,Math.PI*2);ctx.fill();
+    }
+    if (elapsed >= 900 && !transition.revealed) {
+      transition.revealed = true;
+      for (const key in screens) screens[key].hidden = key !== transition.screen;
+    }
+    if (elapsed >= 1520) { clearEntryTransition(); return; }
+    transition.frame = requestAnimationFrame(paint);
+  }
+  transition.frame = requestAnimationFrame(paint);
+}
+
 function showScreen(name) {
+  if (name === 'ready') { clearEntryTransition(); sessionStarting = false; }
+  if (entryTransition && !entryTransition.revealed && name !== 'ready') {
+    entryTransition.screen = name;
+    return;
+  }
   for (const key in screens) screens[key].hidden = key !== name;
 }
 
@@ -38,7 +331,7 @@ function drawWaveOn(canvasId, buf) {
   const canvas = document.getElementById(canvasId);
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.strokeStyle = '#4fd1c5';
+  ctx.strokeStyle = '#2855ff';
   ctx.lineWidth = 2;
   ctx.beginPath();
   const n = buf.length;
@@ -76,7 +369,7 @@ function drawTachogram() {
   points.forEach((p, i) => {
     const x = (i / (points.length - 1 || 1)) * canvas.width;
     const y = canvas.height - ((p.ibiMs - min) / (max - min || 1)) * canvas.height;
-    ctx.fillStyle = p.valid ? '#4fd1c5' : '#6b7280';
+    ctx.fillStyle = p.valid ? '#2855ff' : '#6b7280';
     ctx.beginPath();
     ctx.arc(x, y, p.valid ? 2.5 : 2, 0, Math.PI * 2);
     ctx.fill();
@@ -128,7 +421,7 @@ function updateMeasuringScreen(metrics) {
   document.getElementById('rmssd-value').textContent = good ? Math.round(metrics.rmssd) : '--';
   document.getElementById('sdnn-value').textContent = good ? Math.round(metrics.sdnn) : '--';
   const floorEl = document.getElementById('rmssd-floor');
-  if (floorEl) floorEl.textContent = good && metrics.rmssdFloorMs ? `±${Math.round(metrics.rmssdFloorMs)} ms noise floor` : '';
+  if (floorEl) floorEl.textContent = good && metrics.rmssdFloorMs ? `Estimated timing-noise floor: ${Math.round(metrics.rmssdFloorMs)} ms` : '';
   const respEl = document.getElementById('resp-value');
   if (respEl) {
     const r = metrics.respiration;
@@ -144,9 +437,10 @@ function updateMeasuringScreen(metrics) {
   pill.classList.toggle('good', !!good);
   pill.classList.toggle('bad', !good);
   document.getElementById('quality-text').textContent = good
-    ? `Good signal · ${metrics.qualityScore}`
+    ? 'Good signal'
     : (metrics.quality ? metrics.quality.reason : metrics.guidanceMessage) || 'Settling';
 
+  document.getElementById('painting-state').textContent = manuscript.paused ? 'Artwork paused' : good ? 'Painting' : 'Waiting for clear signal';
   drawTachogram();
 }
 
@@ -160,7 +454,9 @@ function fmtCountdown(sec) {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+let elapsedMeasuringMs = 0, lastTimerTick = Date.now();
 function tickSessionCountdown() {
+  const now = Date.now(), delta = now-lastTimerTick; lastTimerTick=now;
   const el = document.getElementById('session-countdown');
   if (measuringStartedAt == null) {
     el.textContent = fmtCountdown(SESSION_SEC);
@@ -172,7 +468,8 @@ function tickSessionCountdown() {
     // shows "Keep your finger on" while bounced out of MEASURING.
     return;
   }
-  const elapsedSec = (Date.now() - measuringStartedAt) / 1000;
+  elapsedMeasuringMs += Math.min(delta, 1500);
+  const elapsedSec = elapsedMeasuringMs / 1000;
   const remaining = SESSION_SEC - elapsedSec;
   el.textContent = fmtCountdown(remaining);
   if (remaining <= 0) {
@@ -229,7 +526,8 @@ function drawBipolarBar(canvasParent, value, cls) {
   valueLabel.className = `bar-value-label ${cls}`;
   valueLabel.textContent = fmt(value, 2);
   valueLabel.style.left = valuePct + '%';
-  valueLabel.style.transform = clamped >= 0 ? 'translate(4px, -50%)' : 'translate(calc(-100% - 4px), -50%)';
+  valueLabel.style.transform = clamped <= -2 ? 'translate(0, -100%)' : clamped >= 2 ? 'translate(-100%, -100%)' : 'translate(-50%, -100%)';
+  if (Math.abs(value) > RANGE) valueLabel.textContent += ' (off scale)';
   bar.appendChild(valueLabel);
 
   canvasParent.appendChild(bar);
@@ -261,9 +559,10 @@ function drawBipolarBar(canvasParent, value, cls) {
 // context pre-scaled to CSS pixels, plus the CSS-pixel width/height to draw
 // with. Call once per draw before any drawing commands.
 function setupHiDPICanvas(canvas) {
-  const dpr = window.devicePixelRatio || 1;
-  const cssW = canvas.clientWidth || canvas.width;
-  const cssH = canvas.clientHeight || canvas.height;
+  const dpr = Math.max(2, window.devicePixelRatio || 1);
+  const cssW = canvas.clientWidth || canvas.parentElement.clientWidth || 300;
+  const cssH = canvas.id === 'poincare-canvas' ? cssW + 48 : 248;
+  canvas.style.height = cssH + 'px';
   canvas.width = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
   const ctx = canvas.getContext('2d');
@@ -272,23 +571,66 @@ function setupHiDPICanvas(canvas) {
   return { ctx, W: cssW, H: cssH };
 }
 
-const AXIS_FONT = '11px -apple-system, sans-serif';
-const AXIS_COLOR = '#a7adba'; // >=4.5:1 on #0e1015 chart background
-const GRID_COLOR = 'rgba(167,173,186,0.15)';
+const AXIS_FONT = '13px "DM Sans", sans-serif';
+const AXIS_COLOR = '#52627c';
+const GRID_COLOR = '#dce3ee';
+
+// Measure quantities before laying out the plot. Units live above/below the
+// axes, never in the tick gutters; endpoint labels stay inside the canvas.
+function chartFrame(ctx, W, H, labels, yTitle, xTitle, square = false) {
+  ctx.font = AXIS_FONT;
+  const left = Math.ceil(Math.max(...labels.map(v => ctx.measureText(v).width))) + 20;
+  const top = 42, right = 22, bottom = 60;
+  const width = W - left - right;
+  const height = square ? Math.min(width, H - top - bottom) : H - top - bottom;
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = AXIS_COLOR; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText(yTitle, 12, 12);
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  ctx.fillText(xTitle, left + width / 2, H - 10);
+  return { padL: left, padR: right, padT: top, padB: H - top - height, plotW: width, plotH: height };
+}
+function chartTick(ctx, text, x, y, W) {
+  const half = ctx.measureText(text).width / 2;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillText(text, Math.max(half + 8, Math.min(W - half - 8, x)), y);
+}
+// Presentation-only domains: round outward to readable, evenly spaced ticks.
+// The source samples and every reported scientific metric stay unchanged.
+function chartDomain(low, high, count, minimumStep = 0) {
+  const raw = Math.max((high - low) / count, minimumStep, Number.MIN_VALUE);
+  const magnitude = 10 ** Math.floor(Math.log10(raw));
+  const steps = [1, 2, 3, 5, 10, 20];
+  for (const multiple of steps) {
+    const step = multiple * magnitude;
+    if (step < raw * (1 - 1e-12)) continue;
+    const min = Math.floor(low / step + 1e-10) * step;
+    const max = min + count * step;
+    if (max >= high - step * 1e-10) return { min, max, step };
+  }
+}
+function powerLabel(value, axisMax, step) {
+  if (value === 0) return '0';
+  // Choose a single notation for the whole axis, including its smaller ticks.
+  if (axisMax >= 1e6 || axisMax < 0.01) return value.toExponential(1);
+  const digits = Math.max(0, -Math.floor(Math.log10(step)));
+  return value.toLocaleString('en-US', { maximumFractionDigits: digits });
+}
 
 function drawPSD(canvas, fd) {
   const { ctx, W, H } = setupHiDPICanvas(canvas);
   if (!fd.ok) return;
-  const padL = 34, padR = 8, padT = 16, padB = 20;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
   const maxF = 0.5;
   const idx = fd.freqs.map((f, i) => i).filter(i => fd.freqs[i] <= maxF);
-  const maxP = Math.max(...idx.map(i => fd.psd[i]), 1e-6) * 1.1;
+  const peak = Math.max(...idx.map(i => fd.psd[i]), 1e-6) * 1.1;
+  const { max: maxP, step: powerStep } = chartDomain(0, peak, 4);
+  const yLabels = Array.from({ length: 5 }, (_, t) => powerLabel(powerStep * t, maxP, powerStep));
+  const { padL, padR, padT, plotW, plotH } = chartFrame(ctx, W, H, yLabels, 'Power density (ms²/Hz)', 'Frequency (Hz)');
   const xOf = (f) => padL + (f / maxF) * plotW;
   const yOf = (p) => padT + plotH - (p / maxP) * plotH;
 
   // shaded bands (behind curve)
-  const bandColor = (f) => f < 0.04 ? 'rgba(107,114,128,0.28)' : f < 0.15 ? 'rgba(245,160,110,0.22)' : f <= 0.4 ? 'rgba(79,209,197,0.22)' : 'transparent';
+  const bandColor = (f) => f < 0.04 ? 'rgba(82,102,130,0.10)' : f < 0.15 ? 'rgba(40,85,255,0.08)' : f <= 0.4 ? 'rgba(19,117,140,0.09)' : 'transparent';
   const bandEdges = [0.0033, 0.04, 0.15, 0.4];
   for (let i = 0; i < bandEdges.length - 1; i++) {
     const f0 = bandEdges[i], f1 = bandEdges[i + 1];
@@ -311,24 +653,12 @@ function drawPSD(canvas, fd) {
     ctx.stroke();
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    ctx.fillText(p >= 100 ? p.toFixed(0) : p.toFixed(1), padL - 5, y);
+    ctx.fillText(yLabels[t], padL - 10, y);
   }
-  ctx.save();
-  ctx.translate(10, padT + plotH / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.textAlign = 'center';
-  ctx.fillText('ms\u00b2/Hz', 0, 0);
-  ctx.restore();
-
-  // x ticks every 0.1 Hz
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  for (let f = 0; f <= maxF + 1e-9; f += 0.1) {
-    const x = xOf(f);
-    ctx.fillText(f.toFixed(1), x, padT + plotH + 4);
+  for (let t = 0; t <= 5; t++) {
+    const f = t / 10;
+    chartTick(ctx, f.toFixed(1), xOf(f), padT + plotH + 10, W);
   }
-  ctx.textBaseline = 'alphabetic';
-  ctx.fillText('Hz', W - padR, padT + plotH + 4 + 12);
 
   // filled smooth area under the PSD curve
   ctx.beginPath();
@@ -339,25 +669,19 @@ function drawPSD(canvas, fd) {
   ctx.lineTo(xOf(fd.freqs[idx[idx.length - 1]]), padT + plotH);
   ctx.lineTo(xOf(fd.freqs[idx[0]]), padT + plotH);
   ctx.closePath();
-  ctx.fillStyle = 'rgba(242,244,247,0.18)';
+  ctx.fillStyle = 'rgba(40,85,255,0.06)';
   ctx.fill();
   ctx.beginPath();
   idx.forEach((i, k) => {
     const x = xOf(fd.freqs[i]), y = yOf(fd.psd[i]);
     if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   });
-  ctx.strokeStyle = '#f2f4f7';
+  ctx.strokeStyle = '#2855ff';
   ctx.lineWidth = 1.5;
   ctx.stroke();
 
-  // band labels along the top
-  ctx.font = '10px -apple-system, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  ctx.fillStyle = 'rgba(167,173,186,0.9)';
-  ctx.fillText('VLF', (xOf(0.0033) + xOf(0.04)) / 2, padT + 2);
-  ctx.fillText('LF', (xOf(0.04) + xOf(0.15)) / 2, padT + 2);
-  ctx.fillText('HF', (xOf(0.15) + xOf(0.4)) / 2, padT + 2);
+  // Band names and ranges remain in the wrapping HTML legend below.
+
 }
 
 function drawPoincare(canvas, nl, flagged) {
@@ -371,11 +695,12 @@ function drawPoincare(canvas, nl, flagged) {
   const accepted = pts.filter((_, i) => !isOutlier(i));
   const scaleSrc = accepted.length ? accepted.flat() : pts.flat();
   const dataMin = Math.min(...scaleSrc), dataMax = Math.max(...scaleSrc);
-  const span = (dataMax - dataMin) || 1;
-  const min = dataMin - span * 0.08, max = dataMax + span * 0.08;
-
-  const padL = 40, padR = 12, padT = 14, padB = 34;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const span = Math.max(dataMax - dataMin, 5);
+  const midpoint = (dataMin + dataMax) / 2;
+  const ticks = W < 360 ? 3 : 4;
+  const { min, max } = chartDomain(midpoint - span * 0.58, midpoint + span * 0.58, ticks, 1);
+  const labels = Array.from({ length: ticks + 1 }, (_, t) => (min + (max - min) * t / ticks).toFixed(0));
+  const { padL, padT, plotW, plotH } = chartFrame(ctx, W, H, labels, 'Next RR interval (ms)', 'RR interval (ms)', true);
   const clip = (v) => Math.max(min, Math.min(max, v));
   const toXY = (rrN, rrN1) => [
     padL + ((clip(rrN) - min) / (max - min)) * plotW,
@@ -387,7 +712,7 @@ function drawPoincare(canvas, nl, flagged) {
   ctx.strokeStyle = GRID_COLOR;
   ctx.fillStyle = AXIS_COLOR;
   ctx.lineWidth = 1;
-  const ticks = 5;
+
   for (let t = 0; t <= ticks; t++) {
     const v = min + ((max - min) / ticks) * t;
     const [x] = toXY(v, min);
@@ -395,19 +720,10 @@ function drawPoincare(canvas, nl, flagged) {
     ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
     ctx.textAlign = 'center'; ctx.textBaseline = 'top';
-    ctx.fillText(v.toFixed(0), x, padT + plotH + 4);
+    chartTick(ctx, v.toFixed(0), x, padT + plotH + 10, W);
     ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
     ctx.fillText(v.toFixed(0), padL - 5, y);
   }
-  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
-  ctx.fillText('RRn (ms)', padL + plotW / 2, H - 4);
-  ctx.save();
-  ctx.translate(11, padT + plotH / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.textAlign = 'center';
-  ctx.fillText('RRn+1 (ms)', 0, 0);
-  ctx.restore();
-
   // identity line y = x
   ctx.strokeStyle = 'rgba(167,173,186,0.4)';
   ctx.setLineDash([4, 4]);
@@ -416,7 +732,7 @@ function drawPoincare(canvas, nl, flagged) {
   ctx.setLineDash([]);
 
   // accepted points
-  ctx.fillStyle = 'rgba(79,209,197,0.55)';
+  ctx.fillStyle = 'rgba(40,85,255,0.55)';
   accepted.forEach(([a, b]) => {
     const [x, y] = toXY(a, b);
     ctx.beginPath();
@@ -426,7 +742,7 @@ function drawPoincare(canvas, nl, flagged) {
 
   // outliers: hollow orange, clipped to axis range
   let offScale = 0;
-  ctx.strokeStyle = '#f5a06e';
+  ctx.strokeStyle = '#b46a26';
   ctx.lineWidth = 1.2;
   pts.forEach(([a, b], i) => {
     if (!isOutlier(i)) return;
@@ -437,6 +753,8 @@ function drawPoincare(canvas, nl, flagged) {
     ctx.stroke();
   });
 
+  ctx.save();
+  ctx.beginPath(); ctx.rect(padL, padT, plotW, plotH); ctx.clip();
   // SD1/SD2 ellipse centered at (mean,mean), rotated 45deg
   const meanV = scaleSrc.reduce((s, v) => s + v, 0) / scaleSrc.length;
   const [cx, cy] = toXY(meanV, meanV);
@@ -444,38 +762,32 @@ function drawPoincare(canvas, nl, flagged) {
   ctx.save();
   ctx.translate(cx, cy);
   ctx.rotate(-Math.PI / 4);
-  ctx.strokeStyle = '#f5a06e';
+  ctx.strokeStyle = '#13758c';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   ctx.ellipse(0, 0, nl.sd2 * scale, nl.sd1 * scale, 0, 0, Math.PI * 2);
   ctx.stroke();
   ctx.restore();
 
-  // legend, corner away from the data cluster
-  ctx.font = '10px -apple-system, sans-serif';
-  ctx.fillStyle = 'rgba(167,173,186,0.9)';
-  ctx.textAlign = 'left';
-  ctx.textBaseline = 'top';
-  ctx.fillText('— SD1/SD2 ellipse', padL + 4, padT + 2);
-  if (offScale > 0) {
-    ctx.fillStyle = '#f5a06e';
-    ctx.textAlign = 'right';
-    ctx.fillText(`${offScale} outlier${offScale === 1 ? '' : 's'} off-scale`, padL + plotW - 4, padT + 2);
-  }
+  ctx.restore();
+  const legend = canvas.parentElement.querySelector('.poincare-legend');
+  if (legend) legend.innerHTML = '<span class="accepted">Accepted pairs</span><span class="ellipse">SD1/SD2 ellipse</span><span class="artifact">Flagged pairs</span>' + (offScale ? `<span class="off-scale">${offScale} flagged pair${offScale === 1 ? '' : 's'} at the plot boundary (off scale)</span>` : '');
+
 }
 
 function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
   const { ctx, W, H } = setupHiDPICanvas(canvas);
   if (!ibiMs.length) return;
   const dataMin = Math.min(...ibiMs), dataMax = Math.max(...ibiMs) || Math.min(...ibiMs) + 1;
-  const span = (dataMax - dataMin) || 1;
-  const min = dataMin - span * 0.1, max = dataMax + span * 0.1;
+  const span = Math.max(dataMax - dataMin, 5);
+  const midpoint = (dataMin + dataMax) / 2;
+  const { min, max } = chartDomain(midpoint - span * 0.6, midpoint + span * 0.6, 3, 1);
   const times = [0];
   for (let i = 0; i < ibiMs.length; i++) times.push(times[times.length - 1] + ibiMs[i] / 1000);
   const totalSec = times[times.length - 1];
 
-  const padL = 40, padR = 8, padT = 10, padB = 22;
-  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const labels = Array.from({ length: 4 }, (_, t) => (min + (max - min) * t / 3).toFixed(0));
+  const { padL, padR, padT, plotW, plotH } = chartFrame(ctx, W, H, labels, 'RR interval (ms)', 'Elapsed time (min:sec)');
   const xOf = (t) => padL + (t / (totalSec || 1)) * plotW;
   const yOf = (v) => padT + plotH - ((v - min) / (max - min)) * plotH;
 
@@ -492,21 +804,11 @@ function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
     ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
     ctx.fillText(v.toFixed(0), padL - 5, y);
   }
-  ctx.save();
-  ctx.translate(10, padT + plotH / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.textAlign = 'center';
-  ctx.fillText('RR (ms)', 0, 0);
-  ctx.restore();
-
-  // x ticks: 5-6 ticks as mm:ss
-  const nTicks = 5;
-  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  const nTicks = W < 360 ? 3 : 5;
   for (let t = 0; t <= nTicks; t++) {
-    const sec = (totalSec / nTicks) * t;
-    const x = xOf(sec);
-    const mm = Math.floor(sec / 60), ss = Math.round(sec % 60);
-    ctx.fillText(`${mm}:${String(ss).padStart(2, '0')}`, x, padT + plotH + 4);
+    const sec = Math.round((totalSec / nTicks) * t);
+    const mm = Math.floor(sec / 60), ss = sec % 60;
+    chartTick(ctx, `${mm}:${String(ss).padStart(2, '0')}`, xOf(sec), padT + plotH + 10, W);
   }
 
   // corrected-vs-raw dashed segment where a beat was corrected
@@ -526,7 +828,7 @@ function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
   }
 
   // raw RR line
-  ctx.strokeStyle = '#4fd1c5';
+  ctx.strokeStyle = '#2855ff';
   ctx.lineWidth = 1;
   ctx.beginPath();
   ibiMs.forEach((v, i) => {
@@ -536,7 +838,7 @@ function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
   ctx.stroke();
 
   // artifacts as hollow orange dots
-  ctx.strokeStyle = '#f5a06e';
+  ctx.strokeStyle = '#b46a26';
   ctx.lineWidth = 1.2;
   ibiMs.forEach((v, i) => {
     if (!flagged || !flagged[i]) return;
@@ -549,6 +851,12 @@ function drawReportTachogram(canvas, ibiMs, flagged, correctedMs) {
 
 // Builds the full scrollable report from accepted beats ({t, ibiMs} or plain ms).
 // Exposed via renderSummary() in the real flow and window.__demoReport() for QA.
+let reportChartObserver;
+let redrawReportCharts = () => {};
+window.addEventListener('beforeprint', () => redrawReportCharts());
+window.addEventListener('afterprint', () => redrawReportCharts());
+if (document.fonts) document.fonts.ready.then(() => redrawReportCharts());
+
 function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const el = document.getElementById('report-content');
   el.innerHTML = '';
@@ -557,7 +865,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const acceptedIbiMs = beats.map(b => b.ibiMs);
   if (!beats.length) {
     el.innerHTML = `
-      <h2>HRV Spot Check report</h2>
+      <p class="eyebrow">PULSE ON PAPER</p><h1 class="report-title">Your pulse<br>report<span class="blue-period">.</span></h1><h2>HRV Spot Check</h2>
       <p class="insufficient">No good-quality windows were captured this session — try again with steadier finger placement.</p>
     `;
     return;
@@ -567,26 +875,27 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const result = PPG.hrv.analyzeHRV(beats, { rmssdFloorMs, respirationRateBpm: fusionRespBpm });
   const td = result.timeDomain, fd = result.frequencyDomain, nl = result.nonlinear, ans = result.ans, si = result.stressIndex;
   const durationSec = result.meta.durationSec;
-  const goodPct = Math.round(monitor && monitor.getSessionSummary ? monitor.getSessionSummary().goodFraction * 100 : 100);
+  const goodFraction = monitor && monitor.getSessionSummary ? monitor.getSessionSummary().goodFraction : null;
+  const goodPct = Number.isFinite(goodFraction) ? Math.round(goodFraction * 100) : null;
 
   const header = document.createElement('div');
   header.className = 'report-card report-header';
   header.innerHTML = `
-    <h2>HRV Spot Check report</h2>
-    <div class="meta-row">
-      <span>${new Date().toLocaleString()}</span>
-      <span>Duration <b>${(durationSec / 60).toFixed(1)} min</b></span>
-      <span>Good signal <b>${goodPct}%</b></span>
-      <span>Beats used <b>${result.meta.nBeats}</b></span>
-      <span>Corrected <b>${result.meta.pctCorrected.toFixed(1)}%</b></span>
-    </div>
+    <p class="eyebrow">PULSE ON PAPER</p><h1 class="report-title">Your pulse<br>report<span class="blue-period">.</span></h1>
+    <h2>HRV Spot Check</h2><p class="report-date">${new Date().toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})} · ${(durationSec/60).toFixed(1)} min analyzed</p>
+    <canvas id="report-manuscript" width="1000" height="260" aria-label="A detail of your captured pulse manuscript"></canvas>
+    <p class="report-subtitle">Camera-derived pulse variability</p>
+    <div class="report-heroes"><div><span>Mean pulse</span><strong>${td.ok?fmt(td.meanHR,0):'--'} <small>bpm</small></strong></div><div><span>RMSSD</span><strong>${td.ok?fmt(td.rmssd,1):'--'} <small>ms</small></strong></div><div><span>SDNN</span><strong>${td.ok?fmt(td.sdnn,1):'--'} <small>ms</small></strong></div></div>
+    <div class="recording-quality"><h3>Recording quality</h3><strong>${goodPct == null ? '—' : goodPct+'%'}</strong><p>Good-signal windows</p><progress max="100" value="${goodPct == null ? 0 : goodPct}" aria-label="Good-signal windows">${goodPct}%</progress><div class="quality-facts"><span><b>${result.meta.nBeats}</b> beats used</span><span><b>${result.meta.pctCorrected.toFixed(1)}%</b> corrected</span></div></div>
   `;
   el.appendChild(header);
+  paintManuscript(document.getElementById('report-manuscript'),true);
+  document.getElementById('report-manuscript').hidden = !manuscript.segments.length;
 
   // ANS balance card
   const ansCard = document.createElement('div');
   ansCard.className = 'report-card';
-  ansCard.innerHTML = '<h3 style="margin-top:0">ANS balance <span class="experimental">experimental</span></h3><p class="report-note">z-scores of mean RR and RMSSD (PNS) and of mean HR and the square-root stress index (SNS) against published short-term adult references. A population reference, not a diagnosis.</p>';
+  ansCard.innerHTML = '<h3 style="margin-top:0">ANS balance <span class="experimental">Research estimate</span></h3><p class="report-note">Relative to a population reference.</p>';
   if (ans.ok) {
     const pnsWrap = document.createElement('div');
     pnsWrap.className = 'ans-bar-wrap';
@@ -600,7 +909,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
     ansCard.appendChild(snsWrap);
     const line = document.createElement('p');
     line.className = 'ans-line';
-    line.textContent = ansInterpretation(ans.pnsIndex, ans.snsIndex);
+    line.innerHTML = 'Preliminary research estimates, not a diagnosis.<details class="ans-methods"><summary>Interpretation &amp; reference</summary><p>' + ansInterpretation(ans.pnsIndex, ans.snsIndex) + '</p><p>z-scores of mean RR and RMSSD (PNS), and mean HR and square-root stress index (SNS), against published short-term adult references.</p></details>';
     ansCard.appendChild(line);
   } else {
     ansCard.innerHTML += `<p class="insufficient">${ans.reason}</p>`;
@@ -618,7 +927,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
         <tr><td>Mean HR</td><td>${fmt(td.meanHR, 0)} bpm</td></tr>
         <tr><td>Min / Max HR (5-beat avg)</td><td>${fmt(td.minHR, 0)} / ${fmt(td.maxHR, 0)} bpm</td></tr>
         <tr><td>SDNN</td><td>${fmt(td.sdnn, 1)} ms</td></tr>
-        <tr><td>RMSSD</td><td>${fmt(td.rmssd, 1)} ms${Number.isFinite(rmssdFloorMs) ? ` <span class="floor">(±${fmt(rmssdFloorMs, 0)} ms measurement floor)</span>` : ''}</td></tr>
+        <tr><td>RMSSD</td><td>${fmt(td.rmssd, 1)} ms${Number.isFinite(rmssdFloorMs) ? ` <span class="floor">(${fmt(rmssdFloorMs, 0)} ms estimated timing-noise floor)</span>` : ''}</td></tr>
         <tr><td>lnRMSSD</td><td>${fmt(td.lnRmssd, 2)}</td></tr>
         <tr><td>RMSSD, last 60 s</td><td>${fmt(result.ultraShort.rmssd, 1)} ms (${result.ultraShort.n} beats)</td></tr>
         <tr><td>NN50 / pNN50</td><td>${fmt(td.nn50, 0)} / ${fmt(td.pnn50, 1)}%</td></tr>
@@ -638,7 +947,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   if (fd.ok) {
     fdCard.innerHTML += `
       <div class="report-canvas-wrap">
-        <canvas id="psd-canvas" width="440" height="160"></canvas>
+        <canvas id="psd-canvas" width="440" height="248" role="img" aria-label="Power spectral density of RR intervals by frequency"></canvas>
         <div class="psd-legend"><span class="vlf">VLF 0.0033-0.04 Hz</span><span class="lf">LF 0.04-0.15 Hz</span><span class="hf">HF 0.15-0.4 Hz</span></div>
       </div>
       <table class="hrv-table">
@@ -666,7 +975,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   if (nl.ok) {
     nlCard.innerHTML += `
       <div class="report-canvas-wrap">
-        <canvas id="poincare-canvas" width="300" height="300"></canvas>
+        <canvas id="poincare-canvas" width="300" height="308" role="img" aria-label="Poincaré plot of consecutive RR interval pairs"></canvas>
         <div class="poincare-legend"><span>SD1/SD2 ellipse</span></div>
       </div>
       <table class="hrv-table">
@@ -688,7 +997,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   tachoCard.className = 'report-card';
   tachoCard.innerHTML = `
     <h3 style="margin-top:0">RR tachogram (whole session)</h3>
-    <div class="report-canvas-wrap"><canvas id="report-tacho-canvas" width="440" height="140"></canvas></div>
+    <div class="report-canvas-wrap"><canvas id="report-tacho-canvas" width="440" height="248" role="img" aria-label="RR intervals across the recording with flagged beats"></canvas></div>
     <p class="report-note">Orange dots mark beats flagged as artifacts (&gt;20% deviation from local median) and corrected for frequency analysis.</p>
   `;
   el.appendChild(tachoCard);
@@ -709,32 +1018,76 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
     <strong>population reference, not a diagnosis</strong>. Not a medical device.</p>
   `;
   el.appendChild(footer);
+  el.insertBefore(tdCard, ansCard);
+  if (td.ok) {
+    const fullTable=tdCard.querySelector('table');
+    const detail=document.createElement('details');detail.className='time-details';
+    const summary=document.createElement('summary');summary.textContent='All time-domain measurements';
+    detail.append(summary,fullTable);
+    tdCard.append(detail);
+    const compact=document.createElement('table');compact.className='hrv-table';
+    compact.innerHTML=`<tr><td>Mean RR</td><td>${fmt(td.meanRR,0)} ms</td></tr><tr><td>Pulse range<br><small>(5-beat average)</small></td><td>${fmt(td.minHR,0)} – ${fmt(td.maxHR,0)} bpm</td></tr><tr><td>Estimated timing-noise floor</td><td>${Number.isFinite(rmssdFloorMs)?fmt(rmssdFloorMs,0)+' ms':'Unavailable'}</td></tr>`;
+    tdCard.insertBefore(compact,detail);
+  }
+  for (const [card, label] of [[fdCard,'Frequency analysis'],[nlCard,'Nonlinear analysis'],[tachoCard,'Beat timing & methods']]) {
+    const details=document.createElement('details');details.className='report-disclosure';
+    const summary=document.createElement('summary');summary.textContent=label;
+    card.before(details);details.append(summary,card);
+    if(card===tachoCard) details.append(footer);
+    details.addEventListener('toggle',()=>{ if(!details.open)return;
+      if(card===fdCard && fd.ok) drawPSD(document.getElementById('psd-canvas'),fd);
+      if(card===nlCard && nl.ok) drawPoincare(document.getElementById('poincare-canvas'),nl,result.meta.flagged);
+      if(card===tachoCard) drawReportTachogram(document.getElementById('report-tacho-canvas'),acceptedIbiMs,result.meta.flagged,PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
+    });
+  }
+  redrawReportCharts = () => {
+    const psd = document.getElementById('psd-canvas');
+    const poincare = document.getElementById('poincare-canvas');
+    const tacho = document.getElementById('report-tacho-canvas');
+    if (psd?.clientWidth && fd.ok) drawPSD(psd, fd);
+    if (poincare?.clientWidth && nl.ok) drawPoincare(poincare, nl, result.meta.flagged);
+    if (tacho?.clientWidth) drawReportTachogram(tacho, acceptedIbiMs, result.meta.flagged, PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
+  };
+  reportChartObserver?.disconnect();
+  if (typeof ResizeObserver !== 'undefined') {
+    reportChartObserver = new ResizeObserver(() => redrawReportCharts());
+    el.querySelectorAll('.report-canvas-wrap').forEach(wrap => reportChartObserver.observe(wrap));
+  }
+  tdCard.insertAdjacentHTML('beforeend','<p class="report-note">The timing-noise floor is an estimate, not a confidence interval.</p>');
 }
 
 function startSession() {
   // Strict phone gate at the point of camera access too - not just the
   // Ready-screen UI disable, so this can never be invoked (e.g. via the
   // console or a future button) on desktop and grab getUserMedia there.
-  if (!isPhone) return;
-
+  if (!isPhone || sessionStarting) return;
+  sessionStarting = true;
+  const generation = ++sessionGeneration;
+  beginEntryTransition();
   showScreen('placement');
   resetWaveBuffer();
+  resetManuscript();
+  elapsedMeasuringMs = 0; lastTimerTick = Date.now();
   measuringStartedAt = null;
   document.getElementById('session-countdown').textContent = fmtCountdown(SESSION_SEC);
   if (sessionTimerId) clearInterval(sessionTimerId);
   sessionTimerId = setInterval(tickSessionCountdown, 1000);
 
   lastMetrics = null;
+  if (monitor) { monitor.destroy(); monitor = null; }
   monitor = new PPGMonitor(null, {
     ui: { enabled: false },
     debug: { persistLastSession: true }, // powers the debug menu's "share last log"
     wakeLock: true, // keep the screen on for the 3-minute protocol
     motion: true, // accelerometer motion gate (asks permission on iOS)
     onReady: ({ torchSupported }) => {
+      if (generation !== sessionGeneration) return;
       document.getElementById('torch-note').hidden = torchSupported !== false;
     },
     onQualityUpdate: (metrics) => {
+      if (generation !== sessionGeneration) return;
       lastMetrics = metrics;
+      acceptPaintWindow(metrics);
       if (metrics.fingerState === 'MEASURING') {
         if (measuringStartedAt == null) measuringStartedAt = Date.now();
         if (screens.measuring.hidden) showScreen('measuring');
@@ -747,7 +1100,10 @@ function startSession() {
         updatePlacementScreen(metrics);
       }
     },
-    onSignalUpdate: ({ value }) => {
+    onSignalUpdate: ({ time, value, isProcessing }) => {
+      if (generation !== sessionGeneration) return;
+      if (isProcessing && !manuscript.paused && Number.isFinite(value)) manuscript.pending.push({ t:time, v:value });
+      if (manuscript.pending.length > 1800) manuscript.pending.shift();
       waveBuf.push(value);
       waveBuf.shift();
       placementWaveBuf.push(value);
@@ -756,16 +1112,26 @@ function startSession() {
       if (!screens.placement.hidden) drawPlacementWave();
     },
     onError: (err) => {
+      if (generation !== sessionGeneration) return;
+      if (sessionTimerId) { clearInterval(sessionTimerId); sessionTimerId = null; }
+      clearEntryTransition();
       // PPGError carries a stable code and user-facing guidance.
       alert(err && err.guidance ? err.guidance : 'Camera error: ' + (err && err.message ? err.message : err));
       showScreen('ready');
     },
   });
 
-  monitor.start().then(() => {
+  const currentMonitor = monitor;
+  pendingMonitorStarts.add(currentMonitor);
+  currentMonitor.start().then(() => {
+    pendingMonitorStarts.delete(currentMonitor);
+    if (generation !== sessionGeneration) { currentMonitor.destroy(); return; }
     const host = document.getElementById('camera-preview');
-    host.replaceChildren(monitor.video);
+    host.replaceChildren(currentMonitor.video);
   }).catch((err) => {
+    pendingMonitorStarts.delete(currentMonitor);
+    if (generation !== sessionGeneration) { currentMonitor.destroy(); return; }
+    if (sessionTimerId) { clearInterval(sessionTimerId); sessionTimerId = null; }
     console.error('start() failed', err);
     showScreen('ready');
   });
@@ -785,14 +1151,33 @@ function stopSession() {
 const isPhone = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
 if (!isPhone) {
   const b = document.getElementById('btn-start');
-  b.disabled = true; b.textContent = 'Open on your phone';
-  document.getElementById('desktop-note').hidden = false;
+  b.disabled = true; b.hidden = true;
+  document.getElementById('phone-qr').src = new URL('./assets/phone-qr.svg', paintBundleURL).href;
+  document.getElementById('screen-ready').classList.add('desktop-ready');
+  document.getElementById('desktop-phone-panel').hidden = false;
 }
 document.getElementById('btn-start').addEventListener('click', startSession);
 document.getElementById('btn-cancel-placement').addEventListener('click', () => {
-  if (monitor) { monitor.stop(); monitor.destroy(); monitor = null; }
+  sessionGeneration++;
+  clearEntryTransition();
+  if (sessionTimerId) { clearInterval(sessionTimerId); sessionTimerId=null; }
+  if (monitor) {
+    monitor.stop();
+    // Pending getUserMedia still needs its video element to adopt a late stream.
+    // Dispose it in the completion handlers, where all tracks can be released.
+    if (!pendingMonitorStarts.has(monitor)) monitor.destroy();
+    monitor = null;
+  }
   showScreen('ready');
 });
+document.getElementById('btn-pause').addEventListener('click', () => {
+  manuscript.paused = !manuscript.paused; manuscript.pending=[];
+  if (manuscript.paused) cancelAnimationFrame(manuscript.frame); else animateManuscript();
+  document.getElementById('btn-pause').textContent=manuscript.paused?'Resume artwork':'Pause artwork';
+  document.getElementById('pause-note').textContent=manuscript.paused?'Artwork paused. Your 3-minute measurement continues.':'3-minute recording · Not a medical device';
+  if(lastMetrics) updateMeasuringScreen(lastMetrics);
+});
+document.getElementById('btn-save-manuscript').addEventListener('click', saveManuscript);
 document.getElementById('btn-stop').addEventListener('click', stopSession);
 document.getElementById('btn-again').addEventListener('click', () => {
   if (monitor) { monitor.destroy(); monitor = null; }
@@ -802,7 +1187,10 @@ document.getElementById('btn-save-log').addEventListener('click', () => {
   if (monitor) monitor.downloadDebugLog('hrv-spot-check');
 });
 document.getElementById('btn-save-report').addEventListener('click', () => {
-  window.print();
+  const closed=[...document.querySelectorAll('.report-disclosure, .time-details, .ans-methods')].filter(d=>!d.open);
+  closed.forEach(d=>d.open=true);
+  window.addEventListener('afterprint',()=>closed.forEach(d=>d.open=false),{once:true});
+  setTimeout(()=>window.print(),100);
 });
 
 // ---------------------------------------------------------- Debug menu --
@@ -933,6 +1321,8 @@ window.__demoState = function (name) {
   if (name === 'measuring') {
     showScreen('measuring');
     resetWaveBuffer();
+  resetManuscript();
+  elapsedMeasuringMs = 0; lastTimerTick = Date.now();
     for (let i = 0; i < waveBuf.length; i++) waveBuf[i] = 0.5 + 0.3 * Math.sin(i / 6);
     drawWave();
     monitor = monitor || { getTachogram: () => Array.from({ length: 40 }, (_, i) => ({ ibiMs: 800 + 40 * Math.sin(i / 3), valid: i % 7 !== 0, good: true })) };
