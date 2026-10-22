@@ -1,10 +1,10 @@
 name: release
 
-# Publishes to npm (with provenance, when NPM_TOKEN is set and the version is
-# not on the registry yet) and creates a GitHub Release when a version tag is
-# pushed, or on manual dispatch (which creates the tag on the chosen commit).
-# Release notes are the matching section of CHANGELOG.md. Every step is
-# idempotent, so re-running for an existing tag only fills in what is missing.
+# Publishes to npm (with provenance, using trusted publishing or NPM_TOKEN)
+# when the version is not on the registry yet, then creates a GitHub Release.
+# Runs on a version tag or manual dispatch (which creates the tag on the chosen
+# commit). Release notes come from CHANGELOG.md. Re-running the current release
+# fills missing artifacts; success requires the requested version to be latest.
 on:
   push:
     tags: ['v*.*.*']
@@ -26,8 +26,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
+      # Trusted publishing requires npm >= 11.5.1. Pin the verified current CLI.
+      - run: npm install --global npm@12.2.1 --no-audit --no-fund
       - run: npm install --no-audit --no-fund  # no lockfile is committed; matches test.yml
       - run: npm test
       - run: npm run build
@@ -46,14 +48,27 @@ jobs:
         run: |
           V=$(node -p "require('./package.json').version")
           test "v$V" = "$TAG" || { echo "package.json is $V but the tag is $TAG"; exit 1; }
-      - name: Publish to npm (skipped when the version is already published or NPM_TOKEN is unset)
+      - name: Publish to npm (skipped when the version is already published)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           N=$(node -p "require('./package.json').name"); V="${TAG#v}"
-          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "NPM_TOKEN not set; skipping npm publish"; exit 0; fi
           if npm view "$N@$V" version >/dev/null 2>&1; then echo "$N@$V already on npm; skipping"; exit 0; fi
-          npm publish --provenance --access public
+          npm publish --provenance --access public --tag latest
+      - name: Verify the published version and latest tag
+        run: |
+          N=$(node -p "require('./package.json').name"); V="${TAG#v}"
+          for attempt in 1 2 3 4 5 6; do
+            PUBLISHED=$(npm view "$N@$V" version 2>/dev/null || true)
+            LATEST=$(npm view "$N" dist-tags.latest 2>/dev/null || true)
+            if [ "$PUBLISHED" = "$V" ] && [ "$LATEST" = "$V" ]; then
+              echo "$N@$V is published and tagged latest"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "Registry verification failed for $N@$V (published=$PUBLISHED, latest=$LATEST)"
+          exit 1
       - name: Pack tarball
         run: npm pack && mv sontakey-ppg-js-*.tgz "ppg-js-${TAG}.tgz"
       - name: Create GitHub Release (skipped when it already exists)

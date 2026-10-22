@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-21
+
+### Fixed
+- Camera startup and interruption recovery now discard stale asynchronous work
+  after `stop()`, `destroy()` or a newer `start()`. Late camera grants and streams
+  waiting on constraints are released instead of reviving a stopped session.
+- Wake-lock and motion-permission completion respect the current capture
+  lifecycle. Events from replaced camera tracks cannot restart old recovery work.
+
+### Changed
+- The example app is now **Pulse on Paper**, a ChatPPG project at
+  <https://chatppg.com/ppg-js-demo>: accepted-waveform paint strokes with organic
+  cobalt–iris–teal gradients, smooth manuscript scrolling, live metrics, a small
+  camera preview, and floating mobile controls.
+- Reports lead with a shareable pulse portrait and basic metrics, with detailed
+  HRV analysis in expandable sections and report export in the menu.
+- Desktop handoff uses a painted QR invitation. Brushstroke transitions use an
+  app-only WebGPU compositor with WebGL2/Canvas2D fallbacks and reduced-motion
+  support. Graphics are not included in the headless npm package.
+- README links and screenshots reflect the current ChatPPG experience and use
+  image URLs that also work on npm.
+
+### Testing
+- Added camera lifecycle regression coverage, responsive report/graph checks,
+  artwork export checks, QR decoding checks, and a full three-minute WebKit
+  replay with camera-frame, main-thread and visibility interruptions.
+- Browser replay and performance evidence remain separate from physical-device
+  capture validation. No DSP, HRV or streaming-engine algorithms changed.
+
 ## [0.3.0] - 2026-09-14
 
 Rebuild of the signal core after the September 2026 audit
