@@ -2,7 +2,8 @@
 
 ChatPPG’s camera-PPG experience turns a recording into a painted manuscript,
 then presents the existing HRV Spot Check analysis in the same visual language:
-near-white paper, Water Brush titles, DM Sans measurements, defined blue pigment and
+near-white paper, one Water Brush heading per screen, DM Sans measurements, defined
+cobalt–iris–teal pigment and
 quiet scientific context. It is a plain HTML/CSS/JavaScript app using the built
 ppg-js browser bundle plus a lazy app-only GPU compositor, both supplied by
 `npm run build`.
@@ -11,9 +12,11 @@ A quiet shared footer links to ChatPPG and the ppg-js project website. Water Bru
 is self-hosted under the included SIL Open Font License. Instructions, controls,
 metric values and graph labels retain DM Sans for legibility.
 
-Desktop visitors see an automatically revealed painted invitation with a crisp QR
-code and a direct link to `https://chatppg.com/ppg-js-demo`. The code keeps its white
-quiet zone and high-contrast modules; only the surrounding pigment animates.
+Desktop visitors see an automatically revealed painted invitation with a QR code
+and a direct link to `https://chatppg.com/ppg-js-demo`. The code has subtle pigment
+variation, solid structural patterns and a four-module warm-paper quiet zone;
+only the surrounding pigment animates. The desktop QR and wash assets are not
+requested in a fresh phone context.
 Desktop capture stays disabled. Phones retain the capture instructions and action.
 
 ## Rendering goal
@@ -24,7 +27,12 @@ the measured signal. Use current stable Three.js (pinned to **0.186.1**) with it
 WebGPU renderer, TSL shaders and automatic WebGL2 fallback. A version pin makes
 builds reproducible; upgrades require checking both backends again.
 
-The app loads and warms the compositor during idle time. It uses one full-screen
+The app loads and warms the compositor during idle time. Screen transitions use
+three directional brush passes with changing pressure, feathered edges and pigment
+pooling. Report artwork preparation happens under a static veil before the finish
+brush moves, with a bounded 250 ms wait and cancellation guards.
+
+The compositor uses one full-screen
 triangle-pair per surface, no antialiasing or postprocessing chain, a maximum 2×
 pixel ratio and an approximately 850,000-pixel budget per surface. Sustained slow
 frames reduce resolution. Only entry diffusion and the reveal of cached pigment
@@ -65,23 +73,26 @@ physical-phone camera/flash/thermal validation.
   callback is red-channel AC: it supplies the presence mask, not the manuscript’s
   shape. This internal `lastWindow` dependency must be checked when upgrading the
   engine.
-- Each accepted window is amplitude-normalized for the page. Its composite SQI
-  score controls blue depth; higher quality produces deeper blue. Color describes
-  recording quality, not health, HRV, pulse strength or elapsed time. Stored strokes
-  are never recolored by a later window. Pigment texture is deterministic decoration
-  around the measured waveform.
+- Each accepted window is amplitude-normalized for the page. Cobalt, iris and teal
+  blend continuously within each stroke, without assigning a single color to each
+  row. The composite SQI controls pigment depth; higher quality produces richer
+  marks. Depth describes recording quality, not health, HRV or pulse strength.
+  Stored strokes are never recolored by a later window. Pigment texture is
+  deterministic decoration around the measured waveform.
 - Rejected windows, missing samples and artwork pauses leave gaps. **Pause artwork**
   freezes the artwork while measurement and the session timer continue. Resume
   does not fill the paused interval with invented strokes.
 
 The capture canvas shows the latest four five-second rows. The report includes a
-two-row detail; **Save manuscript** exports the full captured timeline as a PNG,
-with bounded canvas dimensions for mobile memory use.
+portrait made from selected moments, with a background drawn from the recording's
+pigment palette. **Save manuscript** in the report menu exports the full captured
+timeline as a PNG, with bounded canvas dimensions for mobile memory use.
 
 ## Report and exports
 
 **Finish painting** stops capture and analyzes valid, HRV-eligible beats from
-accepted windows, retaining their timestamps. The report leads with mean pulse,
+accepted windows, retaining their timestamps. The report leads with a shareable
+portrait, mean pulse,
 RMSSD, SDNN and recording quality. “Good-signal windows” is the fraction of windows
 that passed the quality gate; it is distinct from the SQI used for pigment depth.
 
@@ -97,7 +108,11 @@ titles and consistent round tick increments. They redraw when opened, resized,
 loaded fonts change, or printing begins. Plot colors and wrapping legends use the
 ChatPPG scientific palette; off-scale ANS labels align inside the available width.
 
-**Save report** opens all report details and invokes the browser’s print dialog for
+The floating report dock offers **Share artwork** and **Measure again**. Sharing
+uses the native file-sharing API when supported, with a PNG download fallback.
+Metrics are excluded from the artwork unless the user chooses to include them.
+
+**Save report**, in the report menu, opens all details and invokes the browser’s print dialog for
 printing or PDF export, then restores the disclosure state after printing. **Save
 debug log** and the debug menu retain the existing local session-log workflow.
 The app enables last-session persistence in browser local storage; the manuscript
@@ -151,8 +166,9 @@ camera recovery, including streams returned after cancellation.
 
 Capture keeps pulse/RMSSD/SDNN visible below the manuscript, with additional
 signal details in an expandable section. A single live video moves from the
-placement guide to the small upper-right camera preview. Controls remain in
-normal flow with safe-area padding and 44px touch targets. New manuscript rows
+placement guide to the small upper-right camera preview. Mobile actions float at
+the bottom, with safe-area padding, reserved content clearance and 44px touch
+targets. New manuscript rows
 ease into view over 900 ms using at most five cached rows for four visible rows;
 only GPU uniforms or Canvas2D crop coordinates change during scrolling.
 Artwork pause and background suspension preserve animation progress, and reduced

@@ -1,8 +1,8 @@
 # ppg-js
 
 Heart rate, pulse-rate variability, respiration and an honest signal-quality
-gate from a fingertip on a phone camera, in the browser. Zero dependencies,
-typed, no UI.
+gate from a fingertip on a phone camera, in the browser. Zero runtime dependencies,
+a typed API, and a headless core.
 
 [![CI](https://github.com/sontakey/ppg-js/actions/workflows/test.yml/badge.svg)](https://github.com/sontakey/ppg-js/actions/workflows/test.yml)
 [![npm version](https://img.shields.io/npm/v/%40sontakey%2Fppg-js.svg)](https://www.npmjs.com/package/@sontakey/ppg-js)
@@ -15,19 +15,31 @@ per-window quality verdict that says *why* a number is withheld rather than
 guessing. Every session is recorded and can be replayed offline through the
 exact same engine.
 
-**Live demo:** <https://ppg-js.vercel.app> (needs a phone and HTTPS)
+**Try [Pulse on Paper](https://chatppg.com/ppg-js-demo)** — the three-minute
+capture experience by [ChatPPG](https://chatppg.com). Open it on your phone;
+desktop visitors get a painted QR invitation to continue on mobile.
 
 <p align="center">
-  <img src="docs/media/start.png" width="230" alt="HRV Spot Check start screen: cover the camera and flash, hold still for 3 minutes, wait for the ring">
-  <img src="docs/media/measuring.gif" width="230" alt="Measuring screen: 69 bpm, good signal, RMSSD and SDNN with the noise floor, live pulse waveform">
-  <img src="docs/media/report.png" width="230" alt="Report: ANS balance, time-domain HRV with the measurement floor next to RMSSD">
+  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-on-paper-ready.jpg" width="230" alt="Pulse on Paper: phone camera instructions and a painted Begin pulse capture button"></a>
+  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-on-paper-capture.jpg" width="230" alt="Measured pulse strokes with cobalt, iris and teal gradients, live pulse, RMSSD and SDNN, and floating capture controls"></a>
+  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-on-paper-report.jpg" width="230" alt="Pulse report with a shareable painted waveform portrait and Share artwork and Measure again controls"></a>
 </p>
 
-The demo app in `examples/app` is the three-minute HRV Spot Check shown
-above: [start](docs/media/start.png), [measuring](docs/media/measuring.mp4)
-(screen recording from an iPhone), and the report
-([frequency domain](docs/media/report-frequency.png), [full page](docs/media/report-full.png))
-rendered from a real recording in `test/fixtures/`.
+The [example app](examples/app) paints accepted PPG waveforms into a scrolling
+manuscript, with organic color gradients inside each stroke and continuously
+updated pulse, RMSSD and SDNN. It finishes with a shareable portrait and an HRV
+Spot Check report whose detailed measurements expand on demand. Signal quality
+controls pigment depth; the colors do not represent health.
+
+Brushstroke transitions use WebGPU with WebGL2 and Canvas2D fallbacks, respect
+reduced motion, and target approximately 60 fps. The app and its graphics stay
+separate from the headless npm package. The screenshots above show the current
+interface using a checked-in iPhone recording replayed in a browser with camera
+I/O mocked; they are not evidence of a new physical-phone capture test.
+
+[App architecture and checks](examples/app/README.md) ·
+[Screenshot provenance](docs/media/README.md) ·
+[Release notes](CHANGELOG.md)
 
 ## Contents
 
@@ -48,13 +60,13 @@ rendered from a real recording in `test/fixtures/`.
 ## Install
 
 ```bash
-npm install @sontakey/ppg-js
+npm install @sontakey/ppg-js@latest
 ```
 
 Browser global (no bundler):
 
 ```html
-<script src="https://unpkg.com/@sontakey/ppg-js/dist/index.global.js"></script>
+<script src="https://unpkg.com/@sontakey/ppg-js@latest/dist/index.global.js"></script>
 <script>
   const ppg = new PPG.PPG();
   ppg.addEventListener('metrics', (e) => console.log(e.detail.heartRate, e.detail.quality));
@@ -64,6 +76,9 @@ Browser global (no bundler):
 
 The global build exposes `PPG.PPG`, `PPG.PPGMonitor`, `PPG.PpgEngine`,
 `PPG.hrv`, `PPG.dsp` and `PPG.sources`.
+
+These install examples and the npm badge follow the registry's current `latest`
+tag. Pin an explicit version in production for reproducible deployments.
 
 ## Quick start
 
@@ -380,7 +395,12 @@ validated instrument.
 ```bash
 npm test          # strict typecheck + all unit suites
 npm run test:e2e  # real Chromium + fake camera fed from a fixture (after npm run build)
+npm run test:app  # capture, report, exports, responsive layouts and transition lifecycle
+npm run test:safari-session # full three-minute WebKit replay with interruption/recovery
 ```
+
+Browser replay checks exercise the real streaming engine with mocked camera I/O.
+They do not replace physical-phone camera, flash, native sharing or thermal tests.
 
 ## Contributing and license
 

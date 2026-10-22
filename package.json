@@ -1,6 +1,6 @@
 {
   "name": "@sontakey/ppg-js",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Camera PPG in the browser: heart rate, pulse-rate variability, respiration and signal quality from a fingertip on a phone camera. Zero dependencies, typed, no UI.",
   "type": "module",
   "main": "dist/index.cjs",
