@@ -3,24 +3,18 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Pulse Painting</title>
+<title>HRV Spot Check</title>
 <link rel="stylesheet" href="app.css">
-<link rel="stylesheet" href="portrait.css">
 </head>
 <body>
 <div id="app" class="screen-host">
 
-  <!-- More options: report downloads and session tools. -->
-  <button id="btn-debug-menu" class="debug-menu-trigger" type="button" aria-label="More options" aria-haspopup="dialog" aria-controls="debug-sheet" aria-expanded="false">&#8942;</button>
+  <!-- DEBUG MENU: '...' trigger + bottom sheet, present on every screen -->
+  <button id="btn-debug-menu" class="debug-menu-trigger" type="button" aria-label="More options" aria-haspopup="dialog" aria-expanded="false" aria-controls="debug-sheet">&#8942;</button>
   <div id="debug-sheet-backdrop" class="debug-sheet-backdrop" hidden></div>
   <div id="debug-sheet" class="debug-sheet" hidden role="dialog" aria-modal="true" aria-label="More options">
     <div class="debug-sheet-handle"></div>
-    <div id="report-menu-actions" class="report-menu-actions" aria-label="Report downloads" hidden>
-      <button id="btn-save-artwork" class="btn-secondary btn-bordered" type="button" disabled>Save artwork</button>
-      <button id="btn-save-report" class="btn-secondary btn-bordered" type="button">Save report</button>
-      <button id="btn-save-manuscript" class="btn-secondary btn-bordered" type="button">Save manuscript</button>
-      <button id="btn-save-log" class="btn-secondary btn-bordered" type="button">Save debug log</button>
-    </div>
+    <button id="btn-save-log" class="btn-secondary btn-bordered" type="button">Save debug log</button>
     <button id="btn-debug-share" class="btn-secondary btn-bordered" type="button">Share last session log</button>
     <button id="btn-debug-copy" class="btn-secondary btn-bordered" type="button">Copy log summary</button>
     <label class="debug-toggle-row"><input type="checkbox" id="chk-live-stats"> Show live stats</label>
@@ -30,9 +24,10 @@
 
   <!-- READY -->
   <section id="screen-ready" class="screen" data-screen="ready">
-  <h1>Pulse Painting<span class="blue-period">.</span></h1>
   <div class="content">
-    <p class="lead">Three minutes. A portrait of your pulse.</p>
+    <p class="ready-eyebrow">PPG-JS · 3-minute recording</p>
+    <h1>HRV Spot Check</h1>
+    <p class="lead">A fingertip scan of your heart rate and heart-rate variability, right from your phone's camera.</p>
     <ol class="ready-steps">
       <li class="ready-step">
         <span class="ready-step-num">1</span>
@@ -51,77 +46,57 @@
       <li class="ready-step">
         <span class="ready-step-num">3</span>
         <span class="ready-step-text">
-          <strong>Watch your pulse become a painting.</strong>
-          Clear signal leaves richer strokes. Your HRV Spot Check report follows.
+          <strong>Watch your live pulse.</strong>
+          Your pulse, signal quality and variability update while the three-minute countdown runs.
         </span>
       </li>
     </ol>
     <p class="disclaimer">Not a medical device. For personal curiosity only, not diagnosis or treatment.</p>
   </div>
-  <div class="ready-actions mobile-action-dock" aria-label="Capture actions"><button id="btn-start" class="btn-primary paint-start" type="button"><span>Begin pulse capture</span><svg class="paint-start-arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15m-6-6 6 6-6 6"/></svg></button></div>
-  <aside id="desktop-phone-panel" class="phone-panel" aria-labelledby="phone-panel-title" hidden>
-    <div class="phone-panel-copy">
-      <p class="phone-panel-kicker">A small moment. Just for you.</p>
-      <h2 id="phone-panel-title">Your pulse becomes a painting.</h2>
-      <p>This experience begins on your phone, using its rear camera and flash to find your pulse.</p>
-      <p class="phone-panel-instruction">Open your phone’s camera and scan the code. Then settle in for three quiet minutes.</p>
-    </div>
-    <figure class="phone-panel-code">
-      <div class="phone-qr-paper"><img id="phone-qr" width="246" height="246" alt="QR code to open Pulse Painting at chatppg.com/ppg-js-demo"></div>
-      <figcaption>Scan to begin on your phone</figcaption>
-    </figure>
-    <a class="phone-panel-link" href="https://chatppg.com/ppg-js-demo">chatppg.com/ppg-js-demo <span aria-hidden="true">↗</span></a>
-    <p class="phone-panel-disclaimer">Not a medical device. For personal curiosity only, not diagnosis or treatment.</p>
-  </aside>
+  <button id="btn-start" class="btn-primary" type="button">Start</button>
+  <p id="desktop-note" class="disclaimer" hidden>Open on your phone. HRV Spot Check needs a rear camera and flash. Open this page on your phone to begin.</p>
 </section>
 
   <!-- PLACEMENT -->
-  <section id="screen-placement" class="screen placement-screen" data-screen="placement" hidden>
-    <h2 class="placement-title">Find your pulse<span class="blue-period">.</span></h2>
-    <div class="content placement-content">
-      <figure class="placement-camera">
-        <div class="camera-preview-wrap">
-          <div id="camera-preview" class="camera-feed" aria-label="Live rear camera preview"></div>
-          <svg class="settle-ring-svg" viewBox="0 0 200 200" aria-hidden="true"><circle cx="100" cy="100" r="96" fill="none" stroke="#1458ff" stroke-width="3" stroke-dasharray="603" id="settle-ring" stroke-linecap="round" transform="rotate(-90 100 100)"/></svg>
-        </div>
-        <figcaption>Live camera · look for a fully red preview</figcaption>
-      </figure>
-      <div class="placement-coaching">
-        <p id="coach-line" class="coach-line" role="status" aria-live="polite">Cover the rear camera and flash gently.</p>
-        <p id="state-line" class="state-line"></p>
+  <section id="screen-placement" class="screen" data-screen="placement" hidden>
+    <div class="content">
+      <h2 class="screen-title">Find your pulse</h2>
+      <p class="lead">Cover the rear camera and flash. The preview should look evenly red.</p>
+      <div class="camera-preview-wrap" aria-hidden="true">
+        <div id="camera-preview"></div>
+        <svg class="settle-ring-svg" viewBox="0 0 200 200"><circle cx="100" cy="100" r="96" fill="none" stroke="#2855ff" stroke-width="4" stroke-dasharray="603" id="settle-ring" stroke-linecap="round" transform="rotate(-90 100 100)"/></svg>
       </div>
-      <p class="placement-instructions">Rest your hand on a table. Cover the rear camera <em>and</em> flash with your fingertip, using a light touch. The whole preview should look red.</p>
-      <div class="placement-signal"><span>Finding a steady signal</span><canvas id="placement-wave-canvas" class="wave-canvas wave-canvas-small" width="600" height="80" aria-label="Live pulse signal from your camera"></canvas></div>
+      <p id="coach-line" class="coach-line" role="status" aria-live="polite">Cover the lens and flash with your fingertip pad</p>
+      <p id="state-line" class="state-line"></p>
+      <canvas id="placement-wave-canvas" class="wave-canvas wave-canvas-small" width="600" height="60" role="img" aria-label="Live pulse signal while placing your finger"></canvas>
       <p id="torch-note" class="torch-note" hidden>This camera has no flash the page can control. Turn on your phone's flashlight yourself (or use a bright lamp), then cover the lens and the light with your fingertip.</p>
-      <p class="placement-reassurance">Breathe normally. Your three minutes begin when the signal settles.</p>
     </div>
-    <div id="placement-actions" class="placement-actions mobile-action-dock" aria-label="Camera setup actions"><button id="btn-cancel-placement" class="btn-secondary btn-bordered" type="button">Cancel</button></div>
+    <button id="btn-cancel-placement" class="btn-secondary btn-bordered" type="button">Cancel</button>
   </section>
 
   <!-- MEASURING -->
-  <section id="screen-measuring" class="screen capture-screen" data-screen="measuring" hidden>
+  <section id="screen-measuring" class="screen" data-screen="measuring" hidden>
     <div class="content measuring-content">
-      <div class="capture-topline"><div class="capture-heading"><h2 class="capture-title">Pulse Painting</h2></div></div>
-      <div class="painting-status"><div class="quality-pill" id="quality-pill"><span id="quality-dot" class="quality-dot"></span><div role="status" aria-live="polite" aria-atomic="true"><strong id="painting-state">Waiting for clear signal</strong><span id="quality-text">Settling</span></div></div><p id="session-countdown" class="session-countdown">3:00</p><figure class="capture-camera"><div id="capture-camera-preview" class="camera-feed" aria-label="Live rear camera preview"></div><figcaption><span aria-hidden="true"></span>Live</figcaption></figure></div>
-      <div class="manuscript-frame"><canvas id="manuscript" width="1000" height="840" aria-label="Your pulse manuscript. Deeper pigment represents clearer measured recording quality."></canvas><p id="manuscript-empty">Your first brushstroke is on its way.<br><span>Hold still while we check the signal.</span></p></div>
-      <div class="live-metrics" aria-label="Live measurements">
-        <div class="live-metric"><span class="metric-label">Pulse</span><p><span id="hr-value" class="metric-number">--</span><span class="metric-unit">bpm</span></p></div>
-        <div class="live-metric"><span class="metric-label">RMSSD</span><p><span id="rmssd-value" class="metric-number">--</span><span class="metric-unit">ms</span></p></div>
-        <div class="live-metric"><span class="metric-label">SDNN</span><p><span id="sdnn-value" class="metric-number">--</span><span class="metric-unit">ms</span></p></div>
+      <h2 class="screen-title">Live pulse</h2>
+      <div class="hr-hero">
+        <span id="hr-value" class="hr-value">--</span>
+        <span class="hr-unit">bpm</span>
       </div>
-      <details class="live-details"><summary>More about your signal</summary>
-        <div class="live-details-body">
-          <p class="report-note">Live estimates refresh every second when the signal is clear. RMSSD and SDNN use up to the last minute of accepted beats.</p>
-          <p class="live-breathing"><span>Estimated breathing</span><strong id="resp-value">--</strong></p>
-          <p id="rmssd-floor" class="rmssd-floor" aria-live="polite"></p>
-          <p class="report-note">Each stroke follows your measured pulse after its five-second signal check. Deeper pigment means clearer recording quality, not better health.</p>
-          <div class="detail-wave"><span>Pulse waveform</span><canvas id="wave-canvas" class="wave-canvas" width="600" height="120" aria-label="Live pulse waveform"></canvas></div>
-          <div class="detail-wave"><span>Beat timing</span><canvas id="tacho-canvas" class="tacho-canvas" width="600" height="60" aria-label="Live beat intervals"></canvas></div>
-          <div id="capture-detail-tools" class="capture-detail-tools"><span>Session tools</span></div>
-        </div>
-      </details>
+      <p id="session-countdown" class="session-countdown">3:00</p>
+      <div class="quality-pill" id="quality-pill" role="status" aria-live="polite">
+        <span id="quality-dot" class="quality-dot"></span>
+        <span id="quality-text">Settling</span>
+      </div>
+      <div class="secondary-row">
+        <div class="secondary-metric"><span class="sm-label">RMSSD</span><span id="rmssd-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
+        <div class="secondary-metric"><span class="sm-label">SDNN</span><span id="sdnn-value" class="sm-value">--</span><span class="sm-unit">ms</span></div>
+        <div class="secondary-metric"><span class="sm-label">Breathing</span><span id="resp-value" class="sm-value sm-value-small">--</span></div>
+      </div>
+      <p id="rmssd-floor" class="rmssd-floor" aria-live="polite"></p>
+      <canvas id="wave-canvas" class="wave-canvas" width="600" height="120" role="img" aria-label="Live pulse waveform"></canvas>
+      <canvas id="tacho-canvas" class="tacho-canvas" width="600" height="60" role="img" aria-label="Live beat intervals"></canvas>
     </div>
-    <div class="painting-actions mobile-action-dock" aria-label="Recording actions"><button id="btn-pause" class="btn-secondary" type="button">Pause artwork</button><button id="btn-stop" class="btn-primary" type="button">Finish painting</button></div><p id="pause-note" class="disclaimer">3-minute recording · Not a medical device</p>
+    <button id="btn-stop" class="btn-secondary" type="button">Stop</button>
   </section>
 
   <!-- SUMMARY / HRV REPORT -->
@@ -129,23 +104,18 @@
     <div class="content report-content" id="report-content">
       <!-- rendered entirely by renderReport() in app.js -->
     </div>
-    <div class="summary-actions mobile-action-dock no-print" aria-label="Report actions">
-      <button id="btn-share-artwork" class="btn-primary portrait-share" type="button" disabled>Share artwork</button>
-      <button id="btn-again" class="btn-secondary" type="button">Measure again</button>
+    <div class="summary-actions no-print">
+      <button id="btn-save-report" class="btn-secondary btn-bordered" type="button">Save report</button>
+      <button id="btn-again" class="btn-primary" type="button">Measure again</button>
     </div>
   </section>
 
-  <footer class="project-attribution" aria-label="Project credits"><span>A project by <a href="https://chatppg.com">ChatPPG</a></span><span aria-hidden="true">·</span><span>Powered by <a href="https://chatppg.com/ppg-js">ppg-js</a></span></footer>
-
+  <footer class="project-attribution"><a href="https://chatppg.com">A project by <strong>ChatPPG.</strong></a><a href="https://chatppg.com/ppg-js">Powered by ppg-js ↗</a></footer>
   <div id="video-container" class="video-container" hidden></div>
 </div>
 
-<svg class="paint-filter-defs" aria-hidden="true" width="0" height="0"><defs><filter id="paint-edge" x="-10%" y="-35%" width="120%" height="170%"><feTurbulence type="fractalNoise" baseFrequency=".035 .12" numOctaves="3" seed="8" result="grain"/><feDisplacementMap in="SourceGraphic" in2="grain" scale="8" xChannelSelector="R" yChannelSelector="G"/><feGaussianBlur stdDeviation=".45"/></filter></defs></svg>
-<canvas id="entry-pigment" aria-hidden="true" hidden></canvas>
 <script src="../demo/dist/ppg.global.js"></script>
 <script>window.PPGMonitor = PPG.PPGMonitor;</script>
-<script src="mobile-dock.js"></script>
-<script src="portrait.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

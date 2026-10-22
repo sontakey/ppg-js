@@ -1,287 +1,3 @@
-// Resolve from this script, including hosted URLs without a trailing slash.
-const paintBundleURL = new URL('./paint-gpu.js', document.currentScript?.src || location.href);
-let paintGPU = null, paintPageActive = true, paintWarmGeneration = 0;
-function warmPaintGPU() {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  const generation = ++paintWarmGeneration;
-  import(paintBundleURL.href).then(module => module.createPaintGPU()).then(gpu => { if (paintPageActive && generation === paintWarmGeneration) paintGPU = gpu; else gpu.dispose(); }).catch(() => {});
-}
-if ('requestIdleCallback' in window) requestIdleCallback(warmPaintGPU, { timeout: 1600 });
-else setTimeout(warmPaintGPU, 300);
-addEventListener('pagehide', () => { clearEntryTransition('pagehide'); paintPageActive = false; paintWarmGeneration++; paintGPU?.dispose(); paintGPU = null; paintManuscript(document.getElementById('manuscript')); });
-addEventListener('paintgpulost', () => paintManuscript(document.getElementById('manuscript')));
-addEventListener('pageshow', event => { if (event.persisted) { paintPageActive = true; warmPaintGPU(); } });
-
-// Pulse Painting stores only accepted, measured waveform segments in memory.
-// A window is painted after its quality decision, never speculatively.
-const manuscript = { pending: [], segments: [], lastWindow: -1, paused: false, frame: 0, raster: null, viewFirstRow: 0, scroll: null };
-// A continuous pigment journey follows capture time, never the row index or
-// an HRV value. OKLab keeps the cool mixtures luminous between pigment anchors.
-const pigmentAnchors = [[40,85,255],[118,84,184],[40,85,255],[28,138,142]].map(rgb => {
-  const [r,g,b] = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
-  const l = Math.cbrt(.4122214708*r+.5363325363*g+.0514459929*b);
-  const m = Math.cbrt(.2119034982*r+.6806995451*g+.1073969566*b);
-  const s = Math.cbrt(.0883024619*r+.2817188376*g+.6299787005*b);
-  return [.2104542553*l+.793617785*m-.0040720468*s,1.9779984951*l-2.428592205*m+.4505937099*s,.0259040371*l+.7827717662*m-.808675766*s];
-});
-function pigmentAt(t, quality = 1) {
-  const phase = t / 1.65 + .28*Math.sin(t*.73) + .13*Math.sin(t*1.91);
-  const step = Math.floor(phase), fraction = phase-step, mix = fraction*fraction*(3-2*fraction);
-  const a = pigmentAnchors[((step%4)+4)%4], b = pigmentAnchors[(((step+1)%4)+4)%4];
-  const lab = a.map((v,i) => v+(b[i]-v)*mix);
-  lab[0] -= .055*Math.max(0,Math.min(1,quality));
-  lab[1] *= 1.28; lab[2] *= 1.28;
-  const [L,A,B] = lab;
-  const l = (L+.3963377774*A+.2158037573*B)**3;
-  const m = (L-.1055613458*A-.0638541728*B)**3;
-  const s = (L-.0894841775*A-1.291485548*B)**3;
-  return [4.0767416621*l-3.3077115913*m+.2309699292*s,-1.2684380046*l+2.6097574011*m-.3413193965*s,-.0041960863*l-.7034186147*m+1.707614701*s].map(v => Math.round(255*Math.max(0,Math.min(1,v <= .0031308 ? 12.92*v : 1.055*v**(1/2.4)-.055))));
-}
-function animateManuscript() {
-  cancelAnimationFrame(manuscript.frame);
-  let previous = performance.now();
-  const draw = now => {
-    if (manuscript.paused || document.getElementById('screen-measuring').hidden) return;
-    if (document.hidden) { previous = now; manuscript.frame = requestAnimationFrame(draw); return; }
-    const segment = manuscript.segments.at(-1);
-    if (!segment) return;
-    const delta = now - previous;
-    const activeDelta = delta > 250 ? 0 : Math.max(0, delta);
-    segment.reveal = Math.min(1, segment.reveal + activeDelta / 4400);
-    if (manuscript.scroll) manuscript.scroll.elapsed += activeDelta;
-    previous = now;
-    paintManuscript(document.getElementById('manuscript'));
-    if (segment.reveal < 1 || manuscript.scroll) manuscript.frame = requestAnimationFrame(draw);
-  };
-  manuscript.frame = requestAnimationFrame(draw);
-}
-function resetManuscript() {
-  cancelAnimationFrame(manuscript.frame);
-  manuscript.pending = []; manuscript.segments = []; manuscript.lastWindow = -1; manuscript.paused = false;
-  manuscript.viewFirstRow = 0; manuscript.scroll = null;
-  document.getElementById('btn-pause').textContent = 'Pause artwork';
-  document.getElementById('pause-note').textContent = '3-minute recording · Not a medical device';
-  document.getElementById('manuscript-empty').hidden = false;
-  paintManuscript(document.getElementById('manuscript'));
-}
-function acceptPaintWindow(metrics) {
-  if (!Number.isFinite(metrics.t) || metrics.t <= manuscript.lastWindow) return;
-  // Readouts use overlapping one-second analyses. Keep whole five-second
-  // paint segments so the manuscript never repeats overlapping waveforms,
-  // and retain pending samples until their own paint decision arrives.
-  const paintInterval = monitor?.engine?.opts?.windowSec || 5;
-  if (manuscript.lastWindow >= 0 && metrics.t - manuscript.lastWindow < paintInterval - 1e-6) return;
-  manuscript.lastWindow = metrics.t;
-  const window = monitor?.engine?.lastWindow;
-  const start = window?.windowStartSec;
-  if (!Number.isFinite(start)) return;
-  const samples = manuscript.pending.filter(p => p.t <= metrics.t && p.t > start);
-  manuscript.pending = manuscript.pending.filter(p => p.t > metrics.t);
-  if (manuscript.paused || !metrics.quality?.good || !Number.isFinite(metrics.sqi?.score) || samples.length < 3) return;
-  // The live display callback is red-channel AC. Use the actual selected-channel
-  // analysis window so waveform geometry and SQI describe the same measurement.
-  if (!window || window.t !== metrics.t || !window.filtered?.length || !(window.gridHz > 0)) return;
-  const firstGrid = Math.round(start * window.gridHz) / window.gridHz;
-  const points = [];
-  let sampleIndex = 0;
-  for (let i = 0; i < window.filtered.length; i++) {
-    const t = firstGrid + i / window.gridHz;
-    if (t < samples[0].t || t > samples.at(-1).t) continue;
-    while (sampleIndex + 1 < samples.length && samples[sampleIndex + 1].t <= t) sampleIndex++;
-    const next = samples[sampleIndex + 1];
-    // Retain gaps and artwork pauses rather than joining across absent samples.
-    if (next && next.t - samples[sampleIndex].t > .15) continue;
-    const v = window.filtered[i];
-    if (Number.isFinite(v)) points.push({ t, v });
-  }
-  if (points.length < 3) return;
-  const values = points.map(p => p.v), lo = Math.min(...values), hi = Math.max(...values);
-  if (hi - lo < 1e-8) return;
-  manuscript.segments.forEach(segment => { segment.reveal = 1; });
-  manuscript.segments.push({ reveal: matchMedia('(prefers-reduced-motion: reduce)').matches ? 1 : 0, channel: window.selectedChannel, score: Math.max(0, Math.min(1, metrics.sqi.score)), points: points.map(p => ({t:p.t, v:(p.v-lo)/(hi-lo)})) });
-  document.getElementById('manuscript-empty').hidden = true;
-  paintManuscript(document.getElementById('manuscript'));
-  animateManuscript();
-}
-function paintManuscript(canvas, compact = false, all = false) {
-  // Report/export are one-shot draws. Live layers retain at most one extra row
-  // for scrolling, so animation never rebuilds thousands of pigment marks
-  // while the same main thread is collecting camera samples.
-  if (compact || all) { paintManuscriptRaster(canvas, compact, all); return; }
-  const ctx = canvas.getContext('2d'), W = canvas.width, H = canvas.height;
-  const latest = manuscript.segments.at(-1);
-  if (!latest) { ctx.clearRect(0, 0, W, H); manuscript.raster = null; manuscript.viewFirstRow = 0; manuscript.scroll = null; paintGPU?.clear(); return; }
-  const start = manuscript.segments[0].points[0].t;
-  const end = latest.points.at(-1).t;
-  const targetFirstRow = Math.max(0, Math.floor((end - start) / 5) + 1 - 4);
-  let raster = manuscript.raster;
-  if (!raster || raster.latest !== latest || raster.count !== manuscript.segments.length || raster.width !== W || raster.height !== H) {
-    const firstRow = Math.max(0, targetFirstRow - 1), rows = targetFirstRow ? 5 : 4;
-    const from = Math.max(firstRow, Math.min(manuscript.viewFirstRow, targetFirstRow));
-    manuscript.scroll = from < targetFirstRow && !matchMedia('(prefers-reduced-motion: reduce)').matches
-      ? { from, to: targetFirstRow, elapsed: 0 } : null;
-    manuscript.viewFirstRow = manuscript.scroll ? from : targetFirstRow;
-    const base = raster?.base || document.createElement('canvas');
-    const ink = raster?.ink || document.createElement('canvas');
-    for (const layer of [base, ink]) { layer.width = W; layer.height = H * rows / 4; }
-    paintManuscriptRaster(base, false, false, 'base', true, { firstRow, rows });
-    ink.getContext('2d').drawImage(base, 0, 0);
-    paintManuscriptRaster(ink, false, false, 'latest', false, { firstRow, rows });
-    raster = manuscript.raster = { base, ink, latest, firstRow, rows, count: manuscript.segments.length, width: W, height: H };
-  }
-  if (manuscript.scroll) {
-    const scroll = manuscript.scroll, t = Math.min(1, scroll.elapsed / 900);
-    const eased = t * t * (3 - 2 * t);
-    manuscript.viewFirstRow = scroll.from + (scroll.to - scroll.from) * eased;
-    if (t >= 1) manuscript.scroll = null;
-  }
-  const offsetRows = manuscript.viewFirstRow - raster.firstRow;
-  const rowH = H / 4, offsetY = offsetRows * rowH, margin = W * .025;
-  const drawLayer = layer => ctx.drawImage(layer, 0, offsetY, W, H, 0, 0, W, H);
-  const visible = Math.ceil(latest.points.length * (latest.reveal ?? 1));
-  if (visible < 2) { if (paintGPU?.manuscript(raster, -1, 0, offsetRows)) return; ctx.clearRect(0, 0, W, H); drawLayer(raster.base); return; }
-  if (visible >= latest.points.length) { if (paintGPU?.manuscript(raster, raster.rows, 1, offsetRows)) return; ctx.clearRect(0, 0, W, H); drawLayer(raster.ink); return; }
-  const through = latest.points[visible - 1];
-  const row = Math.floor((through.t - start) / 5) - raster.firstRow;
-  if (row < 0) { if (paintGPU?.manuscript(raster, -1, 0, offsetRows)) return; ctx.clearRect(0, 0, W, H); drawLayer(raster.base); return; }
-  const x = margin + ((through.t - start) % 5) / 5 * (W - 2 * margin);
-  if (paintGPU?.manuscript(raster, row, x / W, offsetRows)) return;
-  ctx.clearRect(0, 0, W, H); drawLayer(raster.base);
-  // Time advances left to right within each manuscript row. Clipping the
-  // immutable layer retains all timestamp gaps and the original pigment depth.
-  ctx.save(); ctx.beginPath();
-  if (row > 0) ctx.rect(0, -offsetY, W, row * rowH);
-  ctx.rect(0, row * rowH - offsetY, x, rowH);
-  ctx.clip(); ctx.clearRect(0, 0, W, H); drawLayer(raster.ink); ctx.restore();
-}
-function paintManuscriptRaster(canvas, compact = false, all = false, layer = null, clear = true, layout = null) {
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  if (clear) ctx.clearRect(0,0,W,H);
-  if (!manuscript.segments.length) return;
-  const start = manuscript.segments[0].points[0].t;
-  const end = manuscript.segments.at(-1).points.at(-1).t;
-  const rowSeconds = 5, totalRows = Math.floor((end-start)/rowSeconds)+1;
-  const selectedRows = layout?.rowIndices;
-  const rows = selectedRows?.length ?? layout?.rows ?? (all ? totalRows : compact ? 2 : 4);
-  const firstRow = layout?.firstRow ?? (all ? 0 : Math.max(0,totalRows-rows));
-  const rowH = H/rows, margin = W*.025;
-  const rand = n => { const x = Math.sin(n*127.1+311.7)*43758.5453; return x-Math.floor(x); };
-  for (const segment of manuscript.segments) {
-    if (layer === 'base' && segment === manuscript.segments.at(-1)) continue;
-    if (layer === 'latest' && segment !== manuscript.segments.at(-1)) continue;
-    const q = segment.score;
-    const visible = all || compact || layer ? segment.points.length : Math.ceil(segment.points.length * (segment.reveal ?? 1));
-    const paths = [];
-    let path = [], lastRow = -1;
-    for (let i=0; i<visible; i++) {
-      const p=segment.points[i], row=Math.floor((p.t-start)/rowSeconds);
-      const displayRow = selectedRows ? selectedRows.indexOf(row) : row-firstRow;
-      if (displayRow<0 || displayRow>=rows) continue;
-      if (row !== lastRow || (i && p.t-segment.points[i-1].t>.15)) {
-        if(path.length) paths.push(path);
-        path=[]; lastRow=row;
-      }
-      const color = pigmentAt(p.t,q);
-      path.push({x:margin+((p.t-start)%rowSeconds)/rowSeconds*(W-2*margin),
-        y:displayRow*rowH+rowH*(.79-p.v*.57), t:p.t, color, depositColor:color.map(v=>Math.round(v*.84)).join(','),
-        wet:.30+.70*(.5+.5*Math.sin(p.t*8.1+Math.sin(p.t*1.7)))**2, seed:Math.floor(p.t*1000)});
-    }
-    if(path.length) paths.push(path);
-    const width=Math.min(29,rowH*.16);
-    for(const points of paths) {
-      if(points.length<2) continue;
-      const gradient = ctx.createLinearGradient(points[0].x,0,points.at(-1).x,0);
-      const coreGradient = ctx.createLinearGradient(points[0].x,0,points.at(-1).x,0);
-      // Bounded stops are prepared only with a new immutable raster. Animation
-      // reveals cached color through the existing GPU/Canvas2D compositor.
-      const stride = Math.max(1,Math.floor(points.length/24));
-      points.forEach((p,i) => {
-        if(i%stride!==0 && i!==points.length-1) return;
-        const stop=(p.x-points[0].x)/(points.at(-1).x-points[0].x);
-        gradient.addColorStop(stop,`rgb(${p.color.join(',')})`);
-        coreGradient.addColorStop(stop,`rgb(${p.color.map(v=>Math.round(v*.78)).join(',')})`);
-      });
-      // Irregular pigment ribbons follow the measured centerline exactly. Their
-      // edges vary at paper-grain scale, without moving or inventing pulse peaks.
-      // Filled washes avoid the parallel, round-capped bands of a marker stroke.
-      const ribbon = (upper, lower, alpha, salt) => {
-        ctx.beginPath();
-        points.forEach((p,i) => {
-          const tooth = .56 + rand(p.seed + salt) * .72;
-          const y = p.y - width * upper * tooth;
-          if(i) ctx.lineTo(p.x,y); else ctx.moveTo(p.x,y);
-        });
-        for(let i=points.length-1;i>=0;i--) {
-          const p=points[i], tooth=.60+rand(p.seed+salt+29)*.8;
-          ctx.lineTo(p.x,p.y+width*lower*tooth*p.wet);
-        }
-        ctx.closePath();ctx.fillStyle=gradient;ctx.globalAlpha=alpha*(.72+q*.28);ctx.fill();ctx.globalAlpha=1;
-      };
-      const widthScale = .78 + q*.22;
-      ribbon(.44*widthScale,1.62,.09,17);
-      ribbon(.37*widthScale,1.22,.16,31);
-      ribbon(.31*widthScale,.84,.24,47);
-      ribbon(.25*widthScale,.45,.30,63);
-      ribbon(.17*widthScale,.20,.34,79);
-      // Small translucent deposits overlap into a broken, saturated wet edge.
-      // Using the local tangent distributes pigment across the brush width.
-      for(let i=1;i<points.length;i++) {
-        const p=points[i], prev=points[i-1];
-        const dx=p.x-prev.x,dy=p.y-prev.y, length=Math.hypot(dx,dy)||1;
-        for(let j=0;j<4;j++) {
-          const seed=p.seed+j*41;
-          const along=rand(seed+131), across=(rand(seed+137)-.44)*width*.65;
-          const x=prev.x+dx*along-dy/length*across;
-          const y=prev.y+dy*along+dx/length*across;
-          const r=1.1+rand(seed+149)*width*.14;
-          ctx.fillStyle=`rgba(${p.depositColor},${(.13+rand(seed+151)*.25)*p.wet})`;
-          ctx.beginPath();ctx.ellipse(x,y,r,r*(.4+rand(seed+163)*.5),Math.atan2(dy,dx),0,Math.PI*2);ctx.fill();
-        }
-      }
-      // Deterministic pigment flakes, cauliflower edges and tiny paper breaks.
-      // Texture and depth remain fixed to capture quality, never to segment age.
-      for(const p of points) {
-        for(let k=0;k<4+Math.floor(p.wet*5);k++) {
-          const r=rand(p.seed+k*13), side=rand(p.seed+k*23+7);
-          const x=p.x+(r-.5)*11, y=p.y+(side-.22)*width*2.1*p.wet;
-          const radius=.8+rand(p.seed+k+81)*5.2*p.wet;
-          ctx.fillStyle=`rgba(${p.color.join(',')},${side>.55 ? .06+r*.13 : .07+r*.19})`;
-          ctx.beginPath();
-          for(let v=0;v<5;v++) {
-            const angle=v*Math.PI*2/5;
-            const px=x+Math.cos(angle)*radius,py=y+Math.sin(angle)*radius*.7;
-            if(v)ctx.lineTo(px,py);else ctx.moveTo(px,py);
-          }
-          ctx.closePath();ctx.fill();
-        }
-        if(rand(p.seed+93)>.86) {
-          ctx.fillStyle=`rgba(253,251,247,${.35+rand(p.seed+111)*.35})`;
-          ctx.beginPath();ctx.ellipse(p.x,p.y+width*(.4+rand(p.seed+112)*.7)*p.wet,1+rand(p.seed+113)*3.2,1+rand(p.seed+114)*2.4,0,0,Math.PI*2);ctx.fill();
-        }
-      }
-      // A narrow wet core stays legible over the feathered deposits. Its
-      // centerline is the measured path, shared by live, report and exports.
-      ctx.beginPath();points.forEach((p,i)=>i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y));
-      ctx.strokeStyle=coreGradient;ctx.lineWidth=width*.14;ctx.lineJoin='round';ctx.globalAlpha=.80+q*.20;ctx.stroke();ctx.globalAlpha=1;
-    }
-  }
-}
-function saveManuscript() {
-  if (!manuscript.segments.length) { alert('No accepted waveform was captured to save.'); return; }
-  const first=manuscript.segments[0].points[0].t, last=manuscript.segments.at(-1).points.at(-1).t;
-  const rows = Math.floor((last-first)/5)+1;
-  // Keep the full recorded time axis, while bounding memory on mobile browsers.
-  // Very long interruptions must not allocate an unbounded canvas.
-  const scale = Math.min(1, 8192 / (rows * 160));
-  const canvas=document.createElement('canvas');canvas.width=Math.max(320,Math.round(1200*scale));canvas.height=Math.min(8192,rows*160);
-  paintManuscript(canvas,false,true);
-  const ctx=canvas.getContext('2d');ctx.globalCompositeOperation='destination-over';ctx.fillStyle='#fdfbf7';ctx.fillRect(0,0,canvas.width,canvas.height);
-  try {
-    canvas.toBlob(blob=>{if(!blob){alert('The manuscript could not be saved. Try saving the report instead.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='pulse-painting-manuscript.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
-  } catch { alert('The manuscript could not be saved. Try saving the report instead.'); }
-}
-
 // examples/app/app.js — dogfoods ppg-js's public API as a third-party dev would.
 // PPGMonitor and the hrv module are exposed by ../demo/dist/ppg.global.js (IIFE build)
 // as window.PPG.PPGMonitor and window.PPG.hrv.
@@ -293,226 +9,14 @@ const screens = {
   summary: document.getElementById('screen-summary'),
 };
 
-let entryTransition = null;
 let sessionStarting = false;
 let sessionGeneration = 0;
 const pendingMonitorStarts = new Set();
 
-// Diagnostics describe browser animation cadence and CPU submission only;
-// they deliberately make no claim about physical-phone or GPU execution time.
-const brushStats = window.__pulseBrushStats = { active: false, history: [], fallbackPixelBudget: 650000, timingScope: 'requestAnimationFrame intervals; desktop replay is not physical-device performance' };
-const brushMotion = matchMedia('(prefers-reduced-motion: reduce)');
-function clearEntryTransition(reason = 'complete') {
-  const transition = entryTransition;
-  if (transition) {
-    cancelAnimationFrame(transition.frame);clearTimeout(transition.preparationTimeout);
-    const intervals = transition.intervals.slice().sort((a,b) => a-b);
-    const total = intervals.reduce((sum,dt) => sum+dt,0);
-    brushStats.history.push({ kind: transition.kind, renderer: transition.gpu ? 'gpu' : 'canvas2d', reason,
-      frames: transition.frames, elapsedMs: Math.round(performance.now()-transition.created),
-      preparationMs: transition.preparing ? Math.round(performance.now()-transition.created) : transition.preparationMs || 0, preparationTimedOut: transition.preparationTimedOut || false,
-      fps: total ? Math.round(intervals.length / total * 100000) / 100 : null,
-      p95FrameMs: intervals.length ? intervals[Math.floor((intervals.length-1)*.95)] : null,
-      over33ms: intervals.filter(dt=>dt>33.34).length, pixels: transition.pixels });
-    if (brushStats.history.length > 12) brushStats.history.shift();
-    transition.rasters?.forEach(layer => { layer.width=layer.height=1; if(layer.revealMask)layer.revealMask.width=layer.revealMask.height=1; });
-  }
-  entryTransition = null; brushStats.active = false;
-  paintGPU?.endEntry();
-  document.getElementById('entry-pigment').hidden = true;
-  document.getElementById('btn-start').removeAttribute('aria-busy');
-}
-
-// The Canvas fallback caches its pigment once, after the camera request has
-// already happened. Animation clips three immutable washes; there are no pixel
-// loops, SVG filters, DOM snapshots or regenerated noise on the capture thread.
-function prepareBrushRasters(w,h,originY,scale) {
-  const random = n => { const value=Math.sin(n*127.1+311.7)*43758.5453;return value-Math.floor(value); };
-  const noise=(t,seed)=>{const a=Math.floor(t),f=t-a,s=f*f*(3-2*f);return random(a+seed)*(1-s)+random(a+1+seed)*s;};
-  const smoothPath=points=>{
-    const path=new Path2D(),n=points.length;
-    path.moveTo((points[n-1].x+points[0].x)/2,(points[n-1].y+points[0].y)/2);
-    for(let j=0;j<n;j++) {const p=points[j],next=points[(j+1)%n];path.quadraticCurveTo(p.x,p.y,(p.x+next.x)/2,(p.y+next.y)/2);}
-    path.closePath();return path;
-  };
-  return Array.from({length:3},(_,i)=>{
-    const layer=document.createElement('canvas');layer.width=Math.round(w*scale);layer.height=Math.round(h*scale);
-    const ctx=layer.getContext('2d');ctx.scale(scale,scale);
-    const gradient=ctx.createLinearGradient(0,h*(.92-i*.39),w,h*.12);
-    gradient.addColorStop(0,'#3159c8');gradient.addColorStop(.38,'#7452aa');gradient.addColorStop(.73,'#268b91');gradient.addColorStop(1,'#3356c6');
-    const center=x=>(i===0?originY:h*(.92-i*.39))+h*(Math.sin(x/w*5.6+i*1.7)*.035-x/w*.045);
-    const pressure=x=>h*(.183+Math.sin(x/w*4.8+i*.8)*.035);
-    const edge=(x,side)=>center(x)+side*pressure(x)+(noise(x/w*8,i*71+side*13)-.5)*h*.011+(noise(x/w*31,i*43+side*17)-.5)*h*.005;
-    const outline=inset=>{
-      const points=[];
-      for(let j=0;j<=96;j++) {const x=(j/96*1.04-.02)*w;points.push({x,y:edge(x,-1)+inset});}
-      for(let j=96;j>=0;j--) {const x=(j/96*1.04-.02)*w;points.push({x,y:edge(x,1)-inset});}
-      return smoothPath(points);
-    };
-    layer.brushPath=outline(0);
-    // Cache a 3px capillary edge for the reveal too. Rendering only a shadow
-    // (the solid source is translated outside this bitmap) softly crosses the
-    // boundary on both sides; no blur/filter is evaluated during animation.
-    const mask=layer.revealMask=document.createElement('canvas');
-    mask.width=layer.width;mask.height=layer.height;
-    const maskCtx=mask.getContext('2d'),offset=w+32;
-    maskCtx.setTransform(scale,0,0,scale,offset*scale,0);
-    maskCtx.fillStyle='#fff';maskCtx.shadowColor='#fff';
-    maskCtx.shadowBlur=3*scale;maskCtx.shadowOffsetX=-offset*scale;
-    maskCtx.fill(layer.brushPath);
-    ctx.fillStyle=gradient;
-    // Shared smooth contours prevent independent polygon layers from forming
-    // a sawtooth edge. Tiny feathering lives outside the main brush silhouette.
-    for(const [inset,alpha] of [[-4,.04],[-1.5,.07],[0,.28],[2,.08]]) {ctx.globalAlpha=alpha;ctx.fill(outline(inset));}
-    ctx.save();ctx.clip(layer.brushPath);
-    // Local wet pigment blooms vary in size and density, fixed in paper space.
-    // These are prepared once; the live fallback only blits the cached wash.
-    for(let k=0;k<24;k++) {
-      const x=random(k*17+i*91)*w,y=center(x)+(random(k*29+i+5)-.5)*pressure(x)*1.8;
-      const radius=18+random(k+71)*58;
-      const cloud=ctx.createRadialGradient(x,y,1,x,y,radius);
-      cloud.addColorStop(0,k%3===0?'rgba(54,53,124,.10)':'rgba(253,251,247,.16)');cloud.addColorStop(1,'rgba(253,251,247,0)');
-      ctx.fillStyle=cloud;ctx.globalAlpha=1;ctx.fillRect(x-radius,y-radius,radius*2,radius*2);
-    }
-    ctx.strokeStyle=gradient;
-    // Only a handful of broken, unequal bristle traces; never a full-width comb.
-    for(let k=0;k<7;k++) {
-      const from=random(k*19+i)*w*.7,to=Math.min(w,from+w*(.10+random(k+47)*.23));
-      const across=(random(k+53)-.5)*1.8;ctx.beginPath();
-      for(let j=0;j<=12;j++) {const x=from+(to-from)*j/12,y=center(x)+across*pressure(x)+noise(j*.14,k+31)*2;if(j)ctx.lineTo(x,y);else ctx.moveTo(x,y);}
-      ctx.globalAlpha=.025+random(k+71)*.025;ctx.lineWidth=.4+random(k+101)*.5;ctx.stroke();
-    }
-    ctx.fillStyle='#455582';
-    for(let k=0;k<120;k++) {
-      const x=random(k*17+i)*w,y=center(x)+(random(k*29+i+5)-.5)*pressure(x)*1.92;
-      const radius=.35+random(k+13)*1.1;
-      ctx.globalAlpha=.018+random(k+101)*.035;ctx.beginPath();ctx.ellipse(x,y,radius,radius*.7,0,0,Math.PI*2);ctx.fill();
-    }
-    ctx.restore();ctx.globalAlpha=1;
-    return layer;
-  });
-}
-
-function drawBrushFallback(transition,progress,alpha) {
-  const { ctx,w,h,dpr,originY }=transition;
-  transition.rasters ||= prepareBrushRasters(w,h,originY,dpr);
-  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);ctx.globalAlpha=alpha;
-  ctx.fillStyle='#fdfbf7';ctx.fillRect(0,0,w,h);
-  for(let i=0;i<3;i++) {
-    const local=Math.max(0,Math.min(1,(progress-i*.22)/.52));if(!local)continue;
-    const head=(-.20+local*1.34)*w, reverse=i%2;
-    const tipX=reverse?w-head:head;
-    const tipCenter=(i===0?originY:h*(.92-i*.39))+h*(Math.sin(tipX/w*5.6+i*1.7)*.035-tipX/w*.045);
-    const tipWidth=h*(.183+Math.sin(tipX/w*4.8+i*.8)*.035);
-    ctx.save();ctx.beginPath();
-    ctx.moveTo(reverse?w:0,0);
-    // A small, deterministic bristle fringe follows the travelling brush tip.
-    for(let y=0;y<=h+12;y+=12) {
-      const pressure=Math.max(0,1-((y-tipCenter)/tipWidth)**2);
-      const edge=head+pressure*w*.09+Math.sin(y*.061+i)*5+Math.sin(y*.17)*2;
-      ctx.lineTo(reverse?w-edge:edge,y);
-    }
-    ctx.lineTo(reverse?w:0,h);ctx.closePath();ctx.clip();
-    ctx.globalCompositeOperation='destination-out';ctx.globalAlpha=1;ctx.drawImage(transition.rasters[i].revealMask,0,0,w,h);
-    ctx.globalCompositeOperation='source-over';ctx.globalAlpha=alpha*Math.max(.30,1-local*.62);
-    ctx.drawImage(transition.rasters[i],0,0,w,h);ctx.restore();
-  }
-  ctx.globalAlpha=1;
-}
-
-// Screen state changes immediately. This noninteractive, purely visual wash
-// cannot delay camera permission, signal callbacks, recovery, or report data.
-function beginEntryTransition({ kind='entry', originElement, prepare } = {}) {
-  clearEntryTransition('replaced');
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches || document.hidden || !paintPageActive) return;
-  const canvas=document.getElementById('entry-pigment');
-  const rect=(originElement||document.getElementById('btn-start')).getBoundingClientRect();
-  const w=innerWidth,h=innerHeight,dpr=Math.min(devicePixelRatio||1,1.5,Math.sqrt(brushStats.fallbackPixelBudget/(w*h)));
-  const originY=kind==='entry' ? Math.max(h*.66,Math.min(h*.94,rect.top+rect.height/2)) : h*.90;
-  // Do not create/upload fallback textures inside this gesture.
-  canvas.width=Math.max(1,Math.round(w*dpr));canvas.height=Math.max(1,Math.round(h*dpr));
-  const ctx=canvas.getContext('2d');if(!ctx)return;
-  const gpu=paintGPU?.beginEntry(w,h,rect.left+rect.width/2,originY) || false;
-  const created=performance.now();
-  const transition={ frame:0, began:created, created, kind, gpu, ctx,w,h,dpr,originY,
-    pixels:gpu ? window.__paintGpuStats?.surfaces.entry.pixels : canvas.width*canvas.height,
-    frames:0,previous:0,intervals:[], preparing:!!prepare, duration:kind==='entry'?1320:1000 };
-  entryTransition=transition;brushStats.active=true;canvas.hidden=false;
-  if(kind==='entry')document.getElementById('btn-start').setAttribute('aria-busy','true');
-  function paint(now) {
-    if(entryTransition!==transition)return;
-    if(document.hidden || matchMedia('(prefers-reduced-motion: reduce)').matches) { clearEntryTransition(document.hidden?'hidden':'reduced-motion');return; }
-    if(Math.abs(innerWidth-w)>2 || Math.abs(innerHeight-h)>2) {clearEntryTransition('resize');return;}
-    const elapsed=now-transition.began, time=elapsed/transition.duration;
-    if(time>=1) {clearEntryTransition();return;}
-    if(transition.previous)transition.intervals.push(now-transition.previous);
-    transition.previous=now;transition.frames++;
-    // The brush accelerates into a pass, slows under pressure, then the pigment
-    // gently dries away. The texture itself remains fixed throughout the move.
-    const travelTime=Math.min(1,time/.69), progress=travelTime*travelTime*(3-2*travelTime);
-    const dry=Math.max(0,Math.min(1,(time-.57)/.43));
-    const fade=1-dry*dry*(3-2*dry), alpha=fade*(kind==='entry'?.96:kind==='finish'?.65:.42);
-    if(transition.gpu)transition.gpu=paintGPU?.entry(progress,dry,alpha) || false;
-    if(!transition.gpu) {transition.pixels=canvas.width*canvas.height;drawBrushFallback(transition,progress,alpha);}
-    transition.frame=requestAnimationFrame(paint);
-  }
-  if(prepare) {
-    // WebKit can synchronously flush/encode the portrait PNG in toBlob(). Keep
-    // this brief prelude static, with report state and controls already live.
-    // Only start the moving brush after that work and the initial report layout.
-    ctx.setTransform(dpr,0,0,dpr,0,0);ctx.fillStyle='rgba(253,251,247,.65)';ctx.fillRect(0,0,w,h);
-    let released=false;
-    const release=timedOut=>{
-      if(released || entryTransition!==transition)return;released=true;
-      clearTimeout(transition.preparationTimeout);transition.preparationTimedOut=timedOut;
-      transition.frame=requestAnimationFrame(()=>{
-        if(entryTransition!==transition)return;
-        transition.frame=requestAnimationFrame(now=>{
-          if(entryTransition!==transition)return;
-          transition.preparationMs=Math.round(now-transition.created);transition.preparing=false;transition.began=now;
-          ctx.clearRect(0,0,w,h);paint(now);
-        });
-      });
-    };
-    Promise.resolve(prepare).then(()=>release(false),()=>release(false));
-    // A stalled font/network request must never leave the decorative veil up.
-    transition.preparationTimeout=setTimeout(()=>release(true),250);
-  } else transition.frame=requestAnimationFrame(paint);
-}
-brushMotion.addEventListener?.('change',()=>{if(matchMedia('(prefers-reduced-motion: reduce)').matches)clearEntryTransition('reduced-motion');});
-document.addEventListener('visibilitychange',()=>{if(document.hidden)clearEntryTransition('hidden');});
-
-function showScreen(name, { brush } = {}) {
-  const previous=document.getElementById('app').dataset.activeScreen;
-  if(name==='ready') {clearEntryTransition('ready');sessionStarting=false;}
-  // Recovery coaching must remain immediately visible when a finger is lifted.
-  if(name==='placement' && previous==='measuring')clearEntryTransition('recovery');
-  if(brush==='return')beginEntryTransition({kind:'return',originElement:document.getElementById('btn-again')});
-  else if(name==='summary' && previous==='measuring')beginEntryTransition({kind:'finish',originElement:document.getElementById('btn-stop'),prepare:reportArtworkReady});
-  else if(name==='measuring' && previous==='placement' && !entryTransition)beginEntryTransition({kind:'capture',originElement:document.getElementById('placement-wave-canvas')});
+function showScreen(name) {
+  if (name === 'ready') sessionStarting = false;
   for (const key in screens) screens[key].hidden = key !== name;
   document.getElementById('app').dataset.activeScreen = name;
-  syncScreenChrome(name);
-}
-
-function syncScreenChrome(name) {
-  // Keep one real camera video: moving it between visible hosts preserves the
-  // capture source and avoids another stream or a colorized preview surrogate.
-  const target = document.getElementById(name === 'measuring' ? 'capture-camera-preview' : 'camera-preview');
-  if ((name === 'placement' || name === 'measuring') && monitor?.video && monitor.video.parentElement !== target) {
-    target.replaceChildren(monitor.video);
-    monitor.video.setAttribute('aria-hidden', 'true');
-    const playback = monitor.video.play();
-    if (playback?.catch) playback.catch(() => {});
-  }
-  const tools = name === 'measuring' ? document.getElementById('capture-detail-tools')
-    : name === 'placement' ? document.getElementById('placement-actions')
-    : document.querySelector('.project-attribution');
-  tools.append(document.getElementById('btn-debug-menu'));
-  const report = name === 'summary';
-  document.getElementById('report-menu-actions').hidden = !report;
-  document.getElementById('btn-debug-menu').setAttribute('aria-label', report ? 'Report options' : 'More options');
-  document.getElementById('debug-sheet').setAttribute('aria-label', report ? 'Report options' : 'More options');
 }
 
 let monitor = null;
@@ -524,7 +28,6 @@ const SESSION_SEC = 180; // fixed 3-minute measuring protocol
 const waveBuf = new Array(180).fill(0); // ~3s at ~60Hz, matches the demo's live strip
 const placementWaveBuf = new Array(180).fill(0); // raw trace shown on the Placement screen too
 let measuringStartedAt = null; // Date.now() ms when MEASURING was first reached this session
-let portraitStartedAt = null;
 let sessionTimerId = null;
 let lastMetrics = null; // last per-window metrics object (for the report's floor/respiration)
 
@@ -656,7 +159,6 @@ function updateMeasuringScreen(metrics) {
     ? 'Good signal'
     : (metrics.quality ? metrics.quality.reason : metrics.guidanceMessage) || 'Settling';
 
-  document.getElementById('painting-state').textContent = manuscript.paused ? 'Artwork paused' : good ? 'Painting' : 'Waiting for clear signal';
   drawTachogram();
 }
 
@@ -1091,8 +593,7 @@ function drawReportTachogram(canvas, beats, flagged, correctedMs) {
 // Builds the full scrollable report from accepted beats ({t, ibiMs} or plain ms).
 // Exposed via renderSummary() in the real flow and window.__demoReport() for QA.
 let reportChartObserver;
-let portraitHost = null;
-let reportArtworkReady = Promise.resolve(null);
+let reportRedrawFrame = 0;
 let redrawReportCharts = () => {};
 window.addEventListener('beforeprint', () => redrawReportCharts());
 window.addEventListener('afterprint', () => redrawReportCharts());
@@ -1100,19 +601,16 @@ if (document.fonts) document.fonts.ready.then(() => redrawReportCharts());
 
 function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const el = document.getElementById('report-content');
-  reportArtworkReady = Promise.resolve(null);
-  if (portraitHost) window.PulsePortrait?.clear(portraitHost);
-  portraitHost = null;
-  document.getElementById('btn-share-artwork').disabled = true;
-  document.getElementById('btn-save-artwork').disabled = true;
-  document.getElementById('btn-save-manuscript').disabled = !manuscript.segments.length;
+  reportChartObserver?.disconnect();
+  cancelAnimationFrame(reportRedrawFrame);
+  reportRedrawFrame = 0;
   el.innerHTML = '';
 
   const beats = acceptedBeats.map(b => (typeof b === 'number' ? { ibiMs: b } : b));
   const acceptedIbiMs = beats.map(b => b.ibiMs);
   if (!beats.length) {
     el.innerHTML = `
-      <h1 class="report-title">Your pulse report<span class="blue-period">.</span></h1>
+      <h2 class="screen-title report-title">HRV Spot Check report</h2>
       <p class="insufficient">No good-quality windows were captured this session — try again with steadier finger placement.</p>
     `;
     return;
@@ -1128,35 +626,11 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const header = document.createElement('div');
   header.className = 'report-card report-header';
   header.innerHTML = `
-    <h1 class="report-title">Your pulse report<span class="blue-period">.</span></h1>
-    <p class="report-date">${new Date().toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'})} · ${(durationSec/60).toFixed(1)} min analyzed</p>
-    <canvas id="report-manuscript" width="1000" height="260" aria-label="A detail of your captured pulse manuscript"></canvas>
-    <p class="report-subtitle">Camera-derived pulse variability</p>
-    <div class="report-heroes"><div><span>Mean pulse</span><strong>${td.ok?fmt(td.meanHR,0):'--'} <small>bpm</small></strong></div><div><span>RMSSD</span><strong>${td.ok?fmt(td.rmssd,1):'--'} <small>ms</small></strong></div><div><span>SDNN</span><strong>${td.ok?fmt(td.sdnn,1):'--'} <small>ms</small></strong></div></div>
-    <div class="recording-quality"><h3>Recording quality</h3><strong>${goodPct == null ? '—' : goodPct+'%'}</strong><p>Good-signal windows</p><progress max="100" value="${goodPct == null ? 0 : goodPct}" aria-label="Good-signal windows">${goodPct}%</progress><div class="quality-facts"><span><b>${result.meta.nBeats}</b> beats used</span><span><b>${result.meta.pctCorrected.toFixed(1)}%</b> corrected</span></div></div>
+    <h2 class="screen-title report-title">HRV Spot Check report</h2>
+    <div class="meta-row"><span>${new Date().toLocaleString()}</span><span>Duration <b>${(durationSec / 60).toFixed(1)} min</b></span></div>
+    <div class="meta-row"><span>Good signal <b>${goodPct == null ? '—' : goodPct + '%'}</b></span><span>Beats used <b>${result.meta.nBeats}</b></span><span>Corrected <b>${result.meta.pctCorrected.toFixed(1)}%</b></span></div>
   `;
   el.appendChild(header);
-  paintManuscript(document.getElementById('report-manuscript'),true);
-  document.getElementById('report-manuscript').hidden = !manuscript.segments.length;
-  if (manuscript.segments.length && window.PulsePortrait) {
-    portraitHost = document.createElement('div');
-    // Keep the artwork near the beginning while retaining the full scientific
-    // report and its measured values immediately below it.
-    header.querySelector('.report-date').after(portraitHost);
-    document.getElementById('report-manuscript').hidden = true;
-    reportArtworkReady = window.PulsePortrait.mount(portraitHost, {
-      shareButton: document.getElementById('btn-share-artwork'),
-      saveButton: document.getElementById('btn-save-artwork'),
-      segments: manuscript.segments,
-      start: manuscript.segments[0].points[0].t,
-      end: manuscript.segments.at(-1).points.at(-1).t,
-      durationSec: elapsedMeasuringMs / 1000,
-      startedAt: new Date(portraitStartedAt || Date.now()),
-      metrics: { hr: td.ok ? td.meanHR : null, rmssd: td.ok ? td.rmssd : null, sdnn: td.ok ? td.sdnn : null },
-      pigmentAt,
-      paintRows: (canvas, rowIndices) => paintManuscriptRaster(canvas, false, true, null, true, { rowIndices }),
-    });
-  }
 
   // ANS balance card
   const ansCard = document.createElement('div');
@@ -1284,28 +758,6 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
     <strong>population reference, not a diagnosis</strong>. Not a medical device.</p>
   `;
   el.appendChild(footer);
-  el.insertBefore(tdCard, ansCard);
-  if (td.ok) {
-    const fullTable=tdCard.querySelector('table');
-    const detail=document.createElement('details');detail.className='time-details';
-    const summary=document.createElement('summary');summary.textContent='All time-domain measurements';
-    detail.append(summary,fullTable);
-    tdCard.append(detail);
-    const compact=document.createElement('table');compact.className='hrv-table';
-    compact.innerHTML=`<tr><td>Mean RR</td><td>${fmt(td.meanRR,0)} ms</td></tr><tr><td>Pulse range<br><small>(5-beat average)</small></td><td>${fmt(td.minHR,0)} – ${fmt(td.maxHR,0)} bpm</td></tr><tr><td>Estimated timing-noise floor</td><td>${Number.isFinite(rmssdFloorMs)?fmt(rmssdFloorMs,0)+' ms':'Unavailable'}</td></tr>`;
-    tdCard.insertBefore(compact,detail);
-  }
-  for (const [card, label] of [[fdCard,'Frequency analysis'],[nlCard,'Nonlinear analysis'],[tachoCard,'Beat timing & methods']]) {
-    const details=document.createElement('details');details.className='report-disclosure';
-    const summary=document.createElement('summary');summary.textContent=label;
-    card.before(details);details.append(summary,card);
-    if(card===tachoCard) details.append(footer);
-    details.addEventListener('toggle',()=>{ if(!details.open)return;
-      if(card===fdCard && fd.ok) drawPSD(document.getElementById('psd-canvas'),fd);
-      if(card===nlCard && nl.ok) drawPoincare(document.getElementById('poincare-canvas'),nl,result.meta.flagged);
-      if(card===tachoCard) drawReportTachogram(document.getElementById('report-tacho-canvas'),beats,result.meta.flagged,PPG.hrv.correctArtifacts(acceptedIbiMs).corrected);
-    });
-  }
   redrawReportCharts = () => {
     const psd = document.getElementById('psd-canvas');
     const poincare = document.getElementById('poincare-canvas');
@@ -1316,7 +768,22 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   };
   reportChartObserver?.disconnect();
   if (typeof ResizeObserver !== 'undefined') {
-    reportChartObserver = new ResizeObserver(() => redrawReportCharts());
+    const widths = new WeakMap();
+    reportChartObserver = new ResizeObserver(entries => {
+      let changed = false;
+      for (const { target, contentRect } of entries) {
+        if (widths.get(target) !== contentRect.width) {
+          widths.set(target, contentRect.width);
+          changed = true;
+        }
+      }
+      // Canvas setup changes its height. Redraw only for width changes and
+      // outside the observer delivery to avoid a resize loop in WebKit.
+      if (changed && !reportRedrawFrame) reportRedrawFrame = requestAnimationFrame(() => {
+        reportRedrawFrame = 0;
+        redrawReportCharts();
+      });
+    });
     el.querySelectorAll('.report-canvas-wrap').forEach(wrap => reportChartObserver.observe(wrap));
   }
   tdCard.insertAdjacentHTML('beforeend','<p class="report-note">The timing-noise floor is an estimate, not a confidence interval.</p>');
@@ -1327,17 +794,12 @@ function startSession() {
   // Ready-screen UI disable, so this can never be invoked (e.g. via the
   // console or a future button) on desktop and grab getUserMedia there.
   if (!isPhone || sessionStarting) return;
-  if (portraitHost) { window.PulsePortrait?.clear(portraitHost); portraitHost = null; }
   sessionStarting = true;
   const generation = ++sessionGeneration;
-  beginEntryTransition();
   showScreen('placement');
   resetWaveBuffer();
-  resetManuscript();
-  document.querySelector('.live-details').open = false;
   elapsedMeasuringMs = 0; lastMeasuringFrame = null;
   measuringStartedAt = null;
-  portraitStartedAt = null;
   document.getElementById('session-countdown').textContent = fmtCountdown(SESSION_SEC);
   if (sessionTimerId) clearInterval(sessionTimerId);
   sessionTimerId = setInterval(tickSessionCountdown, 1000);
@@ -1359,9 +821,8 @@ function startSession() {
     onQualityUpdate: (metrics) => {
       if (generation !== sessionGeneration) return;
       lastMetrics = metrics;
-      acceptPaintWindow(metrics);
       if (metrics.fingerState === 'MEASURING') {
-        if (measuringStartedAt == null) { measuringStartedAt = Date.now(); portraitStartedAt ??= measuringStartedAt; }
+        if (measuringStartedAt == null) measuringStartedAt = Date.now();
         if (screens.measuring.hidden) showScreen('measuring');
         updateMeasuringScreen(metrics);
       } else {
@@ -1375,19 +836,16 @@ function startSession() {
     onSignalUpdate: ({ time, value, isProcessing }) => {
       if (generation !== sessionGeneration) return;
       advanceSessionClock(time, isProcessing);
-      if (isProcessing && !manuscript.paused && Number.isFinite(value)) manuscript.pending.push({ t:time, v:value });
-      if (manuscript.pending.length > 1800) manuscript.pending.shift();
       waveBuf.push(value);
       waveBuf.shift();
       placementWaveBuf.push(value);
       placementWaveBuf.shift();
-      if (!screens.measuring.hidden && document.querySelector('.live-details').open) drawWave();
+      if (!screens.measuring.hidden) drawWave();
       if (!screens.placement.hidden) drawPlacementWave();
     },
     onError: (err) => {
       if (generation !== sessionGeneration) return;
       if (sessionTimerId) { clearInterval(sessionTimerId); sessionTimerId = null; }
-      clearEntryTransition();
       // PPGError carries a stable code and user-facing guidance.
       alert(err && err.guidance ? err.guidance : 'Camera error: ' + (err && err.message ? err.message : err));
       showScreen('ready');
@@ -1399,7 +857,7 @@ function startSession() {
   currentMonitor.start().then(() => {
     pendingMonitorStarts.delete(currentMonitor);
     if (generation !== sessionGeneration) { currentMonitor.destroy(); return; }
-    syncScreenChrome(screens.measuring.hidden ? 'placement' : 'measuring');
+    document.getElementById('camera-preview').replaceChildren(currentMonitor.video);
   }).catch((err) => {
     pendingMonitorStarts.delete(currentMonitor);
     if (generation !== sessionGeneration) { currentMonitor.destroy(); return; }
@@ -1423,21 +881,14 @@ function stopSession() {
 // ponytail: UA sniff; swap for a camera/torch capability probe once desktop rPPG lands.
 const isPhone = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
 if (!isPhone) {
-  const b = document.getElementById('btn-start');
-  b.disabled = true; b.hidden = true;
-  document.getElementById('phone-qr').src = new URL('./assets/phone-qr.svg', paintBundleURL).href;
-  document.getElementById('screen-ready').classList.add('desktop-ready');
-  document.getElementById('desktop-phone-panel').hidden = false;
+  const button = document.getElementById('btn-start');
+  button.disabled = true; button.textContent = 'Open on your phone';
+  document.getElementById('desktop-note').hidden = false;
 }
-syncScreenChrome('ready');
-document.querySelector('.live-details').addEventListener('toggle', event => {
-  if (event.currentTarget.open) { drawWave(); drawTachogram(); }
-});
 document.getElementById('btn-start').addEventListener('click', startSession);
 document.getElementById('btn-cancel-placement').addEventListener('click', () => {
   sessionGeneration++;
   lastMeasuringFrame = null;
-  clearEntryTransition();
   if (sessionTimerId) { clearInterval(sessionTimerId); sessionTimerId=null; }
   if (monitor) {
     monitor.stop();
@@ -1448,22 +899,10 @@ document.getElementById('btn-cancel-placement').addEventListener('click', () => 
   }
   showScreen('ready');
 });
-document.getElementById('btn-pause').addEventListener('click', () => {
-  manuscript.paused = !manuscript.paused; manuscript.pending=[];
-  if (manuscript.paused) cancelAnimationFrame(manuscript.frame); else animateManuscript();
-  document.getElementById('btn-pause').textContent=manuscript.paused?'Resume artwork':'Pause artwork';
-  document.getElementById('pause-note').textContent=manuscript.paused?'Artwork paused. Your 3-minute measurement continues.':'3-minute recording · Not a medical device';
-  if(lastMetrics) updateMeasuringScreen(lastMetrics);
-});
-document.getElementById('btn-save-artwork').addEventListener('click', () => closeDebugSheet());
-document.getElementById('btn-save-manuscript').addEventListener('click', () => {
-  closeDebugSheet();
-  saveManuscript();
-});
 document.getElementById('btn-stop').addEventListener('click', stopSession);
 document.getElementById('btn-again').addEventListener('click', () => {
   if (monitor) { monitor.destroy(); monitor = null; }
-  showScreen('ready', {brush:'return'});
+  showScreen('ready');
 });
 document.getElementById('btn-save-log').addEventListener('click', () => {
   closeDebugSheet();
@@ -1471,7 +910,7 @@ document.getElementById('btn-save-log').addEventListener('click', () => {
 });
 document.getElementById('btn-save-report').addEventListener('click', () => {
   closeDebugSheet();
-  const closed=[...document.querySelectorAll('.report-disclosure, .time-details, .ans-methods')].filter(d=>!d.open);
+  const closed=[...document.querySelectorAll('.ans-methods')].filter(d=>!d.open);
   closed.forEach(d=>d.open=true);
   window.addEventListener('afterprint',()=>closed.forEach(d=>d.open=false),{once:true});
   setTimeout(()=>window.print(),100);
@@ -1623,7 +1062,6 @@ window.__demoState = function (name) {
   if (name === 'measuring') {
     showScreen('measuring');
     resetWaveBuffer();
-  resetManuscript();
   elapsedMeasuringMs = 0; lastMeasuringFrame = null;
     for (let i = 0; i < waveBuf.length; i++) waveBuf[i] = 0.5 + 0.3 * Math.sin(i / 6);
     drawWave();

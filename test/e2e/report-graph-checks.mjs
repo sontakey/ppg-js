@@ -92,14 +92,6 @@ export async function checkReportGraphs(page) {
       }
     }
   }
-  // Reopening a disclosure must not repeatedly multiply the canvas bitmap size.
-  const before = await page.locator('#poincare-canvas').evaluate(c => [c.width, c.height]);
-  for (let i = 0; i < 3; i++) {
-    await page.getByText('Nonlinear analysis', { exact: true }).click();
-    await page.getByText('Nonlinear analysis', { exact: true }).click();
-    await assertGraphLabels(page, `reopen ${i}`);
-  }
-  assert.deepEqual(await page.locator('#poincare-canvas').evaluate(c => [c.width, c.height]), before);
   const screenScale = await page.evaluate(() => visualViewport.scale);
   await page.emulateMedia({ media: 'print' });
   await page.evaluate(() => window.dispatchEvent(new Event('beforeprint')));

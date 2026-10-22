@@ -76,10 +76,8 @@
     "test": "npm run typecheck && node test/run-all.js",
     "test:unit": "node test/run-all.js",
     "test:e2e": "node test/e2e/fake-camera.mjs",
-    "test:app": "node test/e2e/pulse-on-paper.mjs",
+    "test:app": "node test/e2e/reference-app.mjs",
     "test:safari-session": "node test/e2e/safari-session.mjs",
-    "test:paint-performance": "node test/e2e/paint-performance.mjs",
-    "test:paint-fallbacks": "node test/e2e/paint-fallback-checks.mjs",
     "replay": "tsx tools/replay.js",
     "prepublishOnly": "npm run build && npm test"
   },
@@ -111,7 +109,6 @@
   },
   "devDependencies": {
     "playwright": "^1.56.1",
-    "three": "0.186.1",
     "tsup": "^8.5.1",
     "tsx": "^4.23.13",
     "typescript": "^5.9.3"

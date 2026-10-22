@@ -9,7 +9,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { webkit, devices } from 'playwright';
 import { instrumentReportGraphText } from './report-graph-checks.mjs';
-import { checkArtwork, openReportMenu } from './artwork-checks.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const out = path.resolve(root, process.env.PPG_SAFARI_ARTIFACTS || '.dream-loop/safari-session-check');
@@ -71,14 +70,11 @@ try {
   });
   await page.goto(evidence.url);
   await page.evaluate(() => document.fonts.ready);
-  await page.waitForFunction(() => window.__paintGpuStats?.ready && paintGPU, null, { timeout: 60000 });
-  assert.equal(await page.evaluate(() => window.__paintGpuStats.backend), 'webgpu', 'actual WebKit WebGPU backend initializes');
   await page.screenshot({ path: `${out}/ready.png`, fullPage: true });
   await page.evaluate(({ log, originalLength }) => {
-    window.__sessionMetrics = { intervals: [], uninterruptedIntervals: [], paintIntervals: [], interruptions: [], checkpointAt: 60,
+    window.__sessionMetrics = { intervals: [], uninterruptedIntervals: [], interruptions: [], checkpointAt: 60,
       stopCalls: 0, originalLength, extensionUsed: false, droppedSamples: 0,
-      scrolling: { samples: 0, min: null, max: null, fractionalPositions: 0, fractionalForwardSteps: 0,
-        backwardSteps: 0, maxRows: 0, cropViolations: 0, maxContinuousPanStep: 0, examples: [] } };
+      } ;
     window.PPGMonitor = class extends PPG.PPGMonitor {
       constructor(host, options) {
         super(host, options);
@@ -91,8 +87,7 @@ try {
         this.options.onReady({ torchSupported: true });
         this.started = performance.now();
         const metrics = window.__sessionMetrics;
-        let previous = 0, previousPaint = 0, previousPaintFrames = 0;
-        let previousViewRow = null, previousPanTarget = null;
+        let previous = 0;
         let framePauseDone = false, stalled = false, hidden = false;
         let activeFeedPause = null, activeHidden = null, pendingResume = null, restoreVisibility = null;
         const pump = now => {
@@ -129,54 +124,26 @@ try {
             }
           }
           metrics.extensionUsed ||= this.i > originalLength;
-          const surface = window.__paintGpuStats.surfaces.manuscript;
-          // Scalar reads only: track the real eased pan without DOM layout or
-          // GPU readback on animation frames. At most12 examples are retained.
-          const viewRow = manuscript.viewFirstRow, raster = manuscript.raster, panTarget = manuscript.scroll?.to ?? null;
-          if (raster && Number.isFinite(viewRow)) {
-            const scrolling = metrics.scrolling;
-            scrolling.samples++;
-            scrolling.min = scrolling.min === null ? viewRow : Math.min(scrolling.min, viewRow);
-            scrolling.max = scrolling.max === null ? viewRow : Math.max(scrolling.max, viewRow);
-            scrolling.maxRows = Math.max(scrolling.maxRows, raster.rows);
-            if (viewRow < raster.firstRow - 1e-6 || viewRow + 4 > raster.firstRow + raster.rows + 1e-6) scrolling.cropViolations++;
-            const fractional = Math.abs(viewRow - Math.round(viewRow)) > 1e-5;
-            if (fractional) {
-              scrolling.fractionalPositions++;
-              if (scrolling.examples.length < 12) scrolling.examples.push(viewRow);
-            }
-            if (previousViewRow !== null) {
-              const step = viewRow - previousViewRow;
-              if (step < -1e-6) scrolling.backwardSteps++;
-              if (step > 1e-6 && fractional) scrolling.fractionalForwardSteps++;
-              if (panTarget !== null && panTarget === previousPanTarget && frameGap <= 100 && !activeHidden && !returningFromStall)
-                scrolling.maxContinuousPanStep = Math.max(scrolling.maxContinuousPanStep, step);
-            }
-            previousViewRow = viewRow; previousPanTarget = panTarget;
-          }
-          if (surface.frames > previousPaintFrames) {
-            if (previousPaint && now - previousPaint < 100 && !activeHidden && !returningFromStall) metrics.paintIntervals.push(now - previousPaint);
-            previousPaint = now; previousPaintFrames = surface.frames;
-          }
+          const surface = { frames: this.fedSamples };
           for (const interruption of metrics.interruptions) {
             if (interruption.recoveryCreditMs === undefined && now - interruption.resumedAt >= 1200) {
               interruption.recoveryWallMs = now - interruption.resumedAt;
               interruption.recoveryCreditMs = elapsedMeasuringMs - interruption.resumeMs;
-              interruption.recoveryPaintFrames = surface.frames - interruption.beforePaintFrames;
+              interruption.recoveryCameraFrames = surface.frames - interruption.beforeCameraFrames;
             }
-            if (interruption.recoveredAtSeconds === undefined && manuscript.segments.length > interruption.beforeSegments
-              && surface.frames > interruption.beforePaintFrames) interruption.recoveredAtSeconds = seconds;
+            if (interruption.recoveredAtSeconds === undefined && this.getTachogram({ goodOnly: true }).length > interruption.beforeSegments
+              && surface.frames > interruption.beforeCameraFrames) interruption.recoveredAtSeconds = seconds;
           }
           if (!framePauseDone && elapsedMeasuringMs >= 45000 && this.currentMetrics.fingerState === 'MEASURING') {
             framePauseDone = true;
             // Camera frames stop while timers and animation frames keep running.
             // The last cached physiological state deliberately remains MEASURING.
             activeFeedPause = { kind: 'camera-frame-pause', startedAt: now, resumeAt: now + 4000, wallSeconds: seconds,
-              beforeMs: elapsedMeasuringMs, beforeSegments: manuscript.segments.length, beforePaintFrames: surface.frames };
+              beforeMs: elapsedMeasuringMs, beforeSegments: this.getTachogram({ goodOnly: true }).length, beforeCameraFrames: surface.frames };
           } else if (!stalled && elapsedMeasuringMs >= 80000 && this.currentMetrics.fingerState === 'MEASURING') {
             stalled = true;
             const interruption = { kind: 'main-thread-stall', startedAt: performance.now(), wallSeconds: seconds,
-              beforeMs: elapsedMeasuringMs, beforeSegments: manuscript.segments.length, beforePaintFrames: surface.frames };
+              beforeMs: elapsedMeasuringMs, beforeSegments: this.getTachogram({ goodOnly: true }).length, beforeCameraFrames: surface.frames };
             // Actual main-thread work, not clock advancement or timer mocking.
             while (performance.now() - interruption.startedAt < 2500) { /* deliberate regression stimulus */ }
             interruption.durationMs = performance.now() - interruption.startedAt;
@@ -188,7 +155,7 @@ try {
               if (descriptor) Object.defineProperty(document, key, descriptor); else delete document[key];
             } };
             activeHidden = { kind: 'simulated-visibility', startedAt: now, resumeAt: now + 4000, wallSeconds: seconds,
-              beforeMs: elapsedMeasuringMs, beforeSegments: manuscript.segments.length, beforePaintFrames: surface.frames };
+              beforeMs: elapsedMeasuringMs, beforeSegments: this.getTachogram({ goodOnly: true }).length, beforeCameraFrames: surface.frames };
             Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
             Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
             document.dispatchEvent(new Event('visibilitychange'));
@@ -196,9 +163,8 @@ try {
           if (seconds >= metrics.checkpointAt) {
             console.log('SESSION_CHECKPOINT ' + JSON.stringify({ wallSeconds: seconds, measuringSeconds: elapsedMeasuringMs / 1000,
               countdown: document.getElementById('session-countdown').textContent, engineState: this.currentMetrics.fingerState,
-              samples: this.fedSamples, consumedSamples: this.i, droppedSamples: metrics.droppedSamples, acceptedSegments: manuscript.segments.length, backend: window.__paintGpuStats.backend,
-              gpuFrames: surface.frames, hidden: document.hidden, viewFirstRow: manuscript.viewFirstRow,
-              cachedRows: manuscript.raster?.rows ?? 0, scrollFractionalSteps: metrics.scrolling.fractionalForwardSteps }));
+              samples: this.fedSamples, consumedSamples: this.i, droppedSamples: metrics.droppedSamples,
+              acceptedBeats: this.getTachogram({ goodOnly: true }).length, hidden: document.hidden }));
             metrics.checkpointAt += 60;
           }
           this.replayFrame = requestAnimationFrame(pump);
@@ -237,16 +203,13 @@ try {
   console.log('SESSION_START', new Date().toISOString());
   await page.locator('#btn-start').click();
   await page.waitForFunction(() => !document.getElementById('screen-summary').hidden, null, { timeout: timeoutSeconds * 1000 });
-  // The report is available immediately; wait for its decorative finish wash
-  // before screenshot/viewport changes so we test completion, not cancellation.
-  await page.waitForFunction(() => entryTransition === null);
   evidence.session = await page.evaluate(() => {
     const beats = monitor.getTachogram({ goodOnly: true, hrvOnly: true }).filter(point => point.valid);
     const report = PPG.hrv.analyzeHRV(beats);
-    return { ...window.__sessionMetrics, samples: monitor.fedSamples, consumedSamples: monitor.i, acceptedSegments: manuscript.segments.length,
+    return { ...window.__sessionMetrics, samples: monitor.fedSamples, consumedSamples: monitor.i, acceptedBeats: monitor.getTachogram({ goodOnly: true }).length,
       measuringSeconds: elapsedMeasuringMs / 1000, countdown: document.getElementById('session-countdown').textContent,
       expected: { hr: report.timeDomain.meanHR.toFixed(0), rmssd: report.timeDomain.rmssd.toFixed(1), sdnn: report.timeDomain.sdnn.toFixed(1), beats: report.meta.nBeats },
-      gpu: window.__paintGpuStats, brush: window.__pulseBrushStats, fonts: { dmSans: document.fonts.check('16px "DM Sans"'), waterBrush: document.fonts.check('72px "Water Brush"') } };
+      fonts: { dmSans: document.fonts.check('16px "DM Sans"') } };
   });
   assert.ok(evidence.session.measuringSeconds >= 180, 'automatic countdown completed180s of MEASURING');
   assert.ok(evidence.session.measuringSeconds <= 181.1, 'display tick stops within one normal interval of180active seconds');
@@ -257,30 +220,21 @@ try {
     if (interruption.kind !== 'main-thread-stall') assert.equal(interruption.heldMs, 0, `${interruption.kind}: absent camera frames never advance countdown`);
     assert.ok(interruption.recoveryCreditMs >= 0 && interruption.recoveryCreditMs <= interruption.recoveryWallMs + 50,
       `${interruption.kind}: resumed measurement advances no faster than fresh-frame wall time`);
-    assert.ok(Number.isFinite(interruption.recoveredAtSeconds), `${interruption.kind}: accepted waveform and GPU painting recover`);
+    assert.ok(Number.isFinite(interruption.recoveredAtSeconds), `${interruption.kind}: accepted beats recover`);
   }
   assert.ok(evidence.session.droppedSamples > 0, 'interruption stimuli actually removed camera frames');
-  const scrolling = evidence.session.scrolling;
-  assert.ok(scrolling.samples > 100 && scrolling.max > scrolling.min + 1, 'new manuscript rows actually advance the view');
-  assert.ok(scrolling.fractionalPositions > 20 && scrolling.fractionalForwardSteps > 20, 'row movement contains real intermediate eased positions');
-  assert.equal(scrolling.backwardSteps, 0, 'automatic follow never reverses');
-  assert.ok(scrolling.maxRows >= 4 && scrolling.maxRows <= 5, 'cached manuscript layers never exceed5rows');
-  assert.equal(scrolling.cropViolations, 0, 'pan stays inside the cached raster');
-  assert.ok(scrolling.maxContinuousPanStep < .25, 'healthy animation frames advance smoothly within the same pan');
   assert.equal(evidence.session.stopCalls, 1, 'automatic completion stopped exactly once');
   assert.equal(evidence.session.countdown, '0:00');
-  assert.equal(evidence.session.gpu.backend, 'webgpu');
-  assert.equal(evidence.session.gpu.ready, true);
-  assert.ok(evidence.session.gpu.surfaces.manuscript.frames > 0 && evidence.session.acceptedSegments > 0, 'actual accepted waveform was painted');
-  assert.ok(evidence.session.brush.history.some(item => item.kind === 'finish' && item.reason === 'complete'), 'automatic report brush reveal completes');
-  assert.ok(evidence.session.fonts.dmSans && evidence.session.fonts.waterBrush);
-  const values = await page.locator('.report-heroes strong').allTextContents();
-  for (const [index, key] of ['hr', 'rmssd', 'sdnn'].entries()) assert.ok(values[index].includes(evidence.session.expected[key]), `report ${key} agrees with actual engine`);
-  assert.match(await page.locator('.quality-facts').innerText(), new RegExp(String(evidence.session.expected.beats)));
+  assert.ok(evidence.session.acceptedBeats > 0);
+  assert.ok(evidence.session.fonts.dmSans);
+  const table = page.locator('.report-card').filter({ has: page.getByRole('heading', { name: 'Time domain', exact: true }) });
+  for (const [label, key] of [['Mean HR', 'hr'], ['RMSSD', 'rmssd'], ['SDNN', 'sdnn']]) {
+    const row = table.locator('tr').filter({ has: page.locator('td').getByText(label, { exact: true }) });
+    assert.ok((await row.innerText()).includes(evidence.session.expected[key]), `report ${key} agrees with actual engine`);
+  }
   await page.setViewportSize({ width: 320, height: 900 });
   assert.deepEqual(await page.evaluate(() => [innerWidth, document.documentElement.scrollWidth]), [320, 320], 'WebKit320px has no mobile autozoom/overflow');
   await page.screenshot({ path: `${out}/report-320.png`, fullPage: true });
-  for (const label of ['Frequency analysis', 'Nonlinear analysis', 'Beat timing & methods']) await page.getByText(label, { exact: true }).click();
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   evidence.graphs = await page.evaluate(() => ['psd-canvas', 'poincare-canvas', 'report-tacho-canvas'].map(id => {
     const canvas = document.getElementById(id);
@@ -299,42 +253,31 @@ try {
     }
     await page.locator(`#${graph.id}`).locator('..').screenshot({ path: `${out}/${graph.id}-320.png` });
   }
-  evidence.artwork = await checkArtwork(page, out);
-  await openReportMenu(page);
-  const [download] = await Promise.all([page.waitForEvent('download'), page.locator('#btn-save-manuscript').click()]);
-  assert.equal(await download.failure(), null);
-  await download.saveAs(`${out}/manuscript.png`);
-  const png = readFileSync(`${out}/manuscript.png`);
-  assert.equal(png.subarray(1, 4).toString(), 'PNG');
-  evidence.export = { width: png.readUInt32BE(16), height: png.readUInt32BE(20), bytes: png.length };
-  assert.ok(evidence.export.width <= 1200 && evidence.export.height <= 8192);
   const printBefore = await page.evaluate(() => {
-    document.querySelector('.time-details').open = true;
-    const nodes = [...document.querySelectorAll('.report-disclosure,.time-details,.ans-methods')];
+    const nodes = [...document.querySelectorAll('.ans-methods')];
     window.print = () => { window.__printOpened = nodes.map(node => node.open); window.dispatchEvent(new Event('afterprint')); window.__printRestored = nodes.map(node => node.open); };
     return nodes.map(node => node.open);
   });
-  await openReportMenu(page);
   await page.locator('#btn-save-report').click();
   await page.waitForFunction(() => window.__printRestored !== undefined);
   evidence.print = await page.evaluate(() => ({ opened: window.__printOpened, restored: window.__printRestored }));
   assert.ok(evidence.print.opened.every(Boolean), 'print action opens every disclosure');
   assert.deepEqual(evidence.print.restored, printBefore, 'afterprint restores original disclosure states');
   assert.deepEqual(evidence.errors, []);
-  assert.deepEqual(evidence.consoleErrors, [], 'no first-party or GPU console errors');
+  assert.deepEqual(evidence.consoleErrors, [], 'no first-party console errors');
   assert.deepEqual(evidence.firstPartyRequestFailures, [], 'no failed first-party requests');
   await checkpointCapture;
   assert.ok(evidence.midSessionCapture && !evidence.evidenceCaptureError, '60s measuring screenshot was captured');
   const cadence = samples => { const ordered = [...samples].sort((a,b) => a-b); return { frames: samples.length, fps: 1000*samples.length/samples.reduce((sum,n)=>sum+n,0), p50Ms: ordered[Math.floor(ordered.length*.5)], p95Ms: ordered[Math.floor(ordered.length*.95)], maxMs: ordered.at(-1), over33Ms: samples.filter(n=>n>33.34).length }; };
   evidence.cadence = { allFramesIncludingDeliberateStall: cadence(evidence.session.intervals),
-    excludingDeliberateMainThreadStall: cadence(evidence.session.uninterruptedIntervals), activePainting: cadence(evidence.session.paintIntervals) };
-  delete evidence.session.intervals; delete evidence.session.uninterruptedIntervals; delete evidence.session.paintIntervals;
+    excludingDeliberateMainThreadStall: cadence(evidence.session.uninterruptedIntervals) };
+  delete evidence.session.intervals; delete evidence.session.uninterruptedIntervals;
   evidence.passed = true; evidence.completedAt = new Date().toISOString();
   writeFileSync(`${out}/result.json`, JSON.stringify(evidence, null, 2) + '\n');
-  console.log('SESSION_PASS', JSON.stringify({ measuringSeconds:evidence.session.measuringSeconds,wallElapsedSec:evidence.session.wallElapsedSec,extensionUsed:evidence.session.extensionUsed,expected:evidence.session.expected,cadence:evidence.cadence,export:evidence.export }));
+  console.log('SESSION_PASS', JSON.stringify({ measuringSeconds:evidence.session.measuringSeconds,wallElapsedSec:evidence.session.wallElapsedSec,extensionUsed:evidence.session.extensionUsed,expected:evidence.session.expected,cadence:evidence.cadence }));
 } catch (error) {
   if (page && !page.isClosed()) {
-    try { evidence.failureState = await page.evaluate(() => ({ session: window.__sessionMetrics, measuringSeconds: typeof elapsedMeasuringMs === 'number' ? elapsedMeasuringMs / 1000 : null, gpu: window.__paintGpuStats })); } catch { /* original error retained */ }
+    try { evidence.failureState = await page.evaluate(() => ({ session: window.__sessionMetrics, measuringSeconds: typeof elapsedMeasuringMs === 'number' ? elapsedMeasuringMs / 1000 : null })); } catch { /* original error retained */ }
   }
   evidence.failure = String(error); writeFileSync(`${out}/failure.json`, JSON.stringify(evidence, null, 2) + '\n'); throw error;
 } finally {
