@@ -15,27 +15,27 @@ per-window quality verdict that says *why* a number is withheld rather than
 guessing. Every session is recorded and can be replayed offline through the
 exact same engine.
 
-**Try [Pulse Painting](https://chatppg.com/ppg-js-demo)** — the three-minute
-capture experience by [ChatPPG](https://chatppg.com). Open it on your phone;
-desktop visitors get a painted QR invitation to continue on mobile.
+**Try [HRV Spot Check](https://chatppg.com/ppg-js-demo)** — a focused three-minute
+reference demo in the [ChatPPG](https://chatppg.com) family. Open it on your phone
+for camera setup, live pulse and quality-gated metrics, followed by a full report.
 
 <p align="center">
-  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-painting-ready.jpg" width="230" alt="Pulse Painting: phone camera instructions and a painted Begin pulse capture button"></a>
-  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-painting-capture.jpg" width="230" alt="Measured pulse strokes with cobalt, iris and teal gradients, live pulse, RMSSD and SDNN, and floating capture controls"></a>
-  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-painting-report.jpg" width="230" alt="Pulse report with a shareable painted waveform portrait and Share artwork and Measure again controls"></a>
+  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/reference-ready.jpg" width="230" alt="HRV Spot Check: simple phone camera instructions and Start button in the ChatPPG visual style"></a>
+  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/reference-capture.jpg" width="230" alt="Live pulse, RMSSD, SDNN, breathing estimate, signal quality, waveform and beat intervals"></a>
+  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/reference-report.jpg" width="230" alt="HRV Spot Check report with recording quality, research estimates, measurements, Save report and Measure again"></a>
 </p>
 
-The [example app](examples/app) paints accepted PPG waveforms into a scrolling
-manuscript, with organic color gradients inside each stroke and continuously
-updated pulse, RMSSD and SDNN. It finishes with a shareable portrait and an HRV
-Spot Check report whose detailed measurements expand on demand. Signal quality
-controls pigment depth; the colors do not represent health.
+The [reference app](examples/app) preserves the original HRV Spot Check flow with
+a light ChatPPG skin: system-style controls, a live waveform, continuously
+computed metrics, readable scientific plots, print/save and debug export. It has
+no painting renderer or graphics dependency. The screenshots use a checked-in
+iPhone recording replayed in a browser with camera I/O mocked; they are not a new
+physical-phone capture test.
 
-Brushstroke transitions use WebGPU with WebGL2 and Canvas2D fallbacks, respect
-reduced motion, and target approximately 60 fps. The app and its graphics stay
-separate from the headless npm package. The screenshots above show the current
-interface using a checked-in iPhone recording replayed in a browser with camera
-I/O mocked; they are not evidence of a new physical-phone capture test.
+For the creative experience, visit **[Pulse Painting](https://chatppg.com/pulse-painting)**,
+now maintained in its own [repository](https://github.com/sontakey/pulsepainting).
+It uses ppg-js for capture and analysis while owning the brushstrokes, visual
+transitions and shareable artwork. New landscape concepts belong there.
 
 [App architecture and checks](examples/app/README.md) ·
 [Screenshot provenance](docs/media/README.md) ·
@@ -395,7 +395,7 @@ validated instrument.
 ```bash
 npm test          # strict typecheck + all unit suites
 npm run test:e2e  # real Chromium + fake camera fed from a fixture (after npm run build)
-npm run test:app  # capture, report, exports, responsive layouts and transition lifecycle
+npm run test:app  # capture, report, print, responsive plots, no-data and camera lifecycle
 npm run test:safari-session # full three-minute WebKit replay with interruption/recovery
 ```
 

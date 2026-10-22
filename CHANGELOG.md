@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.3.1] - 2026-10-21
 
+Prepared in source; npm publication is pending.
+
 ### Fixed
 - Camera startup and interruption recovery now discard stale asynchronous work
   after `stop()`, `destroy()` or a newer `start()`. Late camera grants and streams
@@ -17,21 +19,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lifecycle. Events from replaced camera tracks cannot restart old recovery work.
 
 ### Changed
-- The example app is now **Pulse Painting**, a ChatPPG project at
-  <https://chatppg.com/ppg-js-demo>: accepted-waveform paint strokes with organic
-  cobalt–iris–teal gradients, smooth manuscript scrolling, live metrics, a small
-  camera preview, and floating mobile controls.
-- Reports lead with a shareable pulse portrait and basic metrics, with detailed
-  HRV analysis in expandable sections and report export in the menu.
-- Desktop handoff uses a painted QR invitation. Brushstroke transitions use an
-  app-only WebGPU compositor with WebGL2/Canvas2D fallbacks and reduced-motion
-  support. Graphics are not included in the headless npm package.
+- Restored the original four-screen **HRV Spot Check** reference demo at
+  <https://chatppg.com/ppg-js-demo>, with a light ChatPPG skin, readable scientific
+  plots, live metrics and floating mobile actions. Current camera lifecycle,
+  fresh-frame countdown, report timestamp and quality-gating fixes are retained.
+- Moved **Pulse Painting** into its own repository at
+  <https://github.com/sontakey/pulsepainting>. Its painting renderer, artwork
+  sharing, decorative transitions, assets and GPU build dependency are no
+  longer part of the ppg-js reference app.
 - README links and screenshots reflect the current ChatPPG experience and use
   image URLs that also work on npm.
 
 ### Testing
-- Added camera lifecycle regression coverage, responsive report/graph checks,
-  artwork export checks, QR decoding checks, and a full three-minute WebKit
+- Added camera lifecycle regression coverage, responsive report/graph and
+  unavailable-data checks, and a full three-minute WebKit
   replay with camera-frame, main-thread and visibility interruptions.
 - Browser replay and performance evidence remain separate from physical-device
   capture validation. No DSP, HRV or streaming-engine algorithms changed.

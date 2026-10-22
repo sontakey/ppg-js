@@ -1,17 +1,25 @@
-# Pulse Painting screenshots
+# HRV Spot Check reference screenshots
 
-Captured from the local source app (`examples/app/index.html`) at 2026-10-22T02:57:16.780Z (October 21 in America/Chicago), before deployment of the Pulse Painting rename. The public app remains at https://chatppg.com/ppg-js-demo.
+Captured on October 21, 2026 (America/Chicago) from the restored local source
+`examples/app/index.html`, before the split deployment. The canonical reference
+URL is <https://chatppg.com/ppg-js-demo>. Pulse Painting now has its own
+[repository](https://github.com/sontakey/pulsepainting) and screenshots.
 
-- Mobile screenshots use Chromium with iPhone 13 browser emulation, a 390 × 844 CSS-pixel viewport, and device scale factor 1.
-- The optional desktop QR screenshot uses a 634 × 1014 viewport and device scale factor 1.
-- All images are direct browser screenshots saved as JPEG at quality 85. Reduced motion is enabled to capture settled screens. No screenshot pixels, interface text, or metric values were edited.
-- `pulse-painting-ready.jpg` and `pulse-painting-qr.jpg` are ordinary page renders.
-- `pulse-painting-capture.jpg` and `pulse-painting-report.jpg` use the repository's public `test/fixtures/iphone-200s.json` recording through the built signal engine and application callbacks. Camera input is mocked; the empty live-preview thumbnail is expected. Capture is shown after 70 seconds of recorded samples, and the report follows manual completion after 180 seconds of recorded samples. This accelerated replay does not advance the wall-clock countdown, so the capture image still displays 3:00.
-- The replay report computes mean pulse 71 bpm, RMSSD 53.6 ms, and SDNN 47.6 ms from the recording. These are fixture results, not a new physical-device measurement or a physiological-accuracy validation.
+- `reference-ready.jpg`, `reference-capture.jpg`, `reference-report.jpg` are
+  direct Chromium screenshots at a 390×844 CSS-pixel viewport, saved at CSS
+  scale as 390×844 JPEGs, quality 85. No image pixels or metric values were edited.
+- Ready is an ordinary page render. Capture and report use the public
+  `test/fixtures/iphone-200s.json` recording through the built engine and real
+  application callbacks, with camera I/O mocked.
+- Capture follows 70 seconds of recorded samples; report follows manual Stop
+  after 180 recorded seconds. This accelerated replay does not represent the
+  wall-clock countdown, so the capture image shows 3:00.
+- The report has 175 accepted beats, mean pulse 71 bpm, RMSSD 53.6 ms and SDNN
+  47.6 ms. These are fixture replay results, not a new physical-phone measurement.
+- `npm run test:app` regenerates these images under `.dream-loop/reference-demo`
+  alongside scoped validation evidence. The separate `test:safari-session`
+  command checks a full three-minute active protocol and interruptions at real
+  wall-clock speed in desktop WebKit.
 
-| File | Pixels | Bytes |
-| --- | --- | ---: |
-| `pulse-painting-ready.jpg` | 390 × 844 | 51,978 |
-| `pulse-painting-capture.jpg` | 390 × 844 | 56,304 |
-| `pulse-painting-report.jpg` | 390 × 844 | 62,026 |
-| `pulse-painting-qr.jpg` | 634 × 1014 | 112,132 |
+The imagery documents the original reference flow with the new light ChatPPG
+skin. The plain app contains no GPU painting renderer, artwork or landscape.
