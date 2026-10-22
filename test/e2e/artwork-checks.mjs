@@ -235,7 +235,7 @@ export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFA
   const [saved] = await Promise.all([page.waitForEvent('download'), page.locator('#debug-sheet').getByRole('button', { name: 'Save artwork', exact: true }).click()]);
   await closeReportMenu(page);
   assert.equal(await saved.failure(), null, 'artwork download succeeds');
-  assert.equal(saved.suggestedFilename(), 'pulse-on-paper.png', 'artwork filename');
+  assert.equal(saved.suggestedFilename(), 'pulse-painting.png', 'artwork filename');
   const png = readFileSync(await saved.path());
   assert.equal(png.subarray(1, 4).toString(), 'PNG', 'artwork is a PNG');
   assert.equal(png.readUInt32BE(16), 1080, 'downloaded portrait width');
@@ -269,7 +269,8 @@ export async function checkArtwork(page, output = process.env.PPG_ARTWORK_ARTIFA
     await page.waitForFunction(() => window.__portraitShareCalls.length === 1);
     const [shared] = await page.evaluate(() => window.__portraitShareCalls);
     assert.deepEqual(shared.keys, ['files', 'title'], 'native sharing contains only the requested artwork and title');
-    assert.equal(shared.name, 'pulse-on-paper.png');
+    assert.equal(shared.name, 'pulse-painting.png');
+    assert.equal(shared.title, 'Pulse Painting', 'native share uses the current product name');
     assert.equal(shared.type, 'image/png');
     assert.equal(shared.size, png.length);
     assert.equal(shared.digest, hash(png), 'native sharing uses the same cached PNG as Save artwork');

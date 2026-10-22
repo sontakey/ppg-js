@@ -12,7 +12,7 @@ addEventListener('pagehide', () => { clearEntryTransition('pagehide'); paintPage
 addEventListener('paintgpulost', () => paintManuscript(document.getElementById('manuscript')));
 addEventListener('pageshow', event => { if (event.persisted) { paintPageActive = true; warmPaintGPU(); } });
 
-// Pulse on Paper stores only accepted, measured waveform segments in memory.
+// Pulse Painting stores only accepted, measured waveform segments in memory.
 // A window is painted after its quality decision, never speculatively.
 const manuscript = { pending: [], segments: [], lastWindow: -1, paused: false, frame: 0, raster: null, viewFirstRow: 0, scroll: null };
 // A continuous pigment journey follows capture time, never the row index or
@@ -278,7 +278,7 @@ function saveManuscript() {
   paintManuscript(canvas,false,true);
   const ctx=canvas.getContext('2d');ctx.globalCompositeOperation='destination-over';ctx.fillStyle='#fdfbf7';ctx.fillRect(0,0,canvas.width,canvas.height);
   try {
-    canvas.toBlob(blob=>{if(!blob){alert('The manuscript could not be saved. Try saving the report instead.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='pulse-on-paper.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
+    canvas.toBlob(blob=>{if(!blob){alert('The manuscript could not be saved. Try saving the report instead.');return;}const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='pulse-painting-manuscript.png';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);});
   } catch { alert('The manuscript could not be saved. Try saving the report instead.'); }
 }
 

@@ -221,7 +221,7 @@ try {
   await checkEmptyArtworkActions(page);
   assert.deepEqual(errors, [], 'no runtime errors');
   await checkCaptureEntry(browser, url);
-  console.log('PASS: Pulse on Paper capture, quality attribution, pause, report, exports, responsive layouts and unavailable-data handling');
+  console.log('PASS: Pulse Painting capture, quality attribution, pause, report, exports, responsive layouts and unavailable-data handling');
 } finally {
   await browser?.close();
   await new Promise(resolve => server.close(resolve));

@@ -216,7 +216,7 @@
     };
     syncActions();
     instances.set(container, state);
-    canvas.setAttribute('aria-label', `Pulse on Paper. Selected moments from ${duration} of recorded pulse${date ? ` on ${date}` : ''}. Metrics excluded from artwork.`);
+    canvas.setAttribute('aria-label', `Pulse Painting. Selected moments from ${duration} of recorded pulse${date ? ` on ${date}` : ''}. Metrics excluded from artwork.`);
 
     const render = () => {
       const version = ++state.renderVersion;
@@ -225,7 +225,7 @@
       ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = INK;
       ctx.font = '400 136px "Water Brush", cursive';
       // The heading owns the entire top row; no branding or controls compete.
-      ctx.fillText('Pulse on Paper', WIDTH / 2, 178, WIDTH - 112);
+      ctx.fillText('Pulse Painting', WIDTH / 2, 178, WIDTH - 112);
       ctx.fillStyle = BLUE; ctx.font = '400 60px "DM Sans", sans-serif';
       ctx.fillText('Uniquely yours.', WIDTH / 2, 260);
       ctx.textAlign = 'right'; ctx.font = '400 60px "DM Sans", sans-serif';
@@ -247,13 +247,13 @@
       ctx.textAlign = 'center'; ctx.fillStyle = BLUE; ctx.font = '400 60px "DM Sans", sans-serif';
       ctx.fillText(date ? `${date}  ·  ${duration}` : duration, WIDTH / 2, state.includeMetrics ? 1218 : 1186);
       ctx.fillText('A project by ChatPPG', WIDTH / 2, state.includeMetrics ? 1290 : 1260);
-      canvas.setAttribute('aria-label', `Pulse on Paper. Selected moments from ${duration} of recorded pulse${date ? ` on ${date}` : ''}. Metrics ${state.includeMetrics ? 'included' : 'excluded'} from artwork.`);
+      canvas.setAttribute('aria-label', `Pulse Painting. Selected moments from ${duration} of recorded pulse${date ? ` on ${date}` : ''}. Metrics ${state.includeMetrics ? 'included' : 'excluded'} from artwork.`);
       state.ready = new Promise(resolve => {
         canvas.toBlob(blob => {
           if (state.disposed || version !== state.renderVersion) { resolve(null); return; }
           if (!blob) { checkbox.disabled = true; status.textContent = 'The artwork could not be prepared. Your full manuscript is still available in the menu.'; resolve(null); return; }
           state.blob = blob;
-          state.file = new File([blob], 'pulse-on-paper.png', { type: 'image/png' });
+          state.file = new File([blob], 'pulse-painting.png', { type: 'image/png' });
           syncActions(); status.textContent = ''; resolve(blob);
         }, 'image/png');
       });
@@ -263,7 +263,7 @@
     const download = () => {
       if (!state.blob) return;
       const url = URL.createObjectURL(state.blob); state.urls.add(url);
-      const link = document.createElement('a'); link.href = url; link.download = 'pulse-on-paper.png'; link.rel = 'noopener';
+      const link = document.createElement('a'); link.href = url; link.download = 'pulse-painting.png'; link.rel = 'noopener';
       document.body.append(link); link.click(); link.remove();
       // Keep the object URL alive long enough for Safari to consume the file.
       setTimeout(() => { URL.revokeObjectURL(url); state.urls.delete(url); }, 60000);
@@ -271,7 +271,7 @@
     };
     const shareArtwork = () => {
       if (!state.file || state.sharing || state.disposed) return;
-      const data = { files: [state.file], title: 'Pulse on Paper' };
+      const data = { files: [state.file], title: 'Pulse Painting' };
       let supported = false;
       try { supported = typeof navigator.share === 'function' && typeof navigator.canShare === 'function' && navigator.canShare(data); } catch { /* Use the independent download path. */ }
       if (!supported) { download(); return; }

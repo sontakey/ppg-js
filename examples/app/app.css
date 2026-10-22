@@ -590,7 +590,7 @@ h2 {
 .floor { color: #a7adba; font-size: 0.85em; }
 .experimental { display: inline-block; margin-left: 8px; padding: 1px 6px; border-radius: 3px; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; vertical-align: middle; color: #f5a06e; border: 1px solid rgba(245,160,110,.5); }
 
-/* Pulse on Paper — ChatPPG editorial experiment. */
+/* Pulse Painting — A project by ChatPPG. */
 @font-face{font-family:"DM Sans";src:url("fonts/dm-sans-latin.woff2") format("woff2");font-weight:100 900;font-display:swap}
 :root{--paper:#fdfbf7;--ink:#111318;--muted:#626b7b;--accent:#2855ff;--line:#dce1ea}
 html,body{background:var(--paper)!important;color:var(--ink)!important;font-family:"DM Sans",sans-serif;height:auto}
