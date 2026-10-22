@@ -1,4 +1,4 @@
-# Pulse on Paper
+# Pulse Painting
 
 ChatPPG’s camera-PPG experience turns a recording into a painted manuscript,
 then presents the existing HRV Spot Check analysis in the same visual language:

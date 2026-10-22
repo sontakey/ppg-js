@@ -15,14 +15,14 @@ per-window quality verdict that says *why* a number is withheld rather than
 guessing. Every session is recorded and can be replayed offline through the
 exact same engine.
 
-**Try [Pulse on Paper](https://chatppg.com/ppg-js-demo)** — the three-minute
+**Try [Pulse Painting](https://chatppg.com/ppg-js-demo)** — the three-minute
 capture experience by [ChatPPG](https://chatppg.com). Open it on your phone;
 desktop visitors get a painted QR invitation to continue on mobile.
 
 <p align="center">
-  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-on-paper-ready.jpg" width="230" alt="Pulse on Paper: phone camera instructions and a painted Begin pulse capture button"></a>
-  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-on-paper-capture.jpg" width="230" alt="Measured pulse strokes with cobalt, iris and teal gradients, live pulse, RMSSD and SDNN, and floating capture controls"></a>
-  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-on-paper-report.jpg" width="230" alt="Pulse report with a shareable painted waveform portrait and Share artwork and Measure again controls"></a>
+  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-painting-ready.jpg" width="230" alt="Pulse Painting: phone camera instructions and a painted Begin pulse capture button"></a>
+  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-painting-capture.jpg" width="230" alt="Measured pulse strokes with cobalt, iris and teal gradients, live pulse, RMSSD and SDNN, and floating capture controls"></a>
+  <a href="https://chatppg.com/ppg-js-demo"><img src="https://raw.githubusercontent.com/sontakey/ppg-js/main/docs/media/pulse-painting-report.jpg" width="230" alt="Pulse report with a shareable painted waveform portrait and Share artwork and Measure again controls"></a>
 </p>
 
 The [example app](examples/app) paints accepted PPG waveforms into a scrolling

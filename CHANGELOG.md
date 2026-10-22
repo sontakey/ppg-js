@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lifecycle. Events from replaced camera tracks cannot restart old recovery work.
 
 ### Changed
-- The example app is now **Pulse on Paper**, a ChatPPG project at
+- The example app is now **Pulse Painting**, a ChatPPG project at
   <https://chatppg.com/ppg-js-demo>: accepted-waveform paint strokes with organic
   cobalt–iris–teal gradients, smooth manuscript scrolling, live metrics, a small
   camera preview, and floating mobile controls.
