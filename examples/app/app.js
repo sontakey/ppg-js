@@ -610,7 +610,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const acceptedIbiMs = beats.map(b => b.ibiMs);
   if (!beats.length) {
     el.innerHTML = `
-      <h1 class="report-title">HRV Spot Check report</h1>
+      <h2 class="screen-title report-title">HRV Spot Check report</h2>
       <p class="insufficient">No good-quality windows were captured this session — try again with steadier finger placement.</p>
     `;
     return;
@@ -626,7 +626,7 @@ function renderReport(acceptedBeats, rmssdFloorMs, liveRespiration) {
   const header = document.createElement('div');
   header.className = 'report-card report-header';
   header.innerHTML = `
-    <h1 class="report-title">HRV Spot Check report</h1>
+    <h2 class="screen-title report-title">HRV Spot Check report</h2>
     <div class="meta-row"><span>${new Date().toLocaleString()}</span><span>Duration <b>${(durationSec / 60).toFixed(1)} min</b></span></div>
     <div class="meta-row"><span>Good signal <b>${goodPct == null ? '—' : goodPct + '%'}</b></span><span>Beats used <b>${result.meta.nBeats}</b></span><span>Corrected <b>${result.meta.pctCorrected.toFixed(1)}%</b></span></div>
   `;

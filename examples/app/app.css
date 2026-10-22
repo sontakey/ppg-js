@@ -597,7 +597,7 @@ a { color: var(--accent); text-underline-offset: 3px; }
 :focus-visible { outline: 3px solid var(--accent); outline-offset: 4px; }
 .screen { padding-top: calc(env(safe-area-inset-top) + 48px); gap: 24px; }
 .content { min-width: 0; }
-h1 { width: 100%; font-size: clamp(32px, 7vw, 46px); line-height: 1.1; letter-spacing: -.045em; color: var(--ink); text-align: left; }
+h1, .screen-title { width: 100%; margin: 0; font-size: clamp(32px, 7vw, 46px); line-height: 1.1; letter-spacing: -.045em; color: var(--ink); text-align: left; }
 h2, h3, .report-content h3 { color: var(--ink); }
 .lead { font-size: 17px; color: var(--muted); line-height: 1.55; }
 .disclaimer, .state-line, .session-countdown, .rmssd-floor, .floor, .report-note, .report-footer, .ans-line, .bar-label, .psd-legend, .poincare-legend { color: var(--muted); font-size: 14px; line-height: 1.5; }
@@ -617,7 +617,7 @@ h2, h3, .report-content h3 { color: var(--ink); }
 .torch-note { color: #8b5417; background: #fff5df; padding: 12px; border-radius: 8px; }
 .camera-preview-wrap { flex-shrink: 0; }
 .measuring-content { justify-content: flex-start; gap: 18px; }
-.measuring-content h1 { margin-bottom: 14px; }
+.measuring-content .screen-title { margin-bottom: 14px; }
 .hr-value { font-size: clamp(80px, 22vw, 112px); letter-spacing: -.06em; }
 .hr-unit, .sm-label, .sm-unit { color: var(--muted); }
 .sm-label, .sm-unit { font-size: 14px; }
@@ -632,7 +632,8 @@ h2, h3, .report-content h3 { color: var(--ink); }
 .report-screen { height: auto; min-height: 100dvh; overflow: visible; padding: 56px 16px 24px; }
 .report-content { width: 100%; max-width: 720px; padding-bottom: 0; }
 .report-card { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 16px; }
-.report-title { font-size: clamp(28px, 5.8vw, 42px); padding-right: 18px; margin-bottom: 20px; }
+.report-title { font-size: clamp(28px, 5.8vw, 42px); padding-right: 18px; }
+.report-content .report-title { margin: 0 0 20px; }
 .report-header .meta-row { font-size: 14px; color: var(--muted); gap: 8px 16px; margin-top: 8px; }
 .report-header .meta-row span b { color: var(--ink); }
 .report-content h3 { font-size: 18px; }
